@@ -5,9 +5,15 @@
 
 Pick an airfoil, drag a slider for angle of attack, and instantly see lift, drag, and pressure characteristics in your browser.
 
+## Live demo
+
+**[aerolab-devansh.streamlit.app](https://aerolab-devansh.streamlit.app/)**
+
+Type one or more NACA airfoils, sweep angle of attack, and compare lift, drag, and the drag polar side-by-side.
+
 ## Status
 
-**Day 1 — scaffolding complete.** First NeuralFoil-based prediction running locally.
+**Day 2** — deployed live on Streamlit Community Cloud. Comparison mode shipped (overlay multiple airfoils), reusable `analyze_airfoil()` helper in `src/airfoils.py`, polar sweep script with PNG export.
 
 ## 12-Week Roadmap
 
