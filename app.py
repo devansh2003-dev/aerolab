@@ -92,7 +92,7 @@ if not valid_names:
     st.stop()
 
 st.subheader(f"Coefficients at alpha = {alpha:+.2f} deg, Re = {reynolds:.0e}")
-st.dataframe(table_rows, use_container_width=True, hide_index=True)
+st.dataframe(table_rows, width="stretch", hide_index=True)
 
 # --- Plot: 3 panels with all valid airfoils overlaid ---
 fig, axes = plt.subplots(1, 3, figsize=(13, 4))
