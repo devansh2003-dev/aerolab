@@ -5,9 +5,10 @@ Run from the project root:
 
 The browser opens automatically at http://localhost:8501.
 """
-import matplotlib.pyplot as plt
 import numpy as np
+import plotly.graph_objects as go
 import streamlit as st
+from plotly.subplots import make_subplots
 
 from src.airfoils import analyze_airfoil
 
@@ -59,7 +60,7 @@ if not airfoil_names:
     st.stop()
 
 
-# --- Cached single-point and polar-sweep helpers ---
+# --- Cached polar sweep ---
 # Caching by (name, Re) means slider drags on alpha don't re-invoke NeuralFoil for the
 # polar sweep -- only the alpha-dependent point evaluation re-runs (one cheap NN call).
 @st.cache_data(show_spinner=False)
@@ -94,52 +95,66 @@ if not valid_names:
 st.subheader(f"Coefficients at alpha = {alpha:+.2f} deg, Re = {reynolds:.0e}")
 st.dataframe(table_rows, width="stretch", hide_index=True)
 
-# --- Plot: 3 panels with all valid airfoils overlaid ---
-fig, axes = plt.subplots(1, 3, figsize=(13, 4))
+# --- Plotly figure: 3 subplots with all valid airfoils overlaid ---
+fig = make_subplots(
+    rows=1,
+    cols=3,
+    subplot_titles=("Lift curve", "Drag curve", "Drag polar"),
+    horizontal_spacing=0.08,
+)
 
-# Use a categorical colormap so overlapping curves are visually distinct.
-colors = plt.cm.tab10(np.linspace(0, 1, 10))
+# Plotly's default qualitative palette -- categorically distinct colors for overlays.
+palette = [
+    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+    "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
+]
 
 for i, name in enumerate(valid_names):
     alphas_arr, cl, cd, _ = sweep_polar(name, float(reynolds))
-    c = colors[i % len(colors)]
+    color = palette[i % len(palette)]
     label = name.upper()
-    axes[0].plot(alphas_arr, cl, color=c, linewidth=1.8, label=label)
-    axes[1].plot(alphas_arr, cd, color=c, linewidth=1.8, label=label)
-    axes[2].plot(cd, cl, color=c, linewidth=1.8, label=label)
+    # legendgroup ties the three traces for one airfoil together: clicking the legend
+    # entry hides/shows the airfoil in all three subplots simultaneously. showlegend
+    # only on the first trace per group avoids three duplicate legend entries.
+    common = dict(mode="lines", line=dict(color=color, width=2), legendgroup=label)
+    fig.add_trace(
+        go.Scatter(x=alphas_arr, y=cl, name=label, showlegend=True, **common),
+        row=1, col=1,
+    )
+    fig.add_trace(
+        go.Scatter(x=alphas_arr, y=cd, name=label, showlegend=False, **common),
+        row=1, col=2,
+    )
+    fig.add_trace(
+        go.Scatter(x=cd, y=cl, name=label, showlegend=False, **common),
+        row=1, col=3,
+    )
 
-# Alpha-tracker line on the two alpha-axis plots (omit on the drag polar where
-# alpha isn't a coordinate).
-for ax in axes[:2]:
-    ax.axvline(alpha, color="k", linestyle="--", alpha=0.4, linewidth=1)
+# Vertical alpha-tracker on the alpha-axis subplots only (drag polar is CD vs CL,
+# alpha isn't a coordinate there).
+fig.add_vline(x=alpha, line=dict(color="black", dash="dash", width=1), opacity=0.4, row=1, col=1)
+fig.add_vline(x=alpha, line=dict(color="black", dash="dash", width=1), opacity=0.4, row=1, col=2)
 
-axes[0].axhline(0, color="k", linewidth=0.5)
-axes[0].set_xlabel("alpha (deg)")
-axes[0].set_ylabel("CL")
-axes[0].set_title("Lift curve")
-axes[0].grid(True, alpha=0.3)
-axes[0].legend(loc="best", fontsize=9)
+# Axis labels per subplot.
+fig.update_xaxes(title_text="alpha (deg)", row=1, col=1)
+fig.update_yaxes(title_text="CL", row=1, col=1)
+fig.update_xaxes(title_text="alpha (deg)", row=1, col=2)
+fig.update_yaxes(title_text="CD", row=1, col=2)
+fig.update_xaxes(title_text="CD", row=1, col=3)
+fig.update_yaxes(title_text="CL", row=1, col=3)
 
-axes[1].set_xlabel("alpha (deg)")
-axes[1].set_ylabel("CD")
-axes[1].set_title("Drag curve")
-axes[1].grid(True, alpha=0.3)
-axes[1].legend(loc="best", fontsize=9)
+fig.update_layout(
+    height=440,
+    margin=dict(t=60, l=50, r=20, b=50),
+    legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="left", x=0),
+    hovermode="x unified",  # hover anywhere on a subplot to see all series at that x
+)
 
-axes[2].set_xlabel("CD")
-axes[2].set_ylabel("CL")
-axes[2].set_title("Drag polar")
-axes[2].grid(True, alpha=0.3)
-axes[2].legend(loc="best", fontsize=9)
-
-fig.suptitle(f"Re = {reynolds:.0e}", fontsize=12)
-fig.tight_layout()
-
-st.pyplot(fig)
-plt.close(fig)  # prevent figure leak across Streamlit reruns
+st.plotly_chart(fig, width="stretch")
 
 st.caption(
-    "Dashed line marks the current alpha on the lift and drag curves. The polar "
-    "and the underlying neural-net evaluation are cached per (airfoil, Re), so "
-    "only the table refreshes when you drag the alpha slider."
+    "Click an airfoil name in the legend to toggle it across all three panels. "
+    "Hover for exact values. Drag to zoom; double-click to reset. The polar sweep "
+    "is cached per (airfoil, Re), so dragging the alpha slider only refreshes the "
+    "tracker line and the table."
 )
