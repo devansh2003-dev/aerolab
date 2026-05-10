@@ -1,7 +1,10 @@
-streamlit
-aerosandbox
-neuralfoil
-matplotlib
-plotly
-numpy
-numba
+# Top-level deps pinned to what we tested locally on 2026-05-10.
+# Bump deliberately; a CI-equivalent doesn't exist yet, so an unpinned upgrade
+# could break the deployed app silently.
+streamlit==1.57.0
+aerosandbox==4.2.9
+neuralfoil==0.3.2
+matplotlib==3.10.9
+plotly==6.7.0
+numpy==2.4.4
+numba==0.65.1
