@@ -1,0 +1,3 @@
+# Dev-only deps. NOT installed on Streamlit Cloud (it reads requirements.txt only).
+# Install locally with: pip install -r requirements-dev.txt
+pytest
