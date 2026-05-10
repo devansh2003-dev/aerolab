@@ -1,0 +1,7 @@
+streamlit
+aerosandbox
+neuralfoil
+matplotlib
+plotly
+numpy
+numba
