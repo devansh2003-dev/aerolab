@@ -22,9 +22,10 @@ aero = nf.get_aero_from_airfoil(
     model_size="xxxlarge",
 )
 
-# NeuralFoil returns numpy arrays even for scalar inputs -- cast to float for printing.
-cl = float(aero["CL"])
-cd = float(aero["CD"])
+# NeuralFoil returns 1-D length-1 numpy arrays for scalar inputs. NumPy 2.x no longer
+# allows float() on non-0-d arrays, so use .item() to pull out the Python scalar.
+cl = aero["CL"].item()
+cd = aero["CD"].item()
 ld = cl / cd
 
 print(f"NACA 4412  |  alpha = {alpha_deg} deg  |  Re = {reynolds:,}")
