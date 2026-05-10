@@ -3,30 +3,24 @@
 Run from the project root:
     python scripts/day1_test.py
 """
-import aerosandbox as asb
-import neuralfoil as nf
+import sys
+from pathlib import Path
 
-# asb.Airfoil("naca####") generates the 4-digit NACA coordinates from the formula --
-# no .dat file needed.
-airfoil = asb.Airfoil("naca4412")
+# Add project root to sys.path so we can import from src/ without an editable install.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from src.airfoils import analyze_airfoil
 
 alpha_deg = 5.0          # angle of attack, degrees
 reynolds = 500_000       # Reynolds number based on chord
 
-# NeuralFoil's neural net predicts XFOIL-quality polars in ~1 ms.
-# model_size trades accuracy for speed; "xxxlarge" is the most accurate.
-aero = nf.get_aero_from_airfoil(
-    airfoil=airfoil,
-    alpha=alpha_deg,
-    Re=reynolds,
-    model_size="xxxlarge",
-)
+aero = analyze_airfoil("naca4412", alpha_deg, reynolds)
 
-# NeuralFoil returns 1-D length-1 numpy arrays for scalar inputs. NumPy 2.x no longer
-# allows float() on non-0-d arrays, so use .item() to pull out the Python scalar.
+# NeuralFoil returns 1-D length-1 numpy arrays for scalar inputs;
+# .item() pulls out the Python scalar (NumPy 2.x rejects float() on non-0-d arrays).
 cl = aero["CL"].item()
 cd = aero["CD"].item()
-ld = cl / cd
+ld = aero["LD"].item()
 
 print(f"NACA 4412  |  alpha = {alpha_deg} deg  |  Re = {reynolds:,}")
 print(f"  CL  = {cl:.4f}")

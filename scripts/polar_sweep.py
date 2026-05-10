@@ -6,33 +6,25 @@ Saves a PNG to data/ and pops up an interactive matplotlib window.
 Run from the project root:
     python scripts/polar_sweep.py
 """
+import sys
 from pathlib import Path
 
-import aerosandbox as asb
+# Add project root to sys.path so we can import from src/ without an editable install.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import matplotlib.pyplot as plt
-import neuralfoil as nf
 import numpy as np
+
+from src.airfoils import analyze_airfoil
 
 # --- Configuration ---
 airfoil_name = "naca4412"
 alphas = np.linspace(-5, 15, 41)   # 41 points from -5 deg to 15 deg, 0.5 deg step
 reynolds = 500_000
 
-# --- Build the airfoil and run NeuralFoil ---
-airfoil = asb.Airfoil(airfoil_name)
-
-# NeuralFoil is vectorized: passing an array of alphas returns arrays for each output.
-# One batched call is far faster than looping (the neural net runs once on a batch).
-aero = nf.get_aero_from_airfoil(
-    airfoil=airfoil,
-    alpha=alphas,
-    Re=reynolds,
-    model_size="xxxlarge",
-)
-
-cl = aero["CL"]
-cd = aero["CD"]
-ld = cl / cd
+# --- Run the sweep (one batched NeuralFoil call) ---
+aero = analyze_airfoil(airfoil_name, alphas, reynolds)
+cl, cd, ld = aero["CL"], aero["CD"], aero["LD"]
 
 # --- Plot ---
 fig, axes = plt.subplots(1, 3, figsize=(14, 4.5))
@@ -53,7 +45,7 @@ axes[1].set_ylabel(r"Drag coefficient $C_D$")
 axes[1].set_title(r"$C_D$ vs $\alpha$")
 axes[1].grid(True, alpha=0.3)
 
-# Drag polar -- this is the classic aerodynamics chart: lift vs drag, parametric in alpha.
+# Drag polar -- the classic aerodynamics chart: lift vs drag, parametric in alpha.
 axes[2].plot(cd, cl, color="tab:green", linewidth=1.8)
 axes[2].set_xlabel(r"Drag coefficient $C_D$")
 axes[2].set_ylabel(r"Lift coefficient $C_L$")
@@ -67,7 +59,6 @@ fig.suptitle(
 fig.tight_layout()
 
 # --- Save figure to data/ (git-ignored) ---
-# Path(__file__).parent.parent is the project root regardless of where you run from.
 out_dir = Path(__file__).resolve().parent.parent / "data"
 out_dir.mkdir(exist_ok=True)
 out_path = out_dir / f"polar_{airfoil_name}_re{reynolds}.png"
