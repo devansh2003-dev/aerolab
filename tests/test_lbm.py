@@ -21,6 +21,7 @@ from src.lbm import (
     collide,
     equilibrium,
     macroscopic,
+    step_njit_with_force,
     stream,
 )
 
@@ -367,3 +368,94 @@ def test_bounce_back_preserves_density_at_solid_cells():
     f_post = bounce_back(f, mask)
     rho_post = f_post[:, 2, 2].sum()
     assert np.isclose(rho_post, rho_pre)
+
+
+# ---------------------------------------------------------------------------
+# JIT'd fused step (Stage B): must produce identical output to the pure-NumPy
+# reference path. This is the single most important test in the file -- if it
+# fails, every downstream simulation will be wrong in subtle ways.
+# ---------------------------------------------------------------------------
+
+def test_step_njit_matches_pure_numpy_single_step():
+    """One JIT'd step must bit-equivalent the pure-NumPy reference path on a
+    cylinder configuration with non-trivial state (mass + small y-perturbation)."""
+    from src.forces import momentum_exchange_force
+    from src.shapes import cylinder_mask
+
+    Nx, Ny = 60, 40
+    tau = 0.6
+    U = 0.05
+    mask = cylinder_mask(Nx, Ny, cx=20, cy=20, radius=4)
+
+    rho0 = np.ones((Nx, Ny))
+    u0 = np.zeros((2, Nx, Ny))
+    u0[0] = U
+    rng = np.random.default_rng(seed=999)
+    u0[1] = rng.normal(0, 1e-3, size=(Nx, Ny))
+    f_init = equilibrium(rho0, u0)
+
+    f_inflow = equilibrium(1.0, np.array([U, 0.0]))
+    inflow_dirs = np.array([1, 5, 8], dtype=np.int32)
+    outflow_dirs = np.array([3, 6, 7], dtype=np.int32)
+
+    # --- Pure-NumPy reference: collide, force, bounce-back, stream, BCs ---
+    f_pure = f_init.copy()
+    f_post_coll_pure = collide(f_pure, tau)
+    F_pure = momentum_exchange_force(f_post_coll_pure, mask)
+    f_pure = bounce_back(f_post_coll_pure, mask)
+    f_pure = stream(f_pure)
+    f_pure[inflow_dirs, 0, :] = f_inflow[inflow_dirs, None]
+    f_pure[outflow_dirs, -1, :] = f_pure[outflow_dirs, -2, :]
+
+    # --- JIT'd fused step ---
+    f_jit, Fx_jit, Fy_jit = step_njit_with_force(
+        f_init.copy(), tau, mask, f_inflow, inflow_dirs, outflow_dirs
+    )
+
+    # Both must agree to roughly machine precision.
+    max_diff = float(np.max(np.abs(f_jit - f_pure)))
+    assert np.allclose(f_jit, f_pure, atol=1e-12), f"f differs from reference by {max_diff:g}"
+    assert np.isclose(Fx_jit, F_pure[0]), f"Fx: JIT={Fx_jit}, ref={F_pure[0]}"
+    assert np.isclose(Fy_jit, F_pure[1]), f"Fy: JIT={Fy_jit}, ref={F_pure[1]}"
+
+
+def test_step_njit_matches_pure_numpy_after_ten_steps():
+    """Same equivalence check, propagated for 10 steps. Catches accumulating
+    drift that a single-step test would miss (e.g., subtle BC order bugs)."""
+    from src.forces import momentum_exchange_force
+    from src.shapes import cylinder_mask
+
+    Nx, Ny = 50, 30
+    tau = 0.6
+    U = 0.04
+    mask = cylinder_mask(Nx, Ny, cx=18, cy=15, radius=3)
+
+    rho0 = np.ones((Nx, Ny))
+    u0 = np.zeros((2, Nx, Ny))
+    u0[0] = U
+    rng = np.random.default_rng(seed=777)
+    u0[1] = rng.normal(0, 1e-3, size=(Nx, Ny))
+    f_init = equilibrium(rho0, u0)
+
+    f_inflow = equilibrium(1.0, np.array([U, 0.0]))
+    inflow_dirs = np.array([1, 5, 8], dtype=np.int32)
+    outflow_dirs = np.array([3, 6, 7], dtype=np.int32)
+
+    # Pure-NumPy: 10 steps
+    f_pure = f_init.copy()
+    for _ in range(10):
+        f_post = collide(f_pure, tau)
+        f_pure = bounce_back(f_post, mask)
+        f_pure = stream(f_pure)
+        f_pure[inflow_dirs, 0, :] = f_inflow[inflow_dirs, None]
+        f_pure[outflow_dirs, -1, :] = f_pure[outflow_dirs, -2, :]
+
+    # JIT: 10 steps
+    f_jit = f_init.copy()
+    for _ in range(10):
+        f_jit, _, _ = step_njit_with_force(
+            f_jit, tau, mask, f_inflow, inflow_dirs, outflow_dirs
+        )
+
+    max_diff = float(np.max(np.abs(f_jit - f_pure)))
+    assert np.allclose(f_jit, f_pure, atol=1e-10), f"f drift after 10 steps: {max_diff:g}"
