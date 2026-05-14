@@ -40,9 +40,12 @@ from src.lbm import CS2, equilibrium, macroscopic, step_njit_with_force
 from src.shapes import cylinder_mask
 
 # --- Configuration ---
-Nx, Ny = 300, 100
+# Ny widened from 100 to 400 (2026-05-12) to drop blockage from 20% to 5%.
+# Free-stream Cd ~ 1.4 only emerges when Ny/D >= 15-20; at the old 20% blockage
+# the periodic-channel Cd was ~2.33 (correct physics, wrong benchmark).
+Nx, Ny = 300, 400
 D = 20
-cx, cy = 80, 50              # on-grid integer center
+cx, cy = 80, 200             # on-grid integer center, channel midline
 U_inflow = 0.1
 target_Re = 100.0
 nu = U_inflow * D / target_Re   # 0.02
