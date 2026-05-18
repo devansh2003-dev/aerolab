@@ -2,7 +2,7 @@
 
 Two modes via the sidebar toggle:
   - Fast (NeuralFoil): instant ML predictions, alpha sweeps, drag polar.
-  - Real CFD (LBM): browser-based Lattice Boltzmann simulation (wired in Stage B).
+  - Real CFD (LBM): browser-based Lattice Boltzmann simulation rendered as a GIF.
 
 Run from the project root:
     streamlit run app.py
@@ -35,6 +35,20 @@ st.markdown(
 # --- Mode toggle (sidebar, top) ---
 with st.sidebar:
     st.markdown("### :material/tune: Mode")
+    # Plain-English framing above the radio. The radio labels themselves
+    # are short ("Fast (NeuralFoil)" / "Real CFD (LBM)"); the framing
+    # tells a first-time visitor which one they want WITHOUT them having
+    # to hover the ? tooltip or read the README.
+    st.markdown(
+        "<div style='color:#94a3b8;font-size:0.85rem;line-height:1.45;"
+        "margin-bottom:0.4rem;'>"
+        "<b style='color:#cbd5e1;'>Fast</b> &mdash; airfoil lift/drag numbers in "
+        "&lt;1 s. Drag a slider, get a polar.<br>"
+        "<b style='color:#cbd5e1;'>Real CFD</b> &mdash; watch the air actually move "
+        "around a shape. ~30 s per run."
+        "</div>",
+        unsafe_allow_html=True,
+    )
     mode = st.radio(
         "Simulation mode",
         ["Fast (NeuralFoil)", "Real CFD (LBM)"],
@@ -49,127 +63,62 @@ with st.sidebar:
     )
     st.divider()
 
+# --- Cached LBM simulate+render wrapper (module level) ---
+# Lives outside the conditional so @st.cache_data isn't re-decorated on every
+# Streamlit rerun. The heavy imports happen lazily on first call (the wrapper
+# is never called in Fast mode, so Fast mode's cold-start stays untouched).
+# max_entries=12 caps memory at ~20 MB of cached GIFs -- well within Cloud limits.
+@st.cache_data(show_spinner=False, max_entries=12)
+def _cached_simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key):
+    from src.lbm_render import simulate_and_render
+    progress = st.progress(
+        0.0, text=":material/sync: Phase 1 of 2 -- simulating flow (MRT)...",
+    )
+    try:
+        def cb(frac, text):
+            progress.progress(frac, text=text)
+        return simulate_and_render(
+            shape_preset, reynolds_target, aoa_deg, res_key,
+            progress_callback=cb,
+        )
+    finally:
+        progress.empty()
+
+
+# --- JIT pre-warm (module level, cached across Streamlit reruns) ---
+# Each of the three @njit step variants takes ~20-30 s to compile cold.
+# By default that cost lands on the user's first Run-button click, after
+# they've already committed to waiting. We move it earlier: a tiny dummy
+# run on a 16x8 grid forces compilation during page load instead.
+#
+# @st.cache_resource caches the result across all sessions in the
+# process, so this runs exactly once per Streamlit container -- on
+# Streamlit Cloud cold-boots it lands inside the Cloud loading screen,
+# not on a user-visible click.
+@st.cache_resource(
+    show_spinner=":material/local_fire_department: Pre-warming Numba JIT (one-time, ~20-30 s on first boot)..."
+)
+def _warm_jit():
+    from src.warmup import warm
+    return warm()
+
+
 # --- Real CFD (LBM) mode: animated GIF playback of LBM run ---
 if mode == "Real CFD (LBM)":
+    # Pre-warm the JIT cache before the user can click Run. The spinner
+    # shows for ~20-30 s on cold boot, then this returns instantly on
+    # every subsequent rerun.
+    _warm_jit()
     # Lazy imports: keep Fast mode's cold-start untouched by Numba + matplotlib.
-    import io
-
-    import matplotlib as mpl
-    import matplotlib.cm as cm
-    import matplotlib.pyplot as plt
-    from matplotlib.colors import LinearSegmentedColormap, ListedColormap, Normalize
-    from matplotlib.patches import Polygon
-    from PIL import Image
-    from scipy.ndimage import gaussian_filter, zoom
-
-    # Modern system sans-serif for in-figure text. matplotlib picks the first
-    # font from this list that's actually installed -- Segoe UI Variable on
-    # Windows (Streamlit's host OS here), Inter / SF Pro on other systems,
-    # DejaVu Sans as a guaranteed fallback so this never errors at render.
-    mpl.rcParams["font.family"] = "sans-serif"
-    mpl.rcParams["font.sans-serif"] = [
-        "Segoe UI Variable", "Segoe UI", "Inter", "SF Pro Text",
-        "Helvetica Neue", "Arial", "DejaVu Sans",
-    ]
-
-    from src.lbm import CS2, equilibrium, macroscopic, step_njit_mrt_with_force
-    from src.shapes import (
-        cylinder_mask, ellipse_mask, naca4_airfoil_mask, naca4_outline_xy,
-        square_mask,
+    # All the heavy lifting (LBM step, rendering, GIF encoding) lives in
+    # src.lbm_render -- this branch is only sidebar UI + result display.
+    from src.lbm_render import (
+        GIF_FRAME_MS,
+        RESOLUTION_PRESETS,
+        STEPS_PER_FRAME,
+        U_INFLOW,
+        simulate_and_render,
     )
-
-    # --- Constants ---
-    # Frame schedule: 75 frames at 40 steps each = 3000 recorded steps. Smaller
-    # motion per frame (4 cells at U=0.1) gives fluider streamline playback.
-    #
-    # WARMUP_STEPS run BEFORE frame recording starts, with the kick applied
-    # inside the warmup. By the time frame 0 is captured the wake is fully
-    # developed -- so the animation doesn't open on "uniform flow, no wake"
-    # and then visibly grow the wake during the first 30 frames (which the
-    # user perceives as a glitchy start). The cost is a one-time ~6 s extra
-    # in the simulate phase.
-    WARMUP_STEPS = 1500
-    N_FRAMES = 75
-    STEPS_PER_FRAME = 40
-    N_STEPS = WARMUP_STEPS + N_FRAMES * STEPS_PER_FRAME
-    U_INFLOW = 0.1
-
-    # Two grid/body presets. Detailed = 2.1x more cells, ~2x render time, but
-    # bodies scale 1.5x so the wake has noticeably more discretized detail.
-    RESOLUTION_PRESETS = {
-        "Standard (320 x 100)": dict(
-            Nx=320, Ny=100, body_x=70, cy=50,
-            cylinder_D=20, square_side=20,
-            ellipse_a=22, ellipse_b=11, chord=44,
-        ),
-        "Detailed (480 x 140)": dict(
-            Nx=480, Ny=140, body_x=105, cy=70,
-            cylinder_D=30, square_side=30,
-            ellipse_a=33, ellipse_b=17, chord=66,
-        ),
-    }
-
-    INFLOW_DIRS = np.array([1, 5, 8], dtype=np.int32)
-    OUTFLOW_DIRS = np.array([3, 6, 7], dtype=np.int32)
-
-    KICK_START, KICK_END = 100, 500
-    KICK_AMPLITUDE = 0.005
-    KICK_Y_OFFSET = 2
-
-    BG_COLOR = "#0a0a0a"
-    BODY_COLOR = "#1f2937"                     # slate-800
-    # Body patch is drawn slightly larger than the voxelized mask to hide the
-    # staircase-stepped boundary cells and the bright boundary-layer vorticity
-    # ring that hugs them. ~1.5 cells of outward dilation is enough across all
-    # presets without visibly fattening the body shape.
-    BODY_OUTLINE_MARGIN = 1.5
-    STREAMLINE_WIDTH = 1.4
-    # Custom cyan -> pink -> yellow cmap. All three stops are luminous so the
-    # speed encoding stays readable across the vorticity heatmap underneath.
-    SPEED_CMAP = LinearSegmentedColormap.from_list(
-        "aerolab_speed", ["#22d3ee", "#ff5e8a", "#fde047"],
-    )
-    SPEED_CLIP_FACTOR = 2.0
-    # Vorticity heatmap: red/blue diverging, alpha-modulated so omega ~ 0 is
-    # transparent and the dark background shows through. Max alpha capped at
-    # 0.7 so the wake reads as a 70%-opacity wash rather than fully saturated
-    # red/blue.
-    VORT_ALPHA_MAX = 0.7
-    # v_clip blends two things:
-    #   1. A floor from the inflow / characteristic-length scale (so low-Re
-    #      wakes with weak omega still saturate to visible color).
-    #   2. The 75th percentile of |omega| in the fluid (so high-Re wakes
-    #      with order-of-magnitude stronger omega scale up automatically).
-    # A pure 92nd percentile was dominated by boundary-layer extremes and
-    # the wake washed out at high Re; the 75th percentile sits in the wake
-    # body and gives a clean colour-scale that tracks the regime.
-    VORT_CLIP_FACTOR = 1.5
-    VORT_CLIP_PERCENTILE = 92
-    # Gaussian sigma applied to vorticity before upsampling. Scales with
-    # log10(Re) so high-Re sub-grid wake aliasing (which looks like noise on
-    # a 320x100 grid above Re~600) gets aggressively smoothed -- the wake's
-    # large-scale shape stays, the noise washes out.
-    VORT_BLUR_SIGMA_BASE = 1.0
-    VORT_BLUR_SIGMA_RE_SCALE = 1.6
-    # Vertical alpha fade at the top/bottom walls. The bounce-back walls
-    # produce a thin no-slip boundary layer at y=0 and y=Ny-1 which the
-    # vorticity heatmap renders as red/blue bands. The fade cosmetically
-    # zeros out the heatmap within this many cells of each wall so the
-    # visual matches a freestream box -- physics is unchanged.
-    WALL_FADE_CELLS = 14
-    # We rely on matplotlib's own bicubic interpolation_stage="rgba" to smooth
-    # the colored field at display resolution. Pre-upsampling the source array
-    # with scipy.ndimage.zoom barely improved appearance over native + bicubic
-    # but cost 5-10ms per frame in the hot render loop -- skipped now.
-    VORT_UPSAMPLE = 1
-    # Light gaussian smoothing on the velocity field that drives streamplot.
-    # Streamlines are integral curves of u, so jitter in u between frames
-    # makes streamlines wobble. Pre-smoothing u gives noticeably more fluid
-    # streamline motion in playback at moderate cost (~0.5 ms / frame).
-    STREAM_BLUR_SIGMA = 0.8
-    TEXT_COLOR = "#f5f5f5"
-    GIF_FRAME_MS = 67                          # ~15 fps (0.75x of the 20 fps cap)
-    FIG_W_IN, FIG_H_IN, FIG_DPI = 10.0, 3.0, 90      # 900x270 px -- balances crispness and per-frame render cost
 
     # Friendly display name -> internal preset key
     SHAPE_PRESETS = {
@@ -179,66 +128,6 @@ if mode == "Real CFD (LBM)":
         "NACA 0012  (symmetric wing)": "NACA 0012",
         "NACA 4412  (curved wing)": "NACA 4412",
     }
-
-    def expand_outline(xs, ys, margin):
-        """Push each polygon vertex `margin` cells outward from the centroid.
-
-        Used to draw the displayed body patch slightly larger than the
-        voxelized physics mask, so the patch covers (a) the staircase mask
-        boundary and (b) the bright vorticity ring of the bounce-back
-        boundary layer. The mask itself is unchanged -- this is display only.
-        """
-        cx_poly = float(np.mean(xs))
-        cy_poly = float(np.mean(ys))
-        dx = xs - cx_poly
-        dy = ys - cy_poly
-        r = np.sqrt(dx * dx + dy * dy)
-        r_safe = np.where(r > 1e-6, r, 1.0)
-        return xs + margin * dx / r_safe, ys + margin * dy / r_safe
-
-    def body_outline_xy(shape_preset, res_cfg, aoa_deg):
-        """Smooth analytic boundary (xs, ys) in grid coords for the body.
-
-        The LBM mask is voxelized to grid cells, which makes the body's edge look
-        staircase-y when rendered. We overlay this high-resolution outline as a
-        filled patch so the displayed shape edge stays crisp regardless of grid
-        resolution. The mask itself (used for physics) is unchanged.
-        """
-        body_x = res_cfg["body_x"]
-        cy = res_cfg["cy"]
-        aoa_rad = np.deg2rad(aoa_deg)
-        cos_a = np.cos(aoa_rad)
-        sin_a = np.sin(aoa_rad)
-        if shape_preset == "Cylinder":
-            r = res_cfg["cylinder_D"] / 2
-            t = np.linspace(0.0, 2 * np.pi, 200)
-            return body_x + r * np.cos(t), cy + r * np.sin(t)
-        if shape_preset == "Square":
-            s = res_cfg["square_side"] / 2
-            xs_local = np.array([-s, s, s, -s, -s])
-            ys_local = np.array([-s, -s, s, s, -s])
-            return (
-                body_x + cos_a * xs_local + sin_a * ys_local,
-                cy + (-sin_a) * xs_local + cos_a * ys_local,
-            )
-        if shape_preset == "Ellipse":
-            a = res_cfg["ellipse_a"]
-            b = res_cfg["ellipse_b"]
-            t = np.linspace(0.0, 2 * np.pi, 200)
-            xs_local = a * np.cos(t)
-            ys_local = b * np.sin(t)
-            return (
-                body_x + cos_a * xs_local + sin_a * ys_local,
-                cy + (-sin_a) * xs_local + cos_a * ys_local,
-            )
-        # NACA 0012 / 4412. The LE is anchored at (body_x, cy); positive AoA
-        # rotates LE up (negative-sine on y component, matching the mask).
-        chord = res_cfg["chord"]
-        naca_code = shape_preset.split()[1]
-        poly_x, poly_y = naca4_outline_xy(naca_code)
-        gx = body_x + chord * (poly_x * cos_a + poly_y * sin_a)
-        gy = cy + chord * (-poly_x * sin_a + poly_y * cos_a)
-        return gx, gy
 
     def regime_label(re):
         if re <= 100:
@@ -263,6 +152,22 @@ if mode == "Real CFD (LBM)":
     # === Sidebar ===
     with st.sidebar:
         st.markdown("### :material/tune: Simulation setup")
+        # Brief always-visible orientation -- the first-time visitor lands
+        # here and needs to know what kind of choices they're making
+        # without hovering tooltips. Three bullets, plain English.
+        with st.expander(":material/help_outline: &nbsp; **First time? Read this**",
+                          expanded=False):
+            st.markdown(
+                "**Pick a body, set how fast the air moves, hit Run.** "
+                "The simulation shows the wake forming behind the body as "
+                "vortices shed off it. You'll see the same physics that "
+                "makes a flag flutter, a car drag, or a wing lift.\n\n"
+                "- **Shape:** what the wind flows past.\n"
+                "- **Flow speed:** Reynolds number -- low is honey-like, "
+                "high is windy.\n"
+                "- **Tilt / rotation:** angle of the body into the wind.\n"
+                "- **Resolution:** Standard is fast, Detailed is prettier."
+            )
 
         st.markdown(":material/category: **Shape**")
         shape_display = st.selectbox(
@@ -280,18 +185,25 @@ if mode == "Real CFD (LBM)":
 
         st.markdown("")
         st.markdown(":material/speed: **Flow speed** &nbsp; :gray[(Reynolds number)]")
+        # Default Re depends on shape: airfoils need higher Re for visible
+        # lift/downwash (at Re=200 viscous damping is so strong the wing
+        # behaves more like an inclined plate than an airfoil), shapes look
+        # interesting at lower Re where vortex shedding is the show.
+        _is_airfoil_default = shape_preset in ("NACA 0012", "NACA 4412")
+        _default_re = 500 if _is_airfoil_default else 200
         reynolds_target = st.slider(
             "Reynolds number",
-            min_value=50, max_value=1500, value=200, step=50,
+            min_value=50, max_value=1500, value=_default_re, step=50,
             label_visibility="collapsed",
             help=(
                 "How fast the air moves *relative to the object size*. "
                 "Low Re = thick, syrupy flow (everything is gentle). "
                 "High Re = thin, fast flow (chaotic swirls, turbulent wakes). "
-                "Real airplane wings: millions. Our simulation: 50-1500. "
-                "Above ~500 the BGK solver gets twitchy -- the wake structure "
-                "stays qualitatively right but quantitative drag numbers "
-                "drift high. Stress-test the solver and watch what happens."
+                "Real airplane wings: 10-100 million. Our simulation: 50-1500, "
+                "so lift/downwash on the airfoils is much weaker than the "
+                "textbook picture you see in aero classes -- viscous effects "
+                "dominate. Solver: MRT collision + Smagorinsky LES throughout, "
+                "stable from Re=50 to Re=1500 on every shape."
             ),
         )
         reg, reg_feel = regime_label(reynolds_target)
@@ -306,12 +218,13 @@ if mode == "Real CFD (LBM)":
             if is_airfoil:
                 st.markdown(":material/rotate_right: **Wing tilt** "
                             "&nbsp; :gray[(angle of attack)]")
-                slider_min, slider_max, slider_default = -10.0, 20.0, 5.0
+                slider_min, slider_max, slider_default = -45.0, 45.0, 5.0
                 slider_help = (
                     "How steeply the wing is angled into the wind. "
                     "More tilt = more lift -- but go too steep and the wing "
                     "**stalls** (lift collapses, drag spikes). Try +5 deg vs "
-                    "+15 deg and watch the wake on top change."
+                    "+15 deg vs +30 deg and watch the wake on top change -- "
+                    "above ~12 deg the flow detaches from the upper surface."
                 )
             else:
                 st.markdown(":material/rotate_right: **Rotation** "
@@ -346,10 +259,13 @@ if mode == "Real CFD (LBM)":
             index=0,
             label_visibility="collapsed",
             help=(
-                "**Standard** runs in ~20s and is great for getting a feel. "
-                "**Detailed** uses a 2x larger grid with bigger bodies, so "
-                "the wake has more discretized swirls and finer streamline "
-                "structure -- but takes ~45s per run."
+                "**Standard** (320x100, D=20 body, 5000 sim steps) -- "
+                "body+wake fill the viewport, wake develops within the "
+                "recording, ~15s per run. **Detailed** (720x240, D=45 body, "
+                "7500 sim steps) -- 5.4x more cells, ~2x bigger bodies, "
+                "longer downstream channel + twice as many simulation steps; "
+                "the wake reaches full periodic limit-cycle inside the loop "
+                "and airfoil downwash is much more visible. ~90-150s per run."
             ),
         )
         res_cfg = RESOLUTION_PRESETS[res_display]
@@ -360,10 +276,12 @@ if mode == "Real CFD (LBM)":
             type="primary", use_container_width=True,
         )
         if "Standard" in res_display:
-            st.caption(":material/timer: First run ~50s (one-time compile). "
-                       "Later runs ~20s.")
+            st.caption(":material/timer: First run ~30-45s (one-time MRT "
+                       "compile). Later runs ~15s; revisits are instant "
+                       "(cached).")
         else:
-            st.caption(":material/timer: First run ~75s. Later runs ~45s.")
+            st.caption(":material/timer: First run ~2-3 min. Later runs "
+                       "~90-150s; revisits are instant (cached).")
 
     # === Main page header ===
     st.title("Real CFD")
@@ -374,28 +292,34 @@ if mode == "Real CFD (LBM)":
     )
 
     if not run_clicked:
+        _preview_n_steps = res_cfg["n_frames"] * STEPS_PER_FRAME
         with st.container(border=True):
             st.markdown(
                 f"### :material/play_circle: Ready to run\n\n"
                 f":material/arrow_back: **Set the inputs in the sidebar** "
                 f"and press **Run simulation**.\n\n"
                 f"A {res_cfg['Nx']} x {res_cfg['Ny']} Lattice Boltzmann "
-                f"simulation runs {N_STEPS:,} steps, then plays the result "
-                f"back as a smooth 20 fps animation. On the *first* click in "
-                f"a fresh session the solver compiles itself (one-time, "
-                f"about 30 extra seconds). Every click after that is just "
-                f"the simulation time."
+                f"simulation runs {_preview_n_steps:,} steps, then plays the "
+                f"result back as a smooth 15 fps animation. On the *first* "
+                f"click in a fresh session the solver compiles itself "
+                f"(one-time, ~30s). Every click after that is just the "
+                f"simulation time."
             )
         with st.expander(
                 ":material/lightbulb: What you'll see -- a quick primer"):
             st.markdown(
                 "The animation shows the air's flow on a dark canvas:\n\n"
-                "- :material/rotate_left: **Red wash** = anti-clockwise spin\n"
-                "- :material/rotate_right: **Blue wash** = clockwise spin\n"
-                "- :material/timeline: **Glowing curves** = the direction air is "
-                "moving (streamlines), **coloured by speed**: cyan = slow, "
-                "yellow = fast.\n"
-                "- :material/circle: **Dark shape** = the object\n\n"
+                "- **Red wash** = air rotating anti-clockwise\n"
+                "- **Blue wash** = air rotating clockwise\n"
+                "- **Glowing particles** = massless smoke tracers released "
+                "from the inflow and carried by the wind. "
+                "**Colored by speed** (plasma colormap, the same one CFD "
+                "post-processors like ParaView use): dark purple = slow / "
+                "recirculating, orange = inflow speed, bright yellow = "
+                "accelerated. Watch them deflect around the body and curl "
+                "through the wake -- this is what a real wind-tunnel smoke "
+                "visualization shows.\n"
+                "- **Dark shape** = the object\n\n"
                 "Watch what happens *behind* the object. With a cylinder at "
                 "moderate flow speeds, you'll see swirls peel off alternately "
                 "from the top and bottom -- a **Karman vortex street**. It's "
@@ -403,52 +327,28 @@ if mode == "Real CFD (LBM)":
             )
         st.stop()
 
-    # === Grid + body geometry from resolution preset ===
-    LBM_NX = res_cfg["Nx"]
-    LBM_NY = res_cfg["Ny"]
-    BODY_X = res_cfg["body_x"]
-    CY_CENTER = res_cfg["cy"]
+    # === Cached simulate + render pipeline ===
+    # Identical (shape, Re, AoA, resolution) tuples return precomputed bytes
+    # instantly on repeat clicks. First call for any combination runs the
+    # full 20-150 s pipeline; subsequent calls return in <50 ms. The cached
+    # wrapper itself is defined at module top so @st.cache_data isn't
+    # re-decorated each rerun. The heavy work lives in src/lbm_render.py.
+    sim_result = _cached_simulate_and_render(
+        shape_preset, int(reynolds_target), float(aoa_deg), res_display,
+    )
+    tau = sim_result["tau"]
+    nu = sim_result["nu"]
+    char_length = sim_result["char_length"]
+    LBM_NX = sim_result["lbm_nx"]
+    LBM_NY = sim_result["lbm_ny"]
+    label = sim_result["label"]
+    gif_bytes = sim_result["gif_bytes"]
+    vort_cbar_bytes = sim_result["vort_cbar_bytes"]
+    speed_cbar_bytes = sim_result["speed_cbar_bytes"]
+    actual_n_frames = sim_result["n_frames"]
+    actual_n_steps = sim_result["n_steps"]
 
-    if shape_preset == "Cylinder":
-        D = res_cfg["cylinder_D"]
-        mask = cylinder_mask(LBM_NX, LBM_NY, cx=BODY_X, cy=CY_CENTER, radius=D // 2)
-        char_length = D
-        kick_x = BODY_X + D
-        label = "Cylinder"
-    elif shape_preset == "Square":
-        side = res_cfg["square_side"]
-        mask = square_mask(
-            LBM_NX, LBM_NY, cx=BODY_X, cy=CY_CENTER, side=side, aoa_deg=aoa_deg,
-        )
-        char_length = side
-        # A rotated square extends side*sqrt(2)/2 ~ 0.71*side from center along
-        # each diagonal -- pad kick by 1.5x side so it lands well past the body
-        # at any rotation angle in the slider range.
-        kick_x = BODY_X + int(side * 1.5)
-        label = "Square" if abs(aoa_deg) < 0.25 else f"Square  ·  {aoa_deg:+.1f}° rotation"
-    elif shape_preset == "Ellipse":
-        a, b = res_cfg["ellipse_a"], res_cfg["ellipse_b"]
-        mask = ellipse_mask(
-            LBM_NX, LBM_NY, cx=BODY_X, cy=CY_CENTER, a=a, b=b, aoa_deg=aoa_deg,
-        )
-        char_length = 2 * b
-        kick_x = BODY_X + a + 10
-        label = "Ellipse" if abs(aoa_deg) < 0.25 else f"Ellipse  ·  {aoa_deg:+.1f}° rotation"
-    else:                                      # NACA 0012 or 4412
-        chord = res_cfg["chord"]
-        naca_code = shape_preset.split()[1]
-        mask = naca4_airfoil_mask(
-            LBM_NX, LBM_NY, cx=BODY_X, cy=CY_CENTER,
-            chord=chord, naca_code=naca_code, aoa_deg=aoa_deg,
-        )
-        char_length = chord
-        kick_x = BODY_X + chord + 10
-        label = f"{shape_preset}  ·  {aoa_deg:+.1f}° wing tilt"
-
-    nu = U_INFLOW * char_length / reynolds_target
-    tau = nu / CS2 + 0.5
-
-    if tau < 0.51:
+    if sim_result["near_stable"]:
         st.warning(
             ":material/warning: At this Reynolds number the MRT solver is "
             "right at the edge of its stable range (tau approaching 0.5). "
@@ -458,302 +358,58 @@ if mode == "Real CFD (LBM)":
             "down for cleaner physics."
         )
 
-    # Alpha-modulated RdBu_r: blue = clockwise, red = anti-clockwise rotation.
-    # Alpha grows quadratically from omega=0 (transparent) to peak, capped at
-    # VORT_ALPHA_MAX (0.7) so the wake reads as a 70%-opacity wash and the
-    # dark background remains visible through it. Smoother alpha profile than
-    # the prior linear ramp -- avoids sharp halo edges at the wake boundary.
-    _rdbu = plt.get_cmap("RdBu_r")(np.linspace(0.0, 1.0, 256))
-    _alpha_t = np.abs(np.linspace(-1.0, 1.0, 256))
-    _rdbu[:, 3] = VORT_ALPHA_MAX * _alpha_t ** 1.4
-    vorticity_cmap = ListedColormap(_rdbu, name="rdbu_alpha70")
-    # We do NOT NaN-mask the body cells anymore -- the body patch is drawn on
-    # top of the full heatmap with the outward margin, hiding the boundary
-    # layer cleanly. Setting set_bad still serves as a safety net.
-    vorticity_cmap.set_bad((0.0, 0.0, 0.0, 0.0))
-
-    body_xs, body_ys = body_outline_xy(shape_preset, res_cfg, aoa_deg)
-    body_xs, body_ys = expand_outline(body_xs, body_ys, BODY_OUTLINE_MARGIN)
-
-    ds = 2
-    xs_ds = np.arange(0, LBM_NX, ds)
-    ys_ds = np.arange(0, LBM_NY, ds)
-
-    # Deterministic inflow column. Forward-only integration from here yields
-    # smooth, naturally-deflected streamlines that flow past the body and
-    # slow / curve through the wake -- mirroring what dye lines look like in
-    # a real wind-tunnel shot.
-    #
-    # We deliberately do NOT add wake seeds with bidirectional integration:
-    # in chaotic recirculation, streamlines through fixed seeds are
-    # hyper-sensitive to small velocity changes, which made the animation
-    # look "jumpy" frame-to-frame. Rotation is conveyed by the heatmap;
-    # streamlines just show the path and speed.
-    n_inflow = max(LBM_NY // 12, 8)
-    inflow_y = np.linspace(4, LBM_NY - 5, n_inflow)
-    stream_seeds = np.column_stack([np.full(n_inflow, 3.0), inflow_y])
-
-    # === Phase 1: simulate, store snapshots ===
-    rho0 = np.ones((LBM_NX, LBM_NY))
-    u0 = np.zeros((2, LBM_NX, LBM_NY))
-    u0[0] = U_INFLOW
-    f = equilibrium(rho0, u0)
-    f_inflow_eq = equilibrium(1.0, np.array([U_INFLOW, 0.0]))
-    kick_y = CY_CENTER + KICK_Y_OFFSET
-
-    progress = st.progress(
-        0.0, text=":material/sync: Phase 1 of 2 -- warming up flow...",
+    # Sharp-corner instability warning: at Re >= 1000 with a 45-ish-degree
+    # rotated square or ellipse, the voxelized halfway-BB boundary at the
+    # knife-edge corner injects pressure pulses the LES can't damp. The
+    # solver may produce NaN frames midway through the run (visible as
+    # black voids in the wake). This is a real LBM limitation -- the
+    # proper fix is interpolated bounce-back (Bouzidi 2001), tracked
+    # separately. For now, flag the case explicitly to the user.
+    _is_sharp_rotated = (
+        shape_preset in ("Square", "Ellipse")
+        and abs(aoa_deg) > 30
+        and reynolds_target >= 1000
     )
-    snapshots = []
-    step_counter = 0
-    # === Warmup: develop the wake before recording starts ===
-    # The kick is applied during this phase, so by the time we start
-    # capturing frames the Karman shedding is in its periodic regime
-    # and the animation doesn't open on a wake-less freestream.
-    warmup_report_every = max(WARMUP_STEPS // 20, 1)
-    for step in range(WARMUP_STEPS):
-        f, _Fx, _Fy = step_njit_mrt_with_force(
-            f, tau, mask, f_inflow_eq, INFLOW_DIRS, OUTFLOW_DIRS,
-        )
-        if KICK_START <= step_counter < KICK_END:
-            f[2, kick_x, kick_y] += KICK_AMPLITUDE
-            f[4, kick_x, kick_y] -= KICK_AMPLITUDE
-        step_counter += 1
-        if (step + 1) % warmup_report_every == 0:
-            progress.progress(
-                0.5 * (step + 1) / N_STEPS,
-                text=(
-                    f":material/sync: Phase 1 of 2 -- warming up flow "
-                    f"({step + 1:,} / {WARMUP_STEPS:,} steps)"
-                ),
-            )
-
-    # === Record: every frame is a fully-developed snapshot ===
-    for frame in range(N_FRAMES):
-        for _ in range(STEPS_PER_FRAME):
-            f, _Fx, _Fy = step_njit_mrt_with_force(
-                f, tau, mask, f_inflow_eq, INFLOW_DIRS, OUTFLOW_DIRS,
-            )
-            step_counter += 1
-
-        _, u = macroscopic(f)
-        dv_dx = np.zeros_like(u[1])
-        du_dy = np.zeros_like(u[0])
-        dv_dx[1:-1, :] = (u[1, 2:, :] - u[1, :-2, :]) / 2
-        du_dy[:, 1:-1] = (u[0, :, 2:] - u[0, :, :-2]) / 2
-        vorticity = dv_dx - du_dy
-
-        snapshots.append({
-            "vorticity": vorticity.astype(np.float32),
-            "u_x": u[0].astype(np.float32),
-            "u_y": u[1].astype(np.float32),
-            "step": step_counter,
-        })
-        progress.progress(
-            0.5 * step_counter / N_STEPS,
-            text=(
-                f":material/sync: Phase 1 of 2 -- "
-                f"recording frame {frame + 1} / {N_FRAMES}"
-            ),
+    if _is_sharp_rotated:
+        st.warning(
+            ":material/warning: At Re >= 1000 with a sharply rotated "
+            f"**{shape_preset.lower()}** (|angle| > 30 deg), the solver's "
+            "voxelized boundary can inject pressure pulses at the corner "
+            "that the LES model can't damp -- you may see the wake go "
+            "black/garbled midway through the animation. This is a known "
+            "LBM limitation we haven't fixed yet (interpolated bounce-back "
+            "would solve it). Rotate less, or drop Re below 1000."
         )
 
-    # Blended v_clip: 75th percentile of |omega| in the fluid (tracks the
-    # wake's actual strength across the Re range), with a U/L-scaled floor
-    # so very weak low-Re wakes still register against the heatmap.
-    last_vort_fluid = np.where(mask, np.nan, snapshots[-1]["vorticity"])
-    v_clip = max(
-        float(np.nanpercentile(np.abs(last_vort_fluid), VORT_CLIP_PERCENTILE)),
-        VORT_CLIP_FACTOR * U_INFLOW / max(char_length, 1.0),
-    )
+    # === Comparison snapshot (matches Fast-mode side-by-side affordance) ===
+    # User can "pin" any run; the next run displays side-by-side with the
+    # pinned one. Pinned config is a (shape, Re, AoA, res) tuple stored in
+    # session state; we re-run via the cache (instant since it's the same
+    # cache key) instead of stashing the GIF bytes themselves -- avoids
+    # session bloat. Single pinned snapshot for now; expand to a list when
+    # the use case justifies it.
+    _current_config = (shape_preset, int(reynolds_target), float(aoa_deg), res_display)
+    snapshot = st.session_state.get("lbm_snapshot")
+    snapshot_is_current = snapshot == _current_config
 
-    # Re-adaptive blur sigma: smooths sub-grid wake aliasing at high Re
-    # without over-washing the laminar Re=100 wake.
-    blur_sigma = VORT_BLUR_SIGMA_BASE + VORT_BLUR_SIGMA_RE_SCALE * np.log10(
-        max(reynolds_target / 100.0, 1.0)
-    )
-
-    # Pre-compute the wall-fade weight on the upsampled grid. Smoothstep
-    # from 0 (at the wall) to 1 (WALL_FADE_CELLS into the fluid).
-    fade_hires = WALL_FADE_CELLS * VORT_UPSAMPLE
-    ny_hi = LBM_NY * VORT_UPSAMPLE
-    nx_hi = LBM_NX * VORT_UPSAMPLE
-    y_hi = np.arange(ny_hi)
-    edge_dist = np.minimum(y_hi, ny_hi - 1 - y_hi) / fade_hires
-    t = np.clip(edge_dist, 0.0, 1.0)
-    fade_1d = t * t * (3.0 - 2.0 * t)
-    # Broadcast onto (nx_hi, ny_hi). Stored as (1, ny_hi); broadcasts across x.
-    wall_fade = fade_1d[None, :]
-
-    # Speed colorbar: clip at 2x inflow so the inflow speed lands at the
-    # midpoint and "slower / faster than freestream" reads symmetrically across
-    # every shape. Local hot spots above 2 x U_INFLOW saturate to yellow --
-    # acceptable for visualization, the goal is showing the gradient clearly.
-    u_clip = SPEED_CLIP_FACTOR * U_INFLOW
-    speed_cmap = SPEED_CMAP
-    speed_norm = Normalize(vmin=0.0, vmax=u_clip)
-
-    # === Phase 2: render frames into a reused figure ===
-    fig, ax = plt.subplots(figsize=(FIG_W_IN, FIG_H_IN), dpi=FIG_DPI,
-                            facecolor=BG_COLOR)
-    # Title moved to an in-axes chip; reclaim the top padding for visualization.
-    fig.subplots_adjust(left=0.01, right=0.99, bottom=0.02, top=0.99)
-    ax.set_facecolor(BG_COLOR)
-    ax.set_xlim(0, LBM_NX - 1)
-    ax.set_ylim(0, LBM_NY - 1)
-    ax.set_aspect("equal")
-    ax.set_xticks([])
-    ax.set_yticks([])
-    for spine in ax.spines.values():
-        spine.set_visible(False)
-
-    # Bicubic interpolation on a 3x upsampled, gaussian-blurred source. The
-    # `interpolation_stage="rgba"` flag tells matplotlib to apply the colormap
-    # FIRST then interpolate in RGBA space, which smooths the alpha channel
-    # across the wake edges -- no more hard-edged voxel halos at omega = 0.
-    im = ax.imshow(
-        np.zeros((LBM_NY * VORT_UPSAMPLE, LBM_NX * VORT_UPSAMPLE)),
-        cmap=vorticity_cmap, origin="lower",
-        extent=[0, LBM_NX - 1, 0, LBM_NY - 1],
-        aspect="equal", interpolation="bicubic",
-        interpolation_stage="rgba",
-        vmin=-v_clip, vmax=v_clip,
-    )
-    # Floating info chip in the top-left corner -- replaces the old centered
-    # title with something that looks like a modern UI label instead of a
-    # matplotlib figure heading.
-    title_text = ax.text(
-        0.012, 0.93, "", transform=ax.transAxes,
-        ha="left", va="top",
-        color=TEXT_COLOR, fontsize=10.5, fontweight="600",
-        bbox=dict(
-            boxstyle="round,pad=0.45,rounding_size=0.35",
-            facecolor=(0.094, 0.110, 0.165, 0.78),    # slate-900 @ 78% alpha
-            edgecolor=(0.482, 0.541, 0.643, 0.65),    # slate-400 hairline
-            linewidth=0.6,
-        ),
-        zorder=25,
-    )
-
-    # Smooth analytic body outline drawn ONCE on top of imshow + streamlines.
-    # Filled, no edge stroke -- the patch is sized with BODY_OUTLINE_MARGIN
-    # extra cells so it cleanly covers (a) the voxelized mask staircase and
-    # (b) the high-vorticity boundary-layer ring. zorder = 10 keeps it above
-    # streamlines (default zorder ~5).
-    body_patch = Polygon(
-        np.column_stack([body_xs, body_ys]),
-        closed=True, facecolor=BODY_COLOR, edgecolor="none",
-        antialiased=True, zorder=10,
-    )
-    ax.add_patch(body_patch)
-
-    gif_frames = []
-    for i, snap in enumerate(snapshots):
-        # Smooth the vorticity field (kill voxel artifacts at the grid scale),
-        # then 3x upsample so the colorbar gradient looks continuous instead
-        # of stair-stepped. Body cells are NOT masked here -- the body patch
-        # is drawn on top with its outward margin to cover them cleanly.
-        # Pre-clip omega to 3x v_clip, blur to kill grid-scale aliasing, then
-        # apply the wall fade so the bounce-back boundary layers don't show.
-        vort_clipped = np.clip(snap["vorticity"], -3.0 * v_clip, 3.0 * v_clip)
-        vort_smooth = gaussian_filter(vort_clipped, sigma=blur_sigma) * wall_fade
-        # Velocity field for streamplot: blur in numpy first so streamlines
-        # are integral curves of a smoothed u, which moves more fluidly
-        # between frames at high Re.
-        u_x_blurred = gaussian_filter(snap["u_x"], sigma=STREAM_BLUR_SIGMA)
-        u_y_blurred = gaussian_filter(snap["u_y"], sigma=STREAM_BLUR_SIGMA)
-        u_x_plot = np.where(mask, 0.0, u_x_blurred)
-        u_y_plot = np.where(mask, 0.0, u_y_blurred)
-        u_mag = np.sqrt(u_x_blurred ** 2 + u_y_blurred ** 2)
-        u_mag = np.where(mask, 0.0, u_mag)
-
-        im.set_data(vort_smooth.T)
-        # Title is static (no frame counter) -- clean look across the loop.
-        title_text.set_text(f"{label}  ·  Re = {reynolds_target}")
-
-        # Streamplot artists must be torn down + rebuilt per frame.
-        for col in list(ax.collections):
-            col.remove()
-        # Keep the persistent body Polygon -- only remove streamplot arrow patches.
-        for patch in list(ax.patches):
-            if patch is not body_patch:
-                patch.remove()
-
-        # Streamlines: no path-effects halo. The halo was producing white-ish
-        # artifacts where it interacted with the cmap arrowhead rendering, and
-        # the speed cmap is luminous enough on its own that the halo isn't
-        # needed for contrast on the red/blue background.
-        ax.streamplot(
-            xs_ds, ys_ds,
-            u_x_plot[::ds, ::ds].T, u_y_plot[::ds, ::ds].T,
-            start_points=stream_seeds,
-            integration_direction="forward",
-            density=2.0,
-            color=u_mag[::ds, ::ds].T,
-            cmap=speed_cmap, norm=speed_norm,
-            linewidth=STREAMLINE_WIDTH, arrowsize=0.9,
+    if snapshot is not None and not snapshot_is_current:
+        snap_shape, snap_re, snap_aoa, snap_res = snapshot
+        snap_result = _cached_simulate_and_render(snap_shape, snap_re, snap_aoa, snap_res)
+        st.markdown("---")
+        st.markdown("### Side-by-side comparison")
+        st.caption(
+            "Snapshot is shown on the left, current run on the right. "
+            "Clear the snapshot below to return to single-run view."
         )
-
-        fig.canvas.draw()
-        img_rgba = np.asarray(fig.canvas.buffer_rgba())
-        img_p = Image.fromarray(img_rgba[..., :3]).quantize(
-            colors=128, method=Image.Quantize.MEDIANCUT,
-            dither=Image.Dither.FLOYDSTEINBERG,
-        )
-        gif_frames.append(img_p)
-
-        progress.progress(
-            0.5 + 0.5 * (i + 1) / N_FRAMES,
-            text=(
-                f":material/auto_awesome: Phase 2 of 2 -- "
-                f"rendering frame {i + 1} of {N_FRAMES}"
-            ),
-        )
-
-    plt.close(fig)
-
-    # --- Encode animated GIF + colorbar with plain-English tick labels ---
-    progress.progress(1.0, text=":material/movie: Encoding animation...")
-    gif_buf = io.BytesIO()
-    gif_frames[0].save(
-        gif_buf, format="GIF",
-        save_all=True, append_images=gif_frames[1:],
-        duration=GIF_FRAME_MS, loop=0, optimize=True, disposal=2,
-    )
-
-    def _render_horizontal_cbar(scalar_mappable, ticks, tick_labels):
-        cfig, cax = plt.subplots(figsize=(8.5, 0.55), dpi=FIG_DPI,
-                                  facecolor=BG_COLOR)
-        cfig.subplots_adjust(left=0.06, right=0.94, bottom=0.55, top=0.95)
-        cbar = cfig.colorbar(scalar_mappable, cax=cax, orientation="horizontal")
-        cbar.set_ticks(ticks)
-        cbar.set_ticklabels(tick_labels)
-        cbar.ax.xaxis.set_tick_params(color=TEXT_COLOR, labelcolor=TEXT_COLOR,
-                                       labelsize=9, length=0, pad=4)
-        # Flat / borderless: no axis outline, no tick marks -- just the gradient.
-        cbar.outline.set_visible(False)
-        buf = io.BytesIO()
-        cfig.savefig(buf, format="png", facecolor=BG_COLOR, dpi=FIG_DPI)
-        plt.close(cfig)
-        return buf
-
-    # Vorticity colorbar -- red = anti-clockwise, blue = clockwise. The cmap
-    # is alpha-modulated and capped at 70% opacity so even at the extremes
-    # the colorbar reads as washed red / washed blue, matching the heatmap.
-    vort_cbar_buf = _render_horizontal_cbar(
-        cm.ScalarMappable(norm=Normalize(vmin=-v_clip, vmax=v_clip),
-                          cmap=vorticity_cmap),
-        ticks=[-v_clip, 0.0, v_clip],
-        tick_labels=["Clockwise spin", "No rotation", "Anti-clockwise spin"],
-    )
-    # Speed colorbar (streamline colors). Inflow lands at the midpoint thanks
-    # to u_clip = 2 * U_INFLOW above, so the labels read symmetrically.
-    speed_cbar_buf = _render_horizontal_cbar(
-        cm.ScalarMappable(norm=speed_norm, cmap=speed_cmap),
-        ticks=[0.0, U_INFLOW, u_clip],
-        tick_labels=["Stalled (slow)", "Inflow speed", "Accelerated (fast)"],
-    )
-
-    progress.empty()
+        cmp_cols = st.columns(2)
+        with cmp_cols[0]:
+            _snap_aoa_part = f"  ·  {snap_aoa:+.1f}°" if abs(snap_aoa) > 0.25 else ""
+            st.markdown(f"**Snapshot:** {snap_shape}  ·  Re {snap_re}{_snap_aoa_part}")
+            st.image(snap_result["gif_bytes"], use_container_width=True)
+        with cmp_cols[1]:
+            _cur_aoa_part = f"  ·  {aoa_deg:+.1f}°" if abs(aoa_deg) > 0.25 else ""
+            st.markdown(f"**Current:** {shape_preset}  ·  Re {int(reynolds_target)}{_cur_aoa_part}")
+            st.image(gif_bytes, use_container_width=True)
 
     # === Display: hero animation, colorbar, plain-English legend ===
     st.markdown("---")
@@ -767,7 +423,49 @@ if mode == "Real CFD (LBM)":
         st.markdown(f"### :material/air: {shape_name} in {reg}")
 
     with st.container(border=True):
-        st.image(gif_buf.getvalue(), use_container_width=True)
+        st.image(gif_bytes, use_container_width=True)
+
+        # Action row: download GIF, pin for comparison, clear pin (if set).
+        _shape_slug = shape_preset.lower().replace(" ", "_")
+        _aoa_part = f"_aoa{aoa_deg:+.0f}" if abs(aoa_deg) > 0.25 else ""
+        _gif_name = f"aerolab_{_shape_slug}_re{reynolds_target}{_aoa_part}.gif"
+        action_cols = st.columns([1, 1, 1, 3])
+        with action_cols[0]:
+            st.download_button(
+                ":material/download: &nbsp; Download GIF",
+                data=gif_bytes,
+                file_name=_gif_name,
+                mime="image/gif",
+                use_container_width=True,
+                help="Save the animation locally. Filename encodes shape, Re, "
+                     "and AoA so multiple runs don't collide.",
+            )
+        with action_cols[1]:
+            _pin_label = (
+                ":material/push_pin: &nbsp; Snapshot pinned"
+                if snapshot_is_current else
+                ":material/push_pin: &nbsp; Pin for comparison"
+            )
+            if st.button(
+                _pin_label, use_container_width=True,
+                disabled=snapshot_is_current,
+                help="Save this run as a comparison snapshot. The next run "
+                     "will display side-by-side against it.",
+                key="pin_for_comparison",
+            ):
+                st.session_state["lbm_snapshot"] = _current_config
+                st.rerun()
+        with action_cols[2]:
+            if snapshot is not None:
+                if st.button(
+                    ":material/close: &nbsp; Clear snapshot",
+                    use_container_width=True,
+                    help="Remove the pinned snapshot and return to single-run view.",
+                    key="clear_comparison",
+                ):
+                    del st.session_state["lbm_snapshot"]
+                    st.rerun()
+
         st.markdown(
             "<div style='color:#94a3b8;font-size:0.78rem;"
             "letter-spacing:0.05em;text-transform:uppercase;"
@@ -776,41 +474,65 @@ if mode == "Real CFD (LBM)":
             "</div>",
             unsafe_allow_html=True,
         )
-        st.image(vort_cbar_buf.getvalue(), use_container_width=True)
+        st.image(vort_cbar_bytes, use_container_width=True)
         st.markdown(
             "<div style='color:#94a3b8;font-size:0.78rem;"
             "letter-spacing:0.05em;text-transform:uppercase;"
             "margin:0.4rem 0 0.1rem 0;'>"
-            "Streamline colors — air's speed"
+            "Particle colors — air's speed"
             "</div>",
             unsafe_allow_html=True,
         )
-        st.image(speed_cbar_buf.getvalue(), use_container_width=True)
+        st.image(speed_cbar_bytes, use_container_width=True)
 
-    st.markdown("##### :material/visibility: What you're looking at")
+    # Legend uses inline colored swatches (HTML span) instead of :material/
+    # icons. Two reasons: (1) Material icons render via Streamlit's frontend
+    # JS, so if the page is exported as PDF or copied as text the icons drop
+    # out and you get literal ":material/blur_on:" strings. (2) Colored
+    # swatches double as a visual key -- the user can map "red wash" in the
+    # text to the actual red they see in the animation.
+    _swatch = (
+        "<span style='display:inline-block;width:12px;height:12px;"
+        "border-radius:3px;background:{color};margin-right:0.4rem;"
+        "vertical-align:middle;'></span>"
+    )
+    st.markdown("##### What you're looking at")
     leg_cols = st.columns(4)
     with leg_cols[0]:
         st.markdown(
-            ":material/rotate_left: **Red wash**\n\n"
+            _swatch.format(color="#b91c1c") + "**Red wash**",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
             "Air rotating *anti-clockwise* (counter-clockwise) -- vortices "
             "spinning one way."
         )
     with leg_cols[1]:
         st.markdown(
-            ":material/rotate_right: **Blue wash**\n\n"
+            _swatch.format(color="#1d4ed8") + "**Blue wash**",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
             "Air rotating *clockwise* -- vortices spinning the other way. "
             "Together they form the Karman street."
         )
     with leg_cols[2]:
         st.markdown(
-            ":material/timeline: **Glowing lines**\n\n"
-            "Direction the air is moving, **coloured by speed**: "
-            "cyan = slow / recirculating, pink = inflow speed, "
+            _swatch.format(color="#fde047") + "**Glowing particles**",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            "Massless smoke tracers carried by the wind, "
+            "**colored by speed** (perceptually uniform plasma colormap): "
+            "dark purple = slow / recirculating, orange = inflow speed, "
             "yellow = accelerated."
         )
     with leg_cols[3]:
         st.markdown(
-            ":material/circle: **Dark shape**\n\n"
+            _swatch.format(color="#1f2937") + "**Dark shape**",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
             "The object. Air can't flow through it -- it has to go around."
         )
 
@@ -820,10 +542,10 @@ if mode == "Real CFD (LBM)":
     with metric_cols[0]:
         st.metric(":material/speed: Flow speed", f"Re {reynolds_target}", reg)
     with metric_cols[1]:
-        st.metric(":material/footprint: Simulation steps", f"{N_STEPS:,}")
+        st.metric(":material/footprint: Simulation steps", f"{actual_n_steps:,}")
     with metric_cols[2]:
         st.metric(":material/movie: Playback",
-                   f"{N_FRAMES} frames @ {round(1000 / GIF_FRAME_MS)} fps")
+                   f"{actual_n_frames} frames @ {round(1000 / GIF_FRAME_MS)} fps")
     with metric_cols[3]:
         st.metric(":material/calculate: Solver tau", f"{tau:.3f}",
                    help="LBM relaxation time; >0.5 for stability. Lower = faster flow.")
@@ -857,42 +579,73 @@ if mode == "Real CFD (LBM)":
     # === Technical depth ===
     with st.expander(":material/science: **Under the hood -- the technical details**"):
         st.markdown(
-            f"**Method:** D2Q9 Lattice Boltzmann with **MRT (multi-relaxation-time) "
-            f"collision** on a {LBM_NX} x {LBM_NY} grid. Halfway bounce-back "
-            f"boundaries for the solid; equilibrium inflow, zero-gradient outflow; "
-            f"free-slip top/bottom (reflects y-momentum, no wall friction). "
-            f"Numba-JIT compiled fused step (collide + force "
-            f"+ bounce-back + stream + BCs in one function, parallel over x).\n\n"
-            f"**Why MRT:** projects the 9 populations onto a moment basis "
-            f"(density, energy, momentum, energy-flux, viscous stresses) and "
-            f"relaxes each moment with its own rate. Viscous stresses use "
-            f"s = 1/tau (same kinematic viscosity as BGK), but bulk-viscosity "
-            f"and ghost-moment rates are free parameters tuned for stability. "
-            f"That decoupling keeps the solver stable at tau approaching 0.5 "
-            f"where BGK diverges -- giving us roughly 3x BGK's stable Re ceiling "
-            f"on the same grid. Reference: Lallemand & Luo (2000), d'Humieres "
-            f"et al. (2002).\n\n"
+            f"**Method:** D2Q9 Lattice Boltzmann on a {LBM_NX} x {LBM_NY} grid "
+            f"with **MRT (multi-relaxation-time) collision + Smagorinsky LES**, "
+            f"**Bouzidi interpolated bounce-back** at the body surface, and "
+            f"**Zou & He** velocity inflow + pressure outflow. Bounce-back at "
+            f"top/bottom walls (no periodic-y wraparound). Numba-JIT compiled "
+            f"fused step (collide + force + bounce-back + stream + BCs in one "
+            f"function, parallel over x).\n\n"
+            f"**Why MRT + LES:** MRT projects the 9 populations onto a moment "
+            f"basis and relaxes each moment with its own rate. The "
+            f"viscous-stress moments use s = 1/tau (same kinematic viscosity as "
+            f"BGK), but bulk-viscosity and ghost-moment rates are free "
+            f"parameters tuned for stability + cleaner near-body vorticity. "
+            f"Smagorinsky adds per-cell eddy viscosity in high-strain regions "
+            f"(corners, shear layers) so sharp-edged bluff bodies stay stable "
+            f"through Re=1500. References: Lallemand & Luo (2000), d'Humieres "
+            f"et al. (2002), Lilly (1967) for the C_smag constant, Bouzidi-"
+            f"Firdaouss-Lallemand (2001) for the curved-wall correction, "
+            f"Mei-Yu-Shyy-Luo (2002) for the Bouzidi-aware momentum exchange, "
+            f"Zou & He (1997) for the BCs.\n\n"
+            f"**Honest comparison to industrial CFD.** We share the *collision-"
+            f"rule family* (MRT + LES) with Dassault's PowerFLOW, ProLB, and "
+            f"M-Star -- and with academic LBM codes like Palabos or waLBerla. "
+            f"But sharing the collision rule is like sharing 'has 4 wheels' "
+            f"with a Formula 1 car. Real industrial LBM solvers add: GPU + "
+            f"multi-GPU + multi-node compute, octree adaptive mesh refinement, "
+            f"wall-function turbulence models (so they don't need to resolve "
+            f"the boundary layer), cumulant collision for transitional flow, "
+            f"automatic time-step control, multi-block domain decomposition, "
+            f"3D, and a 30+ year validation library across thousands of "
+            f"industrial cases. Industrial codes routinely run Re >= 10^6 "
+            f"with these tools. **We're at Re <= 1500 in 2D with a uniform "
+            f"grid -- a serious academic-style toy, not an industrial tool.**\n\n"
+            f"**What we ship that an undergrad-style LBM tutorial usually "
+            f"doesn't:** MRT (not BGK) for the production path, Smagorinsky "
+            f"LES with a literature-grounded constant, Bouzidi interpolated "
+            f"bounce-back (not staircase voxelization), Zou-He BCs (not "
+            f"equilibrium inflow + zero-gradient outflow), Mei-aware momentum "
+            f"exchange on the Bouzidi links, JIT-compiled fused step, "
+            f"NumPy/JIT bit-equivalence tests, grid-convergence validation "
+            f"with Richardson extrapolation, and per-shape analytic q-fields.\n\n"
+            f"**What we still don't have:** OpenFOAM / Fluent / Star-CCM+ "
+            f"cross-validation. The validation script compares against "
+            f"textbook free-stream cylinder Re=100 numbers (Strouhal 0.165, "
+            f"Cd 1.4) -- a 1980s reference table, not a contemporary "
+            f"co-run. That cross-comparison is roadmapped as Phase 3 work "
+            f"(install OpenFOAM, set up the same cylinder, run, compare). "
+            f"3D, GPU, AMR, wall functions, and cumulant collision are all "
+            f"out of scope for this 12-week project.\n\n"
+            f"**Why the airfoil downwash looks weak:** real wings cruise at "
+            f"Re ~ 10^7. We're running Re = {reynolds_target} -- at Re=200 the "
+            f"viscous boundary layer is so thick relative to the chord that "
+            f"the airfoil behaves more like an inclined plate than the "
+            f"textbook thin-airfoil-theory wing you've seen in aero classes. "
+            f"Bump Re to 500-1000 to see the lift mechanism more clearly.\n\n"
             f"**Heatmap:** signed vorticity omega = curl(u). Red = omega > 0 "
             f"(anti-clockwise), blue = omega < 0 (clockwise). RdBu_r colormap "
             f"is alpha-modulated -- omega ~ 0 is transparent so the dark "
-            f"background shows through, peak alpha capped at 70% so the wake "
-            f"reads as a wash. Color scale clipped at "
-            f"{VORT_CLIP_FACTOR:.1f} x U / L (absolute, not a percentile of "
-            f"the field) so the wake stays visible from Re=50 up through "
-            f"Re=1500 -- a percentile clip lets the body's boundary-layer "
-            f"vorticity dominate at high Re and wash the wake out.\n\n"
-            f"**Top/bottom walls:** free-slip (no wall friction, no vertical "
-            f"wraparound). The original periodic top/bottom was visually "
-            f"misleading -- air exiting the bottom appeared to re-enter at "
-            f"the top.\n\n"
+            f"background shows through, peak alpha capped at 90% so the wake "
+            f"reads as a wash.\n\n"
             f"**This run:**\n"
-            f"- {N_STEPS} time steps over {N_FRAMES} frames "
-            f"(loop = {N_FRAMES * GIF_FRAME_MS / 1000:.1f} s)\n"
-            f"- tau = {tau:.4f}  (kinematic relaxation; MRT stable to ~0.505)\n"
+            f"- {actual_n_steps} time steps over {actual_n_frames} frames "
+            f"(loop = {actual_n_frames * GIF_FRAME_MS / 1000:.1f} s)\n"
+            f"- tau = {tau:.4f}  (kinematic relaxation; stable while > 0.5)\n"
             f"- nu = {nu:.5f}  (kinematic viscosity, lattice units)\n"
             f"- Re = U L / nu = {U_INFLOW} x {char_length:.0f} / {nu:.5f} = {reynolds_target}\n"
             f"- characteristic length L = {char_length:.0f}  (lattice cells)\n"
-            f"- MRT free rates: s_e = s_eps = s_q = 1.4  (tuned for high-Re stability)"
+            f"- MRT free rates: s_e = s_eps = s_q = 1.4; C_SMAG = 0.17 (Lilly)"
         )
 
     st.stop()

@@ -30,7 +30,7 @@ import numpy as np
 import pandas as pd
 
 from src.lbm import CS2, equilibrium, step_njit_with_force
-from src.shapes import naca4_airfoil_mask
+from src.shapes import naca4_airfoil_mask, no_bouzidi_q_field
 
 # --- Configuration ---
 Nx, Ny = 600, 200
@@ -65,6 +65,8 @@ def run_one_aoa(alpha_deg):
         Nx, Ny, cx=body_x, cy=cy, chord=chord,
         naca_code="0012", aoa_deg=alpha_deg,
     )
+    # Halfway BB -- airfoil Bouzidi q-field is III-5d (pending).
+    q_field = no_bouzidi_q_field(Nx, Ny)
 
     rho0 = np.ones((Nx, Ny))
     u0 = np.zeros((2, Nx, Ny))
@@ -80,7 +82,7 @@ def run_one_aoa(alpha_deg):
     t0 = time.perf_counter()
     for step in range(n_steps):
         f, Fx, Fy = step_njit_with_force(
-            f, tau, mask, f_inflow, INFLOW_DIRS, OUTFLOW_DIRS,
+            f, tau, mask, q_field, f_inflow, INFLOW_DIRS, OUTFLOW_DIRS,
         )
         if KICK_START <= step < KICK_END:
             f[2, kick_x, kick_y] += KICK_AMPLITUDE

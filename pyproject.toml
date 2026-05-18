@@ -1,0 +1,96 @@
+# pyproject.toml for AeroLab.
+#
+# We are NOT a pip-installable package -- this file exists to (a) declare
+# project metadata for tooling that reads it (Renovate, Snyk, IDEs), and
+# (b) hold tool config (pytest, ruff, black) so editor + CLI behaviour is
+# reproducible. Streamlit Cloud still reads requirements.txt; the
+# [project] dependency list here mirrors it but is informational.
+
+[project]
+name            = "aerolab"
+version         = "0.2.0"
+description     = "Browser-based aerodynamics playground: D2Q9 Lattice Boltzmann CFD + NeuralFoil instant polars, deployed on Streamlit."
+readme          = "README.md"
+license         = { file = "LICENSE" }
+authors         = [{ name = "Devansh" }]
+requires-python = ">=3.11,<3.13"
+keywords        = ["cfd", "lattice-boltzmann", "lbm", "streamlit", "aerodynamics", "neuralfoil"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Education",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+
+# Mirrors requirements.txt. Pin bumps live there (Streamlit Cloud reads
+# it); this list is informational and updated alongside.
+dependencies = [
+    "streamlit==1.57.0",
+    "aerosandbox==4.2.9",
+    "neuralfoil==0.3.2",
+    "matplotlib==3.10.9",
+    "plotly==6.7.0",
+    "numpy==2.4.4",
+    "numba==0.65.1",
+    "scipy==1.17.1",
+    "pandas==3.0.2",
+    "Pillow>=10.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.urls]
+Homepage   = "https://aerolab-devansh.streamlit.app/"
+Repository = "https://github.com/devansh2003-dev/AeroLab"
+Issues     = "https://github.com/devansh2003-dev/AeroLab/issues"
+
+# === Tool config ===
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+# tests/ is the canonical test directory; src/ is library code only.
+testpaths = ["tests"]
+# Short, quiet output by default. Override at the CLI with -v.
+addopts = "-q --strict-markers"
+filterwarnings = [
+    # numba 0.65 still triggers a few deprecation warnings on numpy 2.x
+    # internals that are harmless and out of our control.
+    "ignore::DeprecationWarning:numba",
+]
+
+[tool.ruff]
+line-length    = 100
+target-version = "py311"
+# src/ has the library code, scripts/ has dev-only experiments and is
+# more permissive. tests/ matches src/ style.
+extend-exclude = ["data", "assets", ".pytest_cache"]
+
+[tool.ruff.lint]
+# Conservative starter set: pycodestyle errors, pyflakes, isort, common
+# bugs. Not enforcing pydocstyle or complexity rules -- the codebase
+# isn't there yet and we don't want a wall of pre-existing violations.
+select = ["E", "F", "I", "B", "UP"]
+ignore = [
+    # We allow long lines inside docstrings + comment blocks where they
+    # often hold formulas or citations.
+    "E501",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Scripts are research/dev workflows -- relaxed imports and unused vars
+# are routine.
+"scripts/**" = ["E402", "F401", "F841"]
+
+[tool.black]
+line-length    = 100
+target-version = ["py311"]
+extend-exclude = '''
+/(
+    data
+  | assets
+  | \.pytest_cache
+)/
+'''

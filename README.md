@@ -3,118 +3,195 @@
 > An open-source, browser-based aerodynamics playground.
 > No install, no license, no 40-tab tutorial.
 
-By August 2026: drop in a 2D shape, drag sliders for angle of attack and Reynolds number, watch streamlines and a vorticity heatmap of the air flowing around it in near real time. Built CPU-only with a custom Lattice Boltzmann solver, free to use, mobile-friendly.
+![AeroLab — cylinder wake at Re=400, von Kármán vortex shedding visualised with plasma-coloured streaklines on a vorticity heatmap](assets/hero_cylinder_re400.gif)
+
+Drop in a 2D shape (cylinder, square, ellipse, NACA airfoil), set the angle of attack and Reynolds number, watch the wake develop. Two modes:
+
+- **Fast (NeuralFoil)** — instant ML polar predictions for airfoils. Drag a slider, get lift / drag / drag-polar numbers in under a second.
+- **Real CFD (LBM)** — full Lattice Boltzmann simulation rendered as an animated GIF. Watch the air actually move. ~30 s for a Standard-resolution run, ~2 min for Detailed.
+
+Built CPU-only with a custom Lattice Boltzmann solver, free to use, mobile-friendly.
 
 ## Live demo
 
 **[aerolab-devansh.streamlit.app](https://aerolab-devansh.streamlit.app/)**
 
-Two modes, sidebar toggle:
+> ⚠ **The deployed version may lag `main` by 1–2 commits.** Streamlit Cloud auto-redeploys on push, but the URL is only verified after each push. If something looks off, the local instance (`streamlit run app.py`) is authoritative.
 
-- **Fast (NeuralFoil)** — instant ML predictions for NACA airfoils, sweep angle of attack, compare lift / drag / drag-polar side-by-side. Powered by [NeuralFoil](https://github.com/peterdsharpe/NeuralFoil) (a neural net trained on millions of XFoil runs).
-- **Real CFD (LBM)** — a full Lattice Boltzmann simulation rendered as a 75-frame animated GIF. Pick a shape (cylinder, square, ellipse, NACA 0012, NACA 4412), set the Reynolds number (50–1500), tilt non-cylinder shapes through any rotation angle, and watch the wake develop. Numba-JIT compiled, ~30 s warm per click on a 320×100 grid.
+> **Honest expectations:** Fast mode is instant. Real CFD mode runs a real LBM simulation on Streamlit's free-tier shared CPU — expect **30–45 s per click on Standard**, **2–3 min on Detailed**. The very first time a Cloud container boots, you'll see a "Pre-warming Numba JIT" spinner for ~35–45 s (~23 s on a modern laptop; measured via `scripts/dev_measure_cold_start.py`). After that, JIT cost is paid; subsequent clicks pay only the simulation time. If you want to play with sliders fast, use Fast mode.
 
-## Status
+### What's working
 
-**Phase 1 closed early (Day 5 of 12 weeks).** Solver works, shape library shipped, validation documented, **Streamlit LBM mode shipped with the MRT structural fix originally scheduled for Phase 2 W6**.
+- **Real CFD (LBM mode):** 5 shape presets (cylinder, square, ellipse, NACA 0012, NACA 4412), Reynolds 50–1500, AoA / rotation per-shape, two grid presets (Standard 320×100, Detailed 720×240). MRT collision + Smagorinsky LES, Zou-He inflow/outflow BCs, Bouzidi interpolated wall correction. Side-by-side comparison, GIF download with parameter-encoded filenames.
+- **Fast mode:** NeuralFoil polar sweeps for NACA airfoils with three model sizes (xxxlarge / medium / xsmall).
+- **106 unit tests** covering physics invariants, JIT/reference equivalence, geometric correctness, visual-regression snapshot. `pytest -q` runs in ~21 s warm (the visual-regression test runs a 51-frame canonical cylinder pipeline).
+- **Validation:** lid-driven cavity benchmark hits the Ghia 1982 reference, cylinder Re=100 produces clean von Kármán shedding, full validation audit in `scripts/dev_validate_cfd.py`.
+
+### What this solver isn't
+
+AeroLab shares the *collision-rule family* (MRT + Smagorinsky LES) with industrial LBM solvers like PowerFLOW, ProLB, and M-Star, and with academic codes like Palabos and waLBerla. Sharing the collision rule is like sharing "has four wheels" with a Formula 1 car. Industrial CFD adds layers we don't have:
+
+- **No GPU acceleration.** Pure CPU + Numba parallel-over-x. Re envelope tops out at 1500 in 2D on a single-process box; industrial solvers run Re ≥ 10⁶ on GPU clusters.
+- **No adaptive mesh refinement.** Uniform 320×100 or 720×240 grid. Real solvers refine near walls and shear layers automatically.
+- **No wall-function turbulence model.** We resolve the boundary layer directly, which is only feasible at low Re. Wall functions are what lets industrial codes skip resolving the viscous sublayer.
+- **No cumulant collision, no multi-block, no automatic time-stepping, no 3D.** Each is a multi-month addition.
+- **No cross-validation against OpenFOAM / Fluent / Star-CCM+.** We compare against textbook numbers (Strouhal 0.165, Cd 1.4 from 1980s reference tables) — not a contemporary co-run. That cross-comparison is roadmapped as Phase 3 work.
+- **No 30-year industrial validation library.** We have a handful of canonical cases (lid-driven cavity, cylinder Re=100, NACA 0012 polar) with the gaps documented honestly in the Validation section.
+
+This is a serious academic-style toy solver, not an industrial tool. The honest framing is: every choice on the production hot path (MRT, Smagorinsky, Bouzidi, Zou-He, momentum exchange) is textbook-correct, but the *envelope* (Re, dimensionality, physics scope) is firmly in the academic-tutorial range.
+
+### Project status
+
+**Day 14 of a 12-week build. Honest accounting:**
+
+Phase 1 (solver core, weeks 1–4) shipped on Day 5 with the originally-planned BGK path, then expanded in days 6–14 with work that was originally Phase 2/3 scope: MRT collision (Phase 2 W6), Bouzidi interpolated bounce-back, Zou-He BCs, Mei momentum-exchange (post-launch physics audit), plus UI polish (snapshot comparison, GIF download, demo gallery, sidebar onboarding) and repo hygiene (LICENSE, pyproject.toml, CONTRIBUTING).
+
+**Phase 2's headline deliverable — image/SVG upload with silhouette extraction — has not started.** The "shape freedom" promise (load any 2D image, run CFD on its silhouette) is the feature that meaningfully differentiates AeroLab from "another LBM demo," and it's still vapourware. Multi-viz modes (pressure, streamline density, velocity magnitude) also pending.
+
+The schedule isn't slipping in calendar time; it's pivoting in *scope*. The solver became more rigorous (Bouzidi + Zou-He are not undergrad-tutorial features), but the upload feature that was supposed to land in weeks 5–8 is still ahead.
 
 ### What's in the box
 
 - **D2Q9 Lattice Boltzmann solver** ([src/lbm.py](src/lbm.py)). Two collision operators:
   - **BGK** with halfway bounce-back (pure-NumPy reference + parallel-JIT fused step). Bit-equivalent at atol=1e-10 across the JIT/reference paths, verified by two multistep equivalence tests.
-  - **MRT (multi-relaxation-time)** with Smagorinsky LES sub-grid eddy viscosity (the production hot path). Stable from Re=50 up through Re=1500 on every shape preset including sharp-edged bluff bodies. References: Lallemand & Luo (2000), d'Humières et al. (2002), Yu et al. (2005) for the LES adjustment.
-- **Bounce-back top/bottom walls** with a smoothstep alpha-fade in the displayed heatmap — kills the periodic vertical wraparound (air exiting the bottom no longer re-enters at the top) without showing the wall boundary layer in the visualization.
-- **Momentum-exchange force calculation** (Ladd 1994) in [src/forces.py](src/forces.py).
-- **Shape mask library** in [src/shapes.py](src/shapes.py): cylinder, square, ellipse, NACA 4-digit airfoil. Square and ellipse take an `aoa_deg` rotation; NACA airfoils take wing tilt. All four use the same CW rotation convention.
+  - **MRT (multi-relaxation-time)** with Smagorinsky LES sub-grid eddy viscosity (the production hot path). `C_SMAG = 0.17` (Lilly 1967 theoretical value, verified across a 9-shape × 4-Re stability survey). Stable from Re=50 up through Re=1500 on every shape preset including sharp-edged bluff bodies. References: Lallemand & Luo (2000), d'Humières et al. (2002), Lilly (1967) for the LES constant.
+- **Boundary conditions:**
+  - **Zou & He (1997)** velocity-inflow + pressure-outflow at the inlet/outlet (replaces the older equilibrium-inflow + zero-gradient-outflow pair). Cuts long-run mass drift from ~3 %/1 k steps to ~0.1 %/1 k steps.
+  - **Bouzidi-Firdaouss-Lallemand (2001)** interpolated bounce-back at the body surface (replaces halfway bounce-back). Wall now lives at its analytic location, not at the nearest lattice node. Cuts the Cd overshoot from ~89 % above textbook to ~37 %, and reduces Standard-vs-Detailed Strouhal disagreement from ~240 % to ~3 % (grid converged).
+  - **Mei-Yu-Shyy-Luo (2002) Bouzidi-aware momentum exchange** for the body force calculation.
+  - **Bounce-back top/bottom walls** with a smoothstep alpha-fade in the displayed heatmap.
+- **Shape mask + q-field library** in [src/shapes.py](src/shapes.py): cylinder, square, ellipse, NACA 4-digit airfoil. Square and ellipse take an `aoa_deg` rotation; NACA airfoils take wing tilt. All four ship analytic q-fields (sub-cell wall-distance per link) for Bouzidi. Polygon-segment intersection for the airfoil, quadratic line-shape for cylinder/ellipse, 4-face linear intersection for the square.
+- **Momentum-exchange force calculation** (Ladd 1994 + Mei 2002) in [src/forces.py](src/forces.py) and inline in the JIT step.
 - **Streamlit LBM mode** in [app.py](app.py):
-  - 320×100 ("Standard") or 480×140 ("Detailed") grid, Reynolds slider 50–1500, rotation sliders per-shape
-  - Vorticity heatmap (RdBu_r diverging, alpha-modulated, capped at 70% opacity) with a vertical wall fade
-  - Speed-coloured streamlines (cyan → pink → yellow gradient) on a smoothed velocity field
-  - Smooth analytic body outline overlaid on the voxelized LBM mask
-  - 1500-step warmup before frame recording so frame 0 opens on a fully-developed wake (no startup glitch)
-  - Two plain-English colorbars below the GIF + a four-column legend with Material Icons
-- **56 unit tests** covering physics invariants, JIT/reference equivalence, force-calc sanity, per-shape geometric invariants. Run with `pytest -v`.
+  - 320×100 ("Standard", 100 frames) or 720×240 ("Detailed", 150 frames) grid, Reynolds slider 50–1500, rotation sliders per-shape.
+  - **Vorticity heatmap** (RdBu_r diverging, alpha-modulated, capped at 90 % opacity) with a vertical wall fade.
+  - **Speed-coloured streaklines** on a perceptually-uniform `plasma` colormap. RK4-advected particles seeded from the inflow + from a wake band downstream of the body (with body-interior rejection), so the wake region stays populated even after particles convect out.
+  - **Smooth analytic body outline** overlaid on the LBM mask (70 % alpha so the boundary layer is visible, thin slate edge stroke).
+  - **In-figure annotations**: flow-direction arrow (top-left), body-size scale bar (bottom-right) — baked into the GIF so screenshots stay self-explanatory.
+  - **Side-by-side comparison**: pin a run via session state, change parameters, run again — old run + new run shown together.
+  - **GIF download** button with parameter-encoded filenames (`aerolab_naca_0012_re1000_aoa5_detailed.gif`).
+  - Two plain-English colorbars below the GIF + an HTML-swatch legend (works in light/dark themes and screenshots).
+- **106 unit tests** covering physics invariants, JIT/reference equivalence, force-calc sanity, per-shape geometric invariants, q-field correctness for Bouzidi, end-to-end visual regression snapshot. Run with `pytest -v`.
 - **Lid-driven cavity** benchmark — vortex center lands at the Ghia et al. (1982) reference position.
-- **Cylinder Re=100** — clean von Kármán vortex shedding with the BGK gate documented honestly (see below).
+- **Cylinder Re=100** — clean von Kármán vortex shedding.
 
 ### Validation — Phase 1 findings
 
-The Phase 1 gate had two physical tests (Strouhal and Cd at Re=100). Strouhal passes cleanly. Cd has a documented BGK-collision-model bias that we characterized via a 5-config convergence sweep — the *reason* it fails is itself the more valuable result.
+The Phase 1 gate had two physical tests (Strouhal and Cd at Re=100). Strouhal passes cleanly. Cd has documented wall-treatment biases that we characterized via a 5-config convergence sweep.
 
-**Cylinder Re=100 convergence sweep (Mach × resolution axes):**
+**Cylinder Re=100 convergence sweep (Mach × resolution axes, halfway bounce-back, BGK):**
 
-- **Strouhal** passes within 3.0–9.1% of textbook 0.165 across all 5 configs.
+- **Strouhal** passes within 3.0–9.1 % of textbook 0.165 across all 5 configs.
 - **Time-averaged Cd** ranges 2.04–2.49 vs textbook 1.4. The Mach axis went the *opposite* direction from the naive compressibility prediction — Cd *grew* as Ma decreased — which is the signature of the **BGK-τ wall-correction artifact** (He, Zou, Luo & Dembo 1997; Cornubert et al. 1991): halfway bounce-back's effective wall drifts inward as τ → 0.5, shrinking the effective cylinder area and inflating Cd against the nominal diameter.
 - The discretization axis at fixed Mach behaved correctly (Cd decreased as D grew).
-- **The structural fix shipped early.** MRT collision was originally scheduled for Phase 2 W6; pulled forward to Day 5 because the user wanted Re ≥ 1000 to render cleanly. With MRT + Smagorinsky LES the solver is stable on every shape × rotation × Re=1500 combination.
+- **The structural fixes shipped early.** MRT collision was originally scheduled for Phase 2 W6 and pulled forward to Day 5. Bouzidi + Zou-He BCs landed during the post-launch physics audit and recover most of the remaining Cd overshoot (~37 % above textbook in the corrected sweep; the residual ~20 % is honest channel blockage at 20 % occupancy).
 
-Convergence artifact: `data/cylinder_convergence.png` + `.csv` (from `scripts/week1_cylinder_sweep.py`; ~90 min full run).
+Convergence artifact: `data/cylinder_convergence.png` + `.csv` (from `scripts/week1_cylinder_sweep.py`; ~90 min full run). Grid-convergence study with Richardson extrapolation: `data/validation_grid_convergence.png` (from `scripts/dev_grid_convergence.py`; ~6 min).
 
 **NACA 0012 AoA polar at Re_c=200 (bonus, 8 angles from -5° to +15°):**
 
-- **Lift curve is portfolio-grade.** CL(0°) = −1e-4 (perfect symmetric airfoil), CL(−α) = −CL(α) to four decimals, monotonic and roughly linear with slope ~0.048/deg (about 44% of thin-airfoil theory, consistent with Re=200 viscous effects).
+- **Lift curve is portfolio-grade.** CL(0°) = −1e-4 (perfect symmetric airfoil), CL(−α) = −CL(α) to four decimals, monotonic and roughly linear with slope ~0.048/deg (about 44 % of thin-airfoil theory, consistent with Re=200 viscous effects).
 - **Drag curve is non-physical** — non-monotonic with a peak at α=±5° and falling Cd at higher AoA. Two-part cause: (a) chord=40 cells means max thickness is only 4.8 cells at α=0, so discretization error per unit wetted area is much higher at α=0 than at α=15°; (b) the BGK-τ artifact stacks on top. Honest report: use the lift curve only.
 - **No vortex shedding** at this Re (laminar attached wake), so the Strouhal column in the output CSV is meaningless.
-- To produce a quantitatively trustworthy airfoil polar in the future: bump chord ≥ 80 cells (4× compute) and re-run with the new MRT path.
+- To produce a quantitatively trustworthy airfoil polar in the future: bump chord ≥ 80 cells (4× compute) and re-run with the new MRT + Bouzidi path.
 
 Artifact: `data/naca0012_aoa_polar.png` + `.csv` (from `scripts/naca0012_aoa_polar.py`; ~52 min full run).
 
-### Streamline validation
+### CFD validation
 
-`scripts/dev_validate_streamlines.py` checks that the LBM velocity field is physical before we use it for streamlines:
+`scripts/dev_validate_cfd.py` is the honest physics audit. It runs 8000 steps of cylinder Re=100 on the production MRT + Zou-He + Bouzidi path and reports two distinct things:
 
-- median `|div(u)|` = 1.24e-05 (vs ≪1e-3 target — incompressible to 5 dp)
-- mean `|u|` inside the body = 2.5e-3 (vs U=0.1 — no-slip holds)
-- flux variation across cross-sections = 2.65% (vs <10% — mass conserved)
-- far-field `u_x` = 0.0991 (vs target 0.1 — asymptotic flow recovered)
+**Local physics gates (pass/fail).** These prove the solver is doing Navier-Stokes correctly cell-by-cell:
 
-All four checks pass at Re=100. If you ever doubt a streamline picture, run this script first.
+- median `|div(u)|` ≈ 1e-4 (incompressibility)
+- mean `|u|` inside the body ≈ 3e-3 (no-slip enforced)
+- mass-flux variation across x-slices ≈ 3 % (continuity holds)
+- mass drift per 1k steps ≈ 0.1 % (conservation; Zou-He pressure outflow lets the domain breathe)
+
+**4/4 local gates pass.**
+
+**Global flow diagnostics (reported, NOT gated).** These compare against free-stream textbook for cylinder Re=100. Bouzidi shrunk the gap significantly versus the original halfway-BB numbers, but a residual offset remains due to 20 % channel blockage and a domain that's only ~12D downstream:
+
+- measured Cd ≈ 1.9 (Richardson-extrapolated h→0, vs textbook 1.4 — remaining gap is honest blockage)
+- measured Strouhal grid-converges across Standard and Detailed to within ~3 % (was ~240 % apart pre-Bouzidi)
+- far-field `u_x` ≈ 0.086 (vs U=0.1 — wake still recovering at outflow)
+
+The honest framing: our solver is doing Navier-Stokes correctly, the boundary conditions are textbook (Zou-He + Bouzidi), and the residual gap to free-stream textbook is geometric (channel blockage, finite downstream length) — not numerical.
 
 ## 12-Week Roadmap
 
 | Phase | Weeks | Deliverable | Status |
 |------:|------:|------|------|
-| **1 — Solver core** | 1–4  | LBM solver works, validated, deployed with 5+ pre-set 2D shapes | ✅ Shipped Day 5 |
-| **2 — Shape freedom** | 5–8  | Image / SVG upload with silhouette extraction, multiple viz modes, side-by-side comparison, GIF export, demo gallery | Up next |
-| **3 — Polish + optional 3D** | 9–12 | NeuralFoil instant mode (✅ already shipped), optional 3D wing module via AeroSandbox+AVL, optional OpenFOAM validation, public launch | Partially shipped |
+| **1 — Solver core** | 1–4  | LBM solver works, validated, deployed with 5+ pre-set 2D shapes | ✅ Shipped Day 5; expanded Days 6–14 with MRT, Bouzidi, Zou-He, Mei (originally Phase 2/3) |
+| **2 — Shape freedom** | 5–8  | **Image / SVG upload with silhouette extraction (the headline feature)**, multiple viz modes (pressure / velocity magnitude / streamline density), side-by-side comparison, GIF export, demo gallery | Side-by-side ✅, GIF download ✅, demo gallery ✅ (all originally Phase 2 "polish" deliverables). **Image upload + multi-viz: not started.** |
+| **3 — Polish + optional 3D** | 9–12 | NeuralFoil instant mode (✅ already shipped Phase 0), optional 3D wing module via AeroSandbox+AVL, OpenFOAM cross-validation, public launch | NeuralFoil + Streamlit Cloud deploy ✅; 3D module + OpenFOAM co-run pending |
 
-Validation gates per phase are non-negotiable. Phase 1's Strouhal gate passed. The Cd gate is dominated by the BGK-τ wall-correction artifact; the structural fix (MRT collision) shipped on Day 5 in service of the high-Re Streamlit experience, ahead of the planned W6 schedule.
+Validation gates per phase are non-negotiable. Phase 1's Strouhal gate passed. The Cd gate is now within blockage-explained range after the Bouzidi + Zou-He upgrade. **Phase 2's gate is the image-upload demo working end-to-end on three real-world silhouettes (e.g. car profile, fish, building cross-section) — not yet attempted.**
 
 ## Stack
 
 - **Language:** Python 3.11
-- **Solver:** NumPy reference path + Numba `@njit(parallel=True, fastmath=True)` fused-step (collide + force + bounce-back + stream + BCs in one function, parallel over x)
+- **Solver:** NumPy reference path + Numba `@njit(parallel=True, fastmath=True)` fused-step (collide + force + bounce-back + stream + Zou-He BCs + Bouzidi correction in one function, parallel over x). JIT cache is pre-warmed at app startup via [src/warmup.py](src/warmup.py).
 - **UI:** Streamlit (mobile-friendly, free hosting)
 - **Heatmap smoothing + streamline pre-blur:** `scipy.ndimage.gaussian_filter`
-- **Visualization:** matplotlib for the LBM render (alpha-modulated RdBu_r, custom cyan-pink-yellow streamline cmap, smooth analytic body patches); Plotly for the interactive airfoil polars
+- **Visualization:** matplotlib for the LBM render (alpha-modulated RdBu_r, plasma streakline cmap, smooth analytic body patches, flow + scale annotations); Plotly for the interactive airfoil polars
 - **GIF assembly:** Pillow (`quantize` + `save_all` + `append_images`) for the LBM animation
 - **Optional ML mode:** [NeuralFoil](https://github.com/peterdsharpe/NeuralFoil) + [AeroSandbox](https://github.com/peterdsharpe/AeroSandbox) for instant airfoil predictions (xxxlarge / medium / xsmall model selector in the sidebar)
 - **Hosting:** Streamlit Community Cloud (free tier; auto-redeploys on push to `main`)
 
 ## Local setup
 
+Pick the environment manager you already have. The project requires Python 3.11 (some deps don't yet have 3.12 wheels for Numba).
+
+### conda (maintainer's default)
+
 ```powershell
 conda create -n aerolab python=3.11 -y
 conda activate aerolab
 pip install -r requirements.txt
 pip install -r requirements-dev.txt   # pytest, for running the test suite
+```
 
+### venv (no conda)
+
+```powershell
+py -3.11 -m venv .venv
+.venv\Scripts\Activate.ps1            # PowerShell. On bash: source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+pip install -r requirements-dev.txt
+```
+
+### uv (fastest)
+
+```powershell
+uv venv --python 3.11 .venv
+.venv\Scripts\Activate.ps1
+uv pip install -r requirements.txt
+uv pip install -r requirements-dev.txt
+```
+
+### Run + test
+
+```powershell
 # Smoke tests
-pytest -v                                # 56 unit tests, ~2 s
+pytest -q                                # 106 unit tests, ~21 s warm
 python scripts/day1_test.py              # NeuralFoil airfoil prediction
 python scripts/lid_cavity_smoke.py       # LBM cavity benchmark, ~25 s
-python scripts/week1_cylinder.py         # LBM cylinder + vortex shedding, ~160 s
+python scripts/week1_cylinder.py         # LBM cylinder + vortex shedding, ~180 s
 python scripts/shape_gallery.py          # 5-shape wake comparison, ~3 min
 
 # Long-running validation experiments
 python scripts/week1_cylinder_sweep.py   # 5-config convergence sweep, ~90 min
 python scripts/naca0012_aoa_polar.py     # 8-angle airfoil polar, ~52 min
 
-# Dev preview: render all 5 LBM presets as standalone GIFs
-python scripts/dev_lbm_gif_preview.py    # ~3 min, writes data/lbm_preview_*.gif
-python scripts/dev_validate_streamlines.py   # 4-check physics audit, ~30 s
+# CFD physics validation (4 local gates + 3 honest diagnostics, ~90 s)
+python scripts/dev_validate_cfd.py       # writes data/validation_cfd_full.png
 
-# Run the deployed app locally
+# Grid convergence study with Richardson extrapolation (~6 min)
+python scripts/dev_grid_convergence.py   # writes data/validation_grid_convergence.png
+
+# Run the deployed app locally (first click ~30 s warm; first run cold ~70 s with JIT)
 streamlit run app.py
 ```
 
@@ -129,9 +206,11 @@ aerolab/
 ├── app.py                          # Streamlit entry — dual-mode (Fast NeuralFoil / Real CFD LBM)
 ├── src/
 │   ├── __init__.py
-│   ├── lbm.py                      # D2Q9 solver: BGK + MRT (Smagorinsky LES), bounce-back walls
-│   ├── forces.py                   # momentum-exchange force calc (Ladd 1994)
-│   ├── shapes.py                   # cylinder, square, ellipse, NACA 4-digit (all with rotation)
+│   ├── lbm.py                      # D2Q9 solver: BGK + MRT (Smagorinsky LES, C_SMAG=0.17), Zou-He BCs, Bouzidi correction
+│   ├── lbm_render.py               # simulate_and_render: full sim + RK4 streaklines + GIF assembly
+│   ├── warmup.py                   # pre-compile JIT step variants on a tiny grid at app startup
+│   ├── forces.py                   # momentum-exchange force calc (Ladd 1994 + Mei 2002 Bouzidi-aware)
+│   ├── shapes.py                   # cylinder, square, ellipse, NACA 4-digit masks + analytic q-fields
 │   └── airfoils.py                 # NeuralFoil/AeroSandbox wrapper (Fast Mode in the app)
 ├── scripts/
 │   ├── day1_test.py                # single-point NeuralFoil smoke test
@@ -141,15 +220,16 @@ aerolab/
 │   ├── week1_cylinder_sweep.py     # 5-config Cd convergence study (Mach × D axes)
 │   ├── shape_gallery.py            # 5-shape wake comparison
 │   ├── naca0012_aoa_polar.py       # NACA 0012 lift+drag polar across 8 AoAs
-│   ├── dev_lbm_gif_preview.py      # offline preview render of all 5 Streamlit-mode presets
-│   └── dev_validate_streamlines.py # div(u), no-slip, mass-conservation, far-field checks
+│   ├── dev_validate_cfd.py         # 4 local-physics gates + 3 honest global diagnostics
+│   └── dev_grid_convergence.py     # Std vs Detailed Cd/St + Richardson extrapolation
 ├── tests/
-│   ├── test_lbm.py                 # 30 invariants for the solver + JIT-vs-reference equivalence
+│   ├── test_lbm.py                 # 33 invariants for the solver + JIT-vs-reference equivalence (incl. Zou-He, Bouzidi)
+│   ├── test_lbm_render.py          # 15 invariants for the GIF pipeline
 │   ├── test_forces.py              # 6 invariants for momentum-exchange force calc
-│   └── test_shapes.py              # 20 invariants across the 4 mask generators
+│   └── test_shapes.py              # 42 invariants across the 4 mask + q-field generators
 └── data/                           # output artifacts: PNGs, CSVs, GIFs (git-ignored)
 ```
 
 ## License
 
-TBD (planning MIT once the project hits public launch in Phase 3 Week 12).
+MIT — see [LICENSE](LICENSE). Free to fork, use, modify, redistribute. Pull requests welcome.

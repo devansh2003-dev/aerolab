@@ -1,0 +1,38 @@
+name: tests
+
+# Runs the pytest suite on every push to main and every PR. The full suite
+# (106 tests as of 2026-05-19) takes ~21 s on a warm cache, ~80 s cold (numba
+# JIT compile is the bulk of cold-cache time; one visual-regression test
+# runs a 51-frame canonical-cylinder pipeline that takes ~10 s of the warm
+# total).
+#
+# We pin to Python 3.11 because numba 0.65.1 (pinned in requirements.txt)
+# doesn't yet wheel for 3.12+ on every platform; bump together when we
+# upgrade numba.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run pytest
+        run: pytest -q

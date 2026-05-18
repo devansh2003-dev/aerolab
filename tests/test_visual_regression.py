@@ -1,0 +1,123 @@
+"""Visual regression guard for the GIF render pipeline.
+
+Catches the failure mode described in Section IX of the project audit:
+"we rewrote the rendering 6+ times, none A/B-tested, regressions only
+surface when the user squints at the wake and says 'that's wrong.'"
+
+Approach: a fixed canonical config (Cylinder, Re=400, AoA=0, Standard,
+frame 50 of 51) produces a frame whose downscaled-grayscale fingerprint
+is bit-stable across consecutive runs on the same machine. The test
+compares against the committed baseline at
+``tests/baselines/canonical_cylinder_re400_f50.png``.
+
+Re-baseline when an intentional visual change lands (colormap swap,
+body-patch alpha tweak, vorticity clip change, annotation move). The
+re-baseline workflow:
+
+    python scripts/dev_save_frame.py        # writes data/inspect_canonical.png
+    python scripts/_make_baseline.py        # rewrites tests/baselines/...png
+
+Commit the new baseline PNG alongside the rendering change.
+
+Limits: this catches structural visual regressions (colormap, body
+position, vorticity heatmap scale, annotations). It does NOT catch
+animation-quality regressions (jerky motion, particle ageing,
+inter-frame jumps) -- those still require a human watching the GIF.
+"""
+import io
+from pathlib import Path
+
+import numpy as np
+import pytest
+from PIL import Image
+
+from src.lbm_render import simulate_and_render
+
+BASELINE_PATH = Path(__file__).parent / "baselines" / "canonical_cylinder_re400_f50.png"
+BASELINE_SIZE = (128, 40)
+# Tolerance: empirically, two consecutive runs on the same machine
+# produce bit-identical downscaled grayscale frames. 5/255 (= 2%) catches
+# any meaningful structural drift while absorbing the kind of microscopic
+# variation that matplotlib version bumps occasionally introduce.
+MAD_TOLERANCE = 5.0
+
+
+def _fingerprint(png_bytes_or_path):
+    """Open a PNG (bytes or path), downscale + grayscale, return np.float64 array."""
+    if isinstance(png_bytes_or_path, (bytes, bytearray)):
+        img = Image.open(io.BytesIO(png_bytes_or_path))
+    else:
+        img = Image.open(png_bytes_or_path)
+    return np.array(img.convert("L").resize(BASELINE_SIZE)).astype(np.float64)
+
+
+def test_canonical_cylinder_frame50_matches_baseline(tmp_path):
+    """Cylinder Re=400 AoA=0 Standard frame 50 -- visual snapshot stays stable.
+
+    Runs the full simulate_and_render pipeline (LBM solve + particle
+    advection + matplotlib render + GIF encode). Extracts frame 50,
+    downscales to 128x40 grayscale, compares to the committed baseline.
+    """
+    assert BASELINE_PATH.exists(), (
+        f"baseline {BASELINE_PATH} not found. Regenerate with: "
+        f"python scripts/dev_save_frame.py && python scripts/_make_baseline.py"
+    )
+
+    out = simulate_and_render(
+        "Cylinder", 400, 0.0, "Standard (320 x 100)", n_frames=51,
+    )
+    gif = Image.open(io.BytesIO(out["gif_bytes"]))
+    gif.seek(50)
+    # PIL writes frame-50 as bytes via a round-trip through PNG so the
+    # fingerprint function takes a single code path.
+    buf = io.BytesIO()
+    gif.convert("RGB").save(buf, format="PNG")
+
+    current = _fingerprint(buf.getvalue())
+    baseline = _fingerprint(BASELINE_PATH)
+    assert current.shape == baseline.shape, (
+        f"fingerprint shape mismatch: current {current.shape} vs baseline {baseline.shape}"
+    )
+
+    mad = float(np.abs(current - baseline).mean())
+    max_diff = float(np.abs(current - baseline).max())
+
+    if mad > MAD_TOLERANCE:
+        # Persist debug artifacts so the human reviewer can inspect.
+        current_png = tmp_path / "current.png"
+        diff_png = tmp_path / "diff.png"
+        Image.fromarray(current.astype(np.uint8)).save(current_png)
+        diff_arr = np.abs(current - baseline).astype(np.uint8)
+        Image.fromarray(diff_arr).save(diff_png)
+        pytest.fail(
+            f"Visual regression: MAD = {mad:.3f}/255 (tolerance {MAD_TOLERANCE}), "
+            f"max pixel diff = {max_diff:.0f}/255.\n"
+            f"  baseline:  {BASELINE_PATH}\n"
+            f"  current:   {current_png}\n"
+            f"  abs diff:  {diff_png}\n"
+            f"If this is an intentional change, re-baseline via "
+            f"scripts/dev_save_frame.py + scripts/_make_baseline.py."
+        )
+
+
+def test_canonical_pipeline_returns_expected_keys():
+    """Snapshot test on the simulate_and_render return shape.
+
+    Cheaper sibling of the visual-regression test: catches API drift
+    (return dict keys changing) without paying for a 51-frame run that
+    matches the baseline. n_frames=2 keeps this under ~3 s warm.
+    """
+    out = simulate_and_render(
+        "Cylinder", 400, 0.0, "Standard (320 x 100)", n_frames=2,
+    )
+    expected = {
+        "gif_bytes", "vort_cbar_bytes", "speed_cbar_bytes",
+        "label", "tau", "nu", "char_length",
+        "lbm_nx", "lbm_ny", "n_frames", "n_steps", "near_stable",
+    }
+    assert expected.issubset(out.keys()), (
+        f"missing keys: {expected - set(out.keys())}"
+    )
+    assert isinstance(out["gif_bytes"], bytes) and len(out["gif_bytes"]) > 0
+    assert out["lbm_nx"] == 320 and out["lbm_ny"] == 100
+    assert out["n_frames"] == 2

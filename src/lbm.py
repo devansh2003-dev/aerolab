@@ -274,6 +274,179 @@ def bounce_back(f, solid_mask):
 
 
 # ---------------------------------------------------------------------------
+# Zou-He velocity inflow at the left boundary (x = 0)
+# ---------------------------------------------------------------------------
+# Replaces the previous "equilibrium inflow" trick
+#     f[inflow_dirs, 0, :] = f_inflow[inflow_dirs, None]
+# which sets the unknown populations to their equilibrium values but does NOT
+# enforce the prescribed velocity exactly. The mismatch leaks mass into / out
+# of the domain at a few percent per 1000 steps (measured: 2.7% / 8000 steps
+# on the production cylinder Re=100 case before this BC).
+#
+# Zou & He (Phys. Fluids 1997) close the system at a velocity-prescribed
+# boundary by:
+#   1. Solving for boundary density from rho = (f0+f2+f4+2(f3+f6+f7))/(1-ux),
+#      which comes from substituting the prescribed ux into the rho+momentum
+#      sum identities.
+#   2. Using non-equilibrium bounce-back on the normal pair (f1, f3) to pin
+#      one of the three unknowns: f1 = f3 + (2/3) rho ux.
+#   3. Closing the remaining two unknowns (f5, f8) from the y-momentum and
+#      stress constraints.
+#
+# Result: exact mass conservation at the inflow boundary, second-order
+# accurate in space (matches the rest of the LBM order), no anisotropy from
+# the f_inflow ghost values feeding into the next collision.
+
+def zou_he_inflow(f, ux_in, uy_in):
+    """Apply Zou-He velocity inflow at x = 0 to a pure-NumPy f-field.
+
+    Used by the test reference path and as documentation for the JIT
+    implementations. Modifies f in place at x = 0 (column 0 only).
+
+    Parameters
+    ----------
+    f : ndarray of shape (9, Nx, Ny)
+        Post-streaming populations. Reads f[0,2,3,4,6,7] at x=0,
+        overwrites f[1,5,8] at x=0.
+    ux_in, uy_in : float
+        Prescribed inflow velocity at x = 0.
+    """
+    f0 = f[0, 0, :]
+    f2 = f[2, 0, :]
+    f3 = f[3, 0, :]
+    f4 = f[4, 0, :]
+    f6 = f[6, 0, :]
+    f7 = f[7, 0, :]
+    rho_w = (f0 + f2 + f4 + 2.0 * (f3 + f6 + f7)) / (1.0 - ux_in)
+    f[1, 0, :] = f3 + (2.0 / 3.0) * rho_w * ux_in
+    f[5, 0, :] = f7 - 0.5 * (f2 - f4) + (1.0 / 6.0) * rho_w * ux_in + 0.5 * rho_w * uy_in
+    f[8, 0, :] = f6 + 0.5 * (f2 - f4) + (1.0 / 6.0) * rho_w * ux_in - 0.5 * rho_w * uy_in
+
+
+# Bouzidi interpolated bounce-back (Bouzidi, Firdaouss, Lallemand 2001).
+# ---------------------------------------------------------------------------
+# Halfway bounce-back assumes the wall sits exactly at the half-cell distance
+# between every fluid cell and its solid neighbor. For curved bodies (cylinder,
+# ellipse, NACA) this voxelizes the boundary to a staircase, shifting the
+# effective wall position by up to half a cell and inflating Cd by tens of
+# percent. Bouzidi BB replaces the per-cell swap with a per-LINK interpolation
+# that uses the exact analytic wall fraction q for each wall-crossing link.
+#
+# The wall fraction q in [0, 1] is the fluid-to-wall distance along c_i,
+# normalized to |c_i|:
+#   * q = 0.5 reduces to halfway bounce-back (the swap-based formula is exact)
+#   * q < 0.5 wall is closer to the fluid cell than half-cell
+#   * q > 0.5 wall is farther into the link than half-cell
+#
+# Linear interpolation (sufficient for second-order LBM, ~10x cheaper than
+# quadratic; cf. Yu/Mei/Luo/Shyy 2003 review):
+#   q >= 0.5: f_{-i}^new(x_f) = (1/2q) f_i_post(x_f) + ((2q-1)/2q) f_{-i}_post(x_f)
+#   q  < 0.5: f_{-i}^new(x_f) = 2q  f_i_post(x_f) + (1-2q)        f_i_post(x_f - c_i)
+#
+# Per-shape Bouzidi q-fields are computed in src/shapes.py and passed into the
+# JIT step functions. A q-field of all -1 (returned by no_bouzidi_q_field)
+# selects halfway BB at every link -- bit-for-bit identical to the pre-Bouzidi
+# solver, no performance penalty beyond the conditional check.
+
+def bouzidi_correction(f_after_bb, f_new, solid_mask, q_field):
+    """Pure-NumPy Bouzidi linear-interpolation correction at wall links.
+
+    Mirrors the JIT block inlined into each step_njit_* function. Used by
+    the test reference path (so JIT-vs-NumPy equivalence holds with Bouzidi
+    too) and as documentation.
+
+    Parameters
+    ----------
+    f_after_bb : ndarray (9, Nx, Ny)
+        Post-collision populations (with halfway BB swap applied on solid
+        cells). At fluid cells this equals f_post_coll.
+    f_new : ndarray (9, Nx, Ny)
+        Already-streamed populations. This function OVERWRITES the wall-link
+        entries in place.
+    solid_mask : ndarray (Nx, Ny) bool
+    q_field : ndarray (Nx, Ny, 9) float64
+        See src/shapes.py for the structure. q <= 0 means "no Bouzidi" for
+        that link (halfway BB result, already produced by streaming, is kept).
+    """
+    Nx, Ny = solid_mask.shape
+    cx_arr = LATTICE_VELOCITIES[:, 0]
+    cy_arr = LATTICE_VELOCITIES[:, 1]
+    for i in range(1, 9):
+        cxi = int(cx_arr[i])
+        cyi = int(cy_arr[i])
+        opp_i = int(OPPOSITE[i])
+        for x in range(Nx):
+            for y in range(Ny):
+                if solid_mask[x, y]:
+                    continue
+                q_val = q_field[x, y, i]
+                if q_val <= 0.0:
+                    continue
+                f_i = f_after_bb[i, x, y]
+                f_opp_at_xf = f_after_bb[opp_i, x, y]
+                if q_val >= 0.5:
+                    inv_2q = 1.0 / (2.0 * q_val)
+                    f_new[opp_i, x, y] = (
+                        inv_2q * f_i
+                        + (2.0 * q_val - 1.0) * inv_2q * f_opp_at_xf
+                    )
+                else:
+                    xb = x - cxi
+                    yb = y - cyi
+                    if 0 <= xb < Nx and 0 <= yb < Ny:
+                        f_i_back = f_after_bb[i, xb, yb]
+                        f_new[opp_i, x, y] = (
+                            2.0 * q_val * f_i
+                            + (1.0 - 2.0 * q_val) * f_i_back
+                        )
+                    else:
+                        f_new[opp_i, x, y] = f_i
+
+
+# Zou-He pressure outflow at x = Nx-1, paired with the velocity inflow above.
+# Prescribes rho_w = 1 (freestream reference pressure). The two BCs together
+# close the mass balance: inflow injection rate matches outflow extraction
+# rate at steady state, because both boundaries respond to the same physical
+# constraints. Replaces the previous "zero-gradient outflow"
+#     f[outflow_dirs, -1, :] = f[outflow_dirs, -2, :]
+# which under-extracts when the channel develops back-pressure (e.g. behind
+# a body), leaving the inflow over-injecting relative to outflow extraction.
+# uy at the outflow is zero-gradient extrapolated from x=Nx-2 so the wake
+# can pass through without being forced to zero transverse velocity.
+
+def zou_he_outflow_pressure(f, rho_out=1.0):
+    """Apply Zou-He pressure outflow at x = Nx-1 to a pure-NumPy f-field.
+
+    Modifies f in place at x = Nx-1 (last column only).
+
+    Parameters
+    ----------
+    f : ndarray of shape (9, Nx, Ny)
+        Post-streaming populations. Reads f[0,1,2,4,5,8] at x=Nx-1,
+        overwrites f[3,6,7] at x=Nx-1. uy at the boundary is extrapolated
+        from the previous column (zero-gradient on the transverse velocity).
+    rho_out : float, default 1.0
+        Prescribed outflow density (freestream reference).
+    """
+    f0 = f[0, -1, :]
+    f1 = f[1, -1, :]
+    f2 = f[2, -1, :]
+    f4 = f[4, -1, :]
+    f5 = f[5, -1, :]
+    f8 = f[8, -1, :]
+    # ux from prescribed rho_w at outflow: derived from mass + x-momentum balance.
+    ux_w = (f0 + f2 + f4 + 2.0 * (f1 + f5 + f8)) / rho_out - 1.0
+    # uy extrapolated from interior so transverse-velocity waves pass through
+    # instead of reflecting back.
+    rho_interior = f[:, -2, :].sum(axis=0)
+    uy_w = (f[2, -2, :] - f[4, -2, :] + f[5, -2, :] + f[6, -2, :]
+            - f[7, -2, :] - f[8, -2, :]) / rho_interior
+    f[3, -1, :] = f1 - (2.0 / 3.0) * rho_out * ux_w
+    f[6, -1, :] = f8 - 0.5 * (f2 - f4) - (1.0 / 6.0) * rho_out * ux_w - 0.5 * rho_out * uy_w
+    f[7, -1, :] = f5 + 0.5 * (f2 - f4) - (1.0 / 6.0) * rho_out * ux_w + 0.5 * rho_out * uy_w
+
+
+# ---------------------------------------------------------------------------
 # JIT-compiled fused step function (production hot path)
 # ---------------------------------------------------------------------------
 # All of the above functions are kept as pure-NumPy reference implementations
@@ -290,7 +463,7 @@ def bounce_back(f, solid_mask):
 # tests/test_lbm.py -- if you change either, the test must still pass.
 
 @njit(cache=True, parallel=True, fastmath=True)
-def step_njit_with_force(f, tau, solid_mask, f_inflow, inflow_dirs, outflow_dirs):
+def step_njit_with_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs, outflow_dirs):
     """One fused LBM timestep + momentum-exchange force calculation.
 
     Performs (equivalent to pure-NumPy reference path):
@@ -298,7 +471,7 @@ def step_njit_with_force(f, tau, solid_mask, f_inflow, inflow_dirs, outflow_dirs
         (Fx, Fy)    = momentum_exchange_force(f_post_coll, solid_mask)
         f_bounced   = bounce_back(f_post_coll, solid_mask)
         f_new       = stream(f_bounced)
-        f_new[inflow_dirs, 0, :] = f_inflow[inflow_dirs, None]
+        zou_he_inflow(f_new, ux_in, uy_in)       # mass-conserving left BC
         f_new[outflow_dirs, -1, :] = f_new[outflow_dirs, -2, :]
 
     Compiled with ``parallel=True`` -- the outer x-loops in each section run on
@@ -366,11 +539,17 @@ def step_njit_with_force(f, tau, solid_mask, f_inflow, inflow_dirs, outflow_dirs
                 feq = w_arr[i] * rho * (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * u2)
                 f_post_coll[i, x, y] = f[i, x, y] - (f[i, x, y] - feq) * inv_tau
 
-    # === Step 2: momentum-exchange force -- kept serial ===
-    # Tried prange on x with scalar reduction (Fx, Fy): Numba couldn't infer
-    # the conditional += pattern and silently returned 0.0. Refactoring to
-    # per-x accumulator arrays then hit Numba's np.zeros-inside-parallel
-    # compilation bug. Force calc is ~5% of step time; serial is fine.
+    # === Step 2: momentum-exchange force (Bouzidi-aware) -- kept serial ===
+    # For halfway BB (q <= 0) the standard formula F_link = 2 c_i f_i_post(x_f)
+    # applies. For Bouzidi (q > 0) the correct momentum transfer is
+    #   F_link = c_i [f_i_post(x_f) + f_-i_new(x_f)]
+    # where f_-i_new is the Bouzidi-interpolated population that will land at
+    # x_f after the BC step (Mei, Yu, Shyy, Luo 2002 -- momentum exchange for
+    # Bouzidi BB). At q = 0.5 the Bouzidi result reduces to f_i_post and the
+    # formula collapses back to 2 c_i f_i_post, so this is a strict
+    # generalization. Tried prange on x with scalar reduction: Numba couldn't
+    # infer the conditional += pattern and silently returned 0.0. Force calc
+    # is ~5% of step time; serial is fine.
     Fx = 0.0
     Fy = 0.0
     for i in range(1, 9):
@@ -378,13 +557,35 @@ def step_njit_with_force(f, tau, solid_mask, f_inflow, inflow_dirs, outflow_dirs
         cyi = cy_arr[i]
         cxi_int = int(cxi)
         cyi_int = int(cyi)
+        opp_i = opp_arr[i]
         for x in range(Nx):
             for y in range(Ny):
                 if not solid_mask[x, y]:
                     xn = (x + cxi_int) % Nx
                     yn = (y + cyi_int) % Ny
                     if solid_mask[xn, yn]:
-                        contrib = 2.0 * f_post_coll[i, x, y]
+                        f_i_post = f_post_coll[i, x, y]
+                        q_val = q_field[x, y, i]
+                        if q_val <= 0.0:
+                            contrib = 2.0 * f_i_post
+                        elif q_val >= 0.5:
+                            inv_2q = 1.0 / (2.0 * q_val)
+                            f_minus_i_new = (
+                                inv_2q * f_i_post
+                                + (2.0 * q_val - 1.0) * inv_2q * f_post_coll[opp_i, x, y]
+                            )
+                            contrib = f_i_post + f_minus_i_new
+                        else:
+                            xb = x - cxi_int
+                            yb = y - cyi_int
+                            if 0 <= xb < Nx and 0 <= yb < Ny:
+                                f_minus_i_new = (
+                                    2.0 * q_val * f_i_post
+                                    + (1.0 - 2.0 * q_val) * f_post_coll[i, xb, yb]
+                                )
+                                contrib = f_i_post + f_minus_i_new
+                            else:
+                                contrib = 2.0 * f_i_post
                         Fx += cxi * contrib
                         Fy += cyi * contrib
 
@@ -411,17 +612,93 @@ def step_njit_with_force(f, tau, solid_mask, f_inflow, inflow_dirs, outflow_dirs
                 ys = (y - cyi_int) % Ny
                 f_new[i, x, y] = f_after_bb[i, xs, ys]
 
-    # === Step 5: inflow override at left boundary (x = 0) ===
-    for k in range(inflow_dirs.shape[0]):
-        i = int(inflow_dirs[k])
+    # === Step 5: Zou-He velocity inflow at left boundary (x = 0) ===
+    # Mass-conserving inflow that exactly enforces the prescribed velocity.
+    # ux_in / uy_in are recovered from the f_inflow vector the caller supplied
+    # (built as equilibrium(rho=1, u=(U,0)) -- so ux=U, uy=0 in practice).
+    # Gated on inflow_dirs being non-empty so the closed-box test (which passes
+    # empty dirs) still skips inflow entirely. The `inflow_dirs` array's
+    # contents are not used -- the formulas are hardcoded for the left wall.
+    if inflow_dirs.shape[0] > 0:
+        rho_in = (f_inflow[0] + f_inflow[1] + f_inflow[2] + f_inflow[3]
+                  + f_inflow[4] + f_inflow[5] + f_inflow[6] + f_inflow[7]
+                  + f_inflow[8])
+        ux_in = (f_inflow[1] - f_inflow[3] + f_inflow[5] - f_inflow[6]
+                 - f_inflow[7] + f_inflow[8]) / rho_in
+        uy_in = (f_inflow[2] - f_inflow[4] + f_inflow[5] + f_inflow[6]
+                 - f_inflow[7] - f_inflow[8]) / rho_in
         for y in range(Ny):
-            f_new[i, 0, y] = f_inflow[i]
+            f0_w = f_new[0, 0, y]
+            f2_w = f_new[2, 0, y]
+            f3_w = f_new[3, 0, y]
+            f4_w = f_new[4, 0, y]
+            f6_w = f_new[6, 0, y]
+            f7_w = f_new[7, 0, y]
+            rho_w = (f0_w + f2_w + f4_w + 2.0 * (f3_w + f6_w + f7_w)) / (1.0 - ux_in)
+            f_new[1, 0, y] = f3_w + (2.0 / 3.0) * rho_w * ux_in
+            f_new[5, 0, y] = f7_w - 0.5 * (f2_w - f4_w) + (1.0 / 6.0) * rho_w * ux_in + 0.5 * rho_w * uy_in
+            f_new[8, 0, y] = f6_w + 0.5 * (f2_w - f4_w) + (1.0 / 6.0) * rho_w * ux_in - 0.5 * rho_w * uy_in
 
-    # === Step 6: outflow override at right boundary (x = Nx-1, zero-gradient) ===
-    for k in range(outflow_dirs.shape[0]):
-        i = int(outflow_dirs[k])
+    # === Step 6: Zou-He pressure outflow at right boundary (x = Nx-1) ===
+    # Prescribes rho_w = 1.0 (freestream reference) so mass balance closes
+    # against the Zou-He velocity inflow above. uy is extrapolated from the
+    # interior cell so wake structures pass through instead of reflecting.
+    # See zou_he_outflow_pressure docstring at module top for derivation.
+    if outflow_dirs.shape[0] > 0:
         for y in range(Ny):
-            f_new[i, Nx - 1, y] = f_new[i, Nx - 2, y]
+            f0_w = f_new[0, Nx - 1, y]
+            f1_w = f_new[1, Nx - 1, y]
+            f2_w = f_new[2, Nx - 1, y]
+            f4_w = f_new[4, Nx - 1, y]
+            f5_w = f_new[5, Nx - 1, y]
+            f8_w = f_new[8, Nx - 1, y]
+            ux_w = (f0_w + f2_w + f4_w + 2.0 * (f1_w + f5_w + f8_w)) - 1.0
+            rho_int = (f_new[0, Nx - 2, y] + f_new[1, Nx - 2, y] + f_new[2, Nx - 2, y]
+                       + f_new[3, Nx - 2, y] + f_new[4, Nx - 2, y] + f_new[5, Nx - 2, y]
+                       + f_new[6, Nx - 2, y] + f_new[7, Nx - 2, y] + f_new[8, Nx - 2, y])
+            uy_w = (f_new[2, Nx - 2, y] - f_new[4, Nx - 2, y]
+                    + f_new[5, Nx - 2, y] + f_new[6, Nx - 2, y]
+                    - f_new[7, Nx - 2, y] - f_new[8, Nx - 2, y]) / rho_int
+            f_new[3, Nx - 1, y] = f1_w - (2.0 / 3.0) * ux_w
+            f_new[6, Nx - 1, y] = f8_w - 0.5 * (f2_w - f4_w) - (1.0 / 6.0) * ux_w - 0.5 * uy_w
+            f_new[7, Nx - 1, y] = f5_w + 0.5 * (f2_w - f4_w) - (1.0 / 6.0) * ux_w + 0.5 * uy_w
+
+    # === Step 7: Bouzidi interpolated bounce-back at wall links ===
+    # Override the streamed-in population at fluid cells whose direction-i
+    # neighbor is solid, using q_field[x, y, i] to interpolate to the exact
+    # wall position. q <= 0 means "no Bouzidi": the previously-streamed value
+    # (which equals halfway-BB at that link) is kept. See bouzidi_correction
+    # docstring at module top for the derivation.
+    for x in prange(Nx):
+        for y in range(Ny):
+            if solid_mask[x, y]:
+                continue
+            for i in range(1, 9):
+                q_val = q_field[x, y, i]
+                if q_val <= 0.0:
+                    continue
+                opp_i = opp_arr[i]
+                cxi_int = int(cx_arr[i])
+                cyi_int = int(cy_arr[i])
+                f_i = f_after_bb[i, x, y]
+                f_opp_at_xf = f_after_bb[opp_i, x, y]
+                if q_val >= 0.5:
+                    inv_2q = 1.0 / (2.0 * q_val)
+                    f_new[opp_i, x, y] = (
+                        inv_2q * f_i
+                        + (2.0 * q_val - 1.0) * inv_2q * f_opp_at_xf
+                    )
+                else:
+                    xb = x - cxi_int
+                    yb = y - cyi_int
+                    if 0 <= xb < Nx and 0 <= yb < Ny:
+                        f_i_back = f_after_bb[i, xb, yb]
+                        f_new[opp_i, x, y] = (
+                            2.0 * q_val * f_i
+                            + (1.0 - 2.0 * q_val) * f_i_back
+                        )
+                    else:
+                        f_new[opp_i, x, y] = f_i
 
     return f_new, Fx, Fy
 
@@ -449,13 +726,20 @@ def step_njit_with_force(f, tau, solid_mask, f_inflow, inflow_dirs, outflow_dirs
 # Re. We pick the middle ground here -- empirically stable from Re=50 up
 # through at least Re=1500 on the 320x100 standard preset.
 
-# MRT free relaxation rates (applied to the non-conserved, non-viscous moments).
-# Tuned to 1.4 -- the Lallemand-Luo middle ground that's been validated for
+# MRT free relaxation rates (applied to the non-conserved, non-viscous
+# moments). Tuned to 1.4 -- the Lallemand-Luo middle ground validated for
 # cylinder flow at Re=100..1500. Lower values (s -> 1.0) over-damp the
 # higher-order moments that MRT relies on for stability and actually make
 # things WORSE; higher values (s -> 1.9) trade stability for accuracy.
 # Sharp-edged bluff bodies still need the Smagorinsky LES adjustment below
 # to stay stable above Re~500.
+#
+# These constants are the single source of truth. Both the pure-NumPy
+# reference (``collide_mrt``) and the two JIT-compiled hot paths
+# (``step_njit_mrt_with_force``, ``step_njit_mrt_no_force``) reference them
+# directly. Numba constant-folds them at compile time. If you change a
+# value here, delete ``__pycache__/`` to force a JIT recompile so the new
+# value takes effect.
 S_E = 1.4    # energy moment (m1)            -- bulk viscosity damping
 S_EPS = 1.4  # energy-squared moment (m2)    -- higher-order damping
 S_Q = 1.4    # energy-flux moments (m4, m6)  -- ghost-moment damping
@@ -463,12 +747,30 @@ S_Q = 1.4    # energy-flux moments (m4, m6)  -- ghost-moment damping
 # Smagorinsky-LES sub-grid eddy-viscosity constant. The LBM-Smagorinsky
 # adjustment scales the effective relaxation time per-cell based on local
 # strain rate magnitude (computed from the non-equilibrium part of the
-# stress moments m7 and m8). Bumped above the textbook 0.14 to 0.20 because
-# extreme cases (e.g. ellipse rotated 45 deg at Re=1500) still diverged at
-# 0.14. 0.20 stabilizes every shape preset through Re=1500; the extra
-# dissipation is barely noticeable at low Re since Smagorinsky scales with
-# local strain magnitude (~0 in bulk freestream).
-C_SMAG = 0.20
+# stress moments m7 and m8). 0.17 is Lilly's theoretical value (Lilly 1967);
+# common engineering range is 0.10-0.20 (Smagorinsky 1963 ~0.16,
+# Deardorff 0.10-0.14).
+#
+# Stability survey (5000 steps, Standard 320x100, every shape+AoA, Re=200,500,
+# 1000,1500) on 2026-05-18:
+#   * Re<=500: all 9 (shape,AoA) combos stable at 0.14, 0.17, and 0.20.
+#   * Re>=1000 + sharp-corner geometry (Square 45 deg, Ellipse 45 deg): NaN
+#     at all three values. The instability is BC-driven, not LES-driven --
+#     halfway bounce-back on a knife-edge voxelized corner injects spurious
+#     pressure pulses no amount of subgrid damping can absorb. The proper
+#     fix is Bouzidi-Firdaouss-Lallemand interpolated bounce-back, not a
+#     higher C_SMAG.
+#   * 0.14 ADDS three new unstable cases at moderate Re (Cylinder@Re=1000,
+#     Square 45@Re=1000, Ellipse 30@Re=1500) -- too thin a margin.
+#   * 0.20 was previously claimed to be "stable to Re=1500" but actually
+#     silently produces NaN frames on Ellipse 45 deg @ Re>=1000 (matplotlib
+#     renders NaN as background so the user never saw the divergence).
+#
+# 0.17 dominates both: same set of unstable cases as 0.20, but 28% less
+# eddy viscosity in the bulk (= sharper vortex cores, crisper shear layers
+# at low Re where the user lives by default).
+C_SMAG = 0.17
+C_SMAG_SQ = C_SMAG * C_SMAG    # pre-computed so the JIT path doesn't square it per cell
 
 # Moment-basis transformation matrix M (rows = moments, cols = velocity indices
 # matching the convention at the top of this file: [rest, E, N, W, S, NE, NW, SW, SE]).
@@ -559,7 +861,7 @@ def collide_mrt(f, tau):
 
 
 @njit(cache=True, parallel=True, fastmath=True)
-def step_njit_mrt_with_force(f, tau, solid_mask, f_inflow, inflow_dirs, outflow_dirs):
+def step_njit_mrt_with_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs, outflow_dirs):
     """One fused MRT-LBM timestep + momentum-exchange force calculation.
 
     Drop-in replacement for ``step_njit_with_force`` (BGK) with identical
@@ -582,15 +884,14 @@ def step_njit_mrt_with_force(f, tau, solid_mask, f_inflow, inflow_dirs, outflow_
     cy_arr = np.array([0.0, 0.0, 1.0, 0.0, -1.0, 1.0, 1.0, -1.0, -1.0])
     opp_arr = np.array([0, 3, 4, 1, 2, 7, 8, 5, 6], dtype=np.int32)
 
-    # MRT relaxation rates (kept in sync with module-level S_E / S_EPS / S_Q).
-    s_e = 1.4
-    s_eps = 1.4
-    s_q = 1.4
-    # s_nu (stress relaxation for m7, m8) is now PER-CELL via Smagorinsky LES
-    # so sharp-cornered bluff bodies don't diverge at high Re. Computed inline
-    # from local Pi_neq below. C_SMAG = 0.20 -- bumped above the textbook 0.14
-    # to stabilize the ellipse-rotated-45-at-Re=1500 corner case.
-    c_smag_sq = 0.20 * 0.20
+    # MRT relaxation rates + Smagorinsky-squared from the module-level
+    # constants. Numba constant-folds these at compile time; the JIT cache
+    # picks up changes via the source-hash, but if you've already compiled
+    # once with the old values, delete __pycache__/ to force a rebuild.
+    s_e = S_E
+    s_eps = S_EPS
+    s_q = S_Q
+    c_smag_sq = C_SMAG_SQ
 
     # === Step 1: MRT collision -- per-cell, parallel over x ===
     f_post_coll = np.empty_like(f)
@@ -669,7 +970,8 @@ def step_njit_mrt_with_force(f, tau, solid_mask, f_inflow, inflow_dirs, outflow_
             f_post_coll[7, x, y] = r9 + m1_p * inv18 + m2_p * inv36 - jx * inv6 - m4_p * inv12 - jy * inv6 - m6_p * inv12 + m8_p * inv4
             f_post_coll[8, x, y] = r9 + m1_p * inv18 + m2_p * inv36 + jx * inv6 + m4_p * inv12 - jy * inv6 - m6_p * inv12 - m8_p * inv4
 
-    # === Step 2: momentum-exchange force (identical to BGK path) ===
+    # === Step 2: momentum-exchange force (Bouzidi-aware, identical to BGK path) ===
+    # See the BGK with-force step function for the rationale; same formulas.
     Fx = 0.0
     Fy = 0.0
     for i in range(1, 9):
@@ -677,13 +979,35 @@ def step_njit_mrt_with_force(f, tau, solid_mask, f_inflow, inflow_dirs, outflow_
         cyi = cy_arr[i]
         cxi_int = int(cxi)
         cyi_int = int(cyi)
+        opp_i = opp_arr[i]
         for x in range(Nx):
             for y in range(Ny):
                 if not solid_mask[x, y]:
                     xn = (x + cxi_int) % Nx
                     yn = (y + cyi_int) % Ny
                     if solid_mask[xn, yn]:
-                        contrib = 2.0 * f_post_coll[i, x, y]
+                        f_i_post = f_post_coll[i, x, y]
+                        q_val = q_field[x, y, i]
+                        if q_val <= 0.0:
+                            contrib = 2.0 * f_i_post
+                        elif q_val >= 0.5:
+                            inv_2q = 1.0 / (2.0 * q_val)
+                            f_minus_i_new = (
+                                inv_2q * f_i_post
+                                + (2.0 * q_val - 1.0) * inv_2q * f_post_coll[opp_i, x, y]
+                            )
+                            contrib = f_i_post + f_minus_i_new
+                        else:
+                            xb = x - cxi_int
+                            yb = y - cyi_int
+                            if 0 <= xb < Nx and 0 <= yb < Ny:
+                                f_minus_i_new = (
+                                    2.0 * q_val * f_i_post
+                                    + (1.0 - 2.0 * q_val) * f_post_coll[i, xb, yb]
+                                )
+                                contrib = f_i_post + f_minus_i_new
+                            else:
+                                contrib = 2.0 * f_i_post
                         Fx += cxi * contrib
                         Fy += cyi * contrib
 
@@ -729,16 +1053,292 @@ def step_njit_mrt_with_force(f, tau, solid_mask, f_inflow, inflow_dirs, outflow_
         f_new[5, x, 0] = f_after_bb[7, x, 0]
         f_new[6, x, 0] = f_after_bb[8, x, 0]
 
-    # === Step 5: inflow override at left boundary (x = 0) ===
-    for k in range(inflow_dirs.shape[0]):
-        i = int(inflow_dirs[k])
+    # === Step 5: Zou-He velocity inflow at left boundary (x = 0) ===
+    # See step_njit_with_force for the derivation; identical formulas reused.
+    if inflow_dirs.shape[0] > 0:
+        rho_in = (f_inflow[0] + f_inflow[1] + f_inflow[2] + f_inflow[3]
+                  + f_inflow[4] + f_inflow[5] + f_inflow[6] + f_inflow[7]
+                  + f_inflow[8])
+        ux_in = (f_inflow[1] - f_inflow[3] + f_inflow[5] - f_inflow[6]
+                 - f_inflow[7] + f_inflow[8]) / rho_in
+        uy_in = (f_inflow[2] - f_inflow[4] + f_inflow[5] + f_inflow[6]
+                 - f_inflow[7] - f_inflow[8]) / rho_in
         for y in range(Ny):
-            f_new[i, 0, y] = f_inflow[i]
+            f0_w = f_new[0, 0, y]
+            f2_w = f_new[2, 0, y]
+            f3_w = f_new[3, 0, y]
+            f4_w = f_new[4, 0, y]
+            f6_w = f_new[6, 0, y]
+            f7_w = f_new[7, 0, y]
+            rho_w = (f0_w + f2_w + f4_w + 2.0 * (f3_w + f6_w + f7_w)) / (1.0 - ux_in)
+            f_new[1, 0, y] = f3_w + (2.0 / 3.0) * rho_w * ux_in
+            f_new[5, 0, y] = f7_w - 0.5 * (f2_w - f4_w) + (1.0 / 6.0) * rho_w * ux_in + 0.5 * rho_w * uy_in
+            f_new[8, 0, y] = f6_w + 0.5 * (f2_w - f4_w) + (1.0 / 6.0) * rho_w * ux_in - 0.5 * rho_w * uy_in
 
-    # === Step 6: outflow override at right boundary (x = Nx-1, zero-gradient) ===
-    for k in range(outflow_dirs.shape[0]):
-        i = int(outflow_dirs[k])
+    # === Step 6: Zou-He pressure outflow at right boundary (x = Nx-1) ===
+    # Prescribes rho_w = 1.0 (freestream reference) so mass balance closes
+    # against the Zou-He velocity inflow above. uy is extrapolated from the
+    # interior cell so wake structures pass through instead of reflecting.
+    # See zou_he_outflow_pressure docstring at module top for derivation.
+    if outflow_dirs.shape[0] > 0:
         for y in range(Ny):
-            f_new[i, Nx - 1, y] = f_new[i, Nx - 2, y]
+            f0_w = f_new[0, Nx - 1, y]
+            f1_w = f_new[1, Nx - 1, y]
+            f2_w = f_new[2, Nx - 1, y]
+            f4_w = f_new[4, Nx - 1, y]
+            f5_w = f_new[5, Nx - 1, y]
+            f8_w = f_new[8, Nx - 1, y]
+            ux_w = (f0_w + f2_w + f4_w + 2.0 * (f1_w + f5_w + f8_w)) - 1.0
+            rho_int = (f_new[0, Nx - 2, y] + f_new[1, Nx - 2, y] + f_new[2, Nx - 2, y]
+                       + f_new[3, Nx - 2, y] + f_new[4, Nx - 2, y] + f_new[5, Nx - 2, y]
+                       + f_new[6, Nx - 2, y] + f_new[7, Nx - 2, y] + f_new[8, Nx - 2, y])
+            uy_w = (f_new[2, Nx - 2, y] - f_new[4, Nx - 2, y]
+                    + f_new[5, Nx - 2, y] + f_new[6, Nx - 2, y]
+                    - f_new[7, Nx - 2, y] - f_new[8, Nx - 2, y]) / rho_int
+            f_new[3, Nx - 1, y] = f1_w - (2.0 / 3.0) * ux_w
+            f_new[6, Nx - 1, y] = f8_w - 0.5 * (f2_w - f4_w) - (1.0 / 6.0) * ux_w - 0.5 * uy_w
+            f_new[7, Nx - 1, y] = f5_w + 0.5 * (f2_w - f4_w) - (1.0 / 6.0) * ux_w + 0.5 * uy_w
+
+    # === Step 7: Bouzidi interpolated bounce-back at wall links ===
+    # Override the streamed-in population at fluid cells whose direction-i
+    # neighbor is solid, using q_field[x, y, i] to interpolate to the exact
+    # wall position. q <= 0 means "no Bouzidi": the previously-streamed value
+    # (which equals halfway-BB at that link) is kept. See bouzidi_correction
+    # docstring at module top for the derivation.
+    for x in prange(Nx):
+        for y in range(Ny):
+            if solid_mask[x, y]:
+                continue
+            for i in range(1, 9):
+                q_val = q_field[x, y, i]
+                if q_val <= 0.0:
+                    continue
+                opp_i = opp_arr[i]
+                cxi_int = int(cx_arr[i])
+                cyi_int = int(cy_arr[i])
+                f_i = f_after_bb[i, x, y]
+                f_opp_at_xf = f_after_bb[opp_i, x, y]
+                if q_val >= 0.5:
+                    inv_2q = 1.0 / (2.0 * q_val)
+                    f_new[opp_i, x, y] = (
+                        inv_2q * f_i
+                        + (2.0 * q_val - 1.0) * inv_2q * f_opp_at_xf
+                    )
+                else:
+                    xb = x - cxi_int
+                    yb = y - cyi_int
+                    if 0 <= xb < Nx and 0 <= yb < Ny:
+                        f_i_back = f_after_bb[i, xb, yb]
+                        f_new[opp_i, x, y] = (
+                            2.0 * q_val * f_i
+                            + (1.0 - 2.0 * q_val) * f_i_back
+                        )
+                    else:
+                        f_new[opp_i, x, y] = f_i
 
     return f_new, Fx, Fy
+
+
+@njit(cache=True, parallel=True, fastmath=True)
+def step_njit_mrt_no_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs, outflow_dirs):
+    """MRT timestep without the momentum-exchange force calculation.
+
+    Drop-in for the Streamlit visualization path (it doesn't consume Fx/Fy).
+    Identical physics to ``step_njit_mrt_with_force`` minus the serial
+    8-direction force-accumulator loop. On a 320x100 grid this saves
+    ~5-8% per step -- small per step, useful across 4000+ warmup+record
+    steps. Validation scripts that need Fx/Fy keep using the with-force
+    variant; this is a pure performance refinement for the viz path.
+    """
+    Nx = f.shape[1]
+    Ny = f.shape[2]
+
+    cx_arr = np.array([0.0, 1.0, 0.0, -1.0, 0.0, 1.0, -1.0, -1.0, 1.0])
+    cy_arr = np.array([0.0, 0.0, 1.0, 0.0, -1.0, 1.0, 1.0, -1.0, -1.0])
+    opp_arr = np.array([0, 3, 4, 1, 2, 7, 8, 5, 6], dtype=np.int32)
+
+    # Pull MRT rates + C_SMAG^2 from the module-level constants -- single
+    # source of truth shared with the with-force variant and the pure-NumPy
+    # reference. See lbm.py top of MRT section for the values.
+    s_e = S_E
+    s_eps = S_EPS
+    s_q = S_Q
+    c_smag_sq = C_SMAG_SQ
+
+    # MRT collision -- inlined moment transform, identical to with-force path.
+    f_post_coll = np.empty_like(f)
+    for x in prange(Nx):
+        for y in range(Ny):
+            f0 = f[0, x, y]
+            f1 = f[1, x, y]
+            f2 = f[2, x, y]
+            f3 = f[3, x, y]
+            f4 = f[4, x, y]
+            f5 = f[5, x, y]
+            f6 = f[6, x, y]
+            f7 = f[7, x, y]
+            f8 = f[8, x, y]
+
+            m0 = f0 + f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8
+            m1 = -4.0 * f0 - f1 - f2 - f3 - f4 + 2.0 * (f5 + f6 + f7 + f8)
+            m2 = 4.0 * f0 - 2.0 * (f1 + f2 + f3 + f4) + f5 + f6 + f7 + f8
+            m3 = f1 - f3 + f5 - f6 - f7 + f8
+            m4 = -2.0 * f1 + 2.0 * f3 + f5 - f6 - f7 + f8
+            m5 = f2 - f4 + f5 + f6 - f7 - f8
+            m6 = -2.0 * f2 + 2.0 * f4 + f5 + f6 - f7 - f8
+            m7 = f1 - f2 + f3 - f4
+            m8 = f5 - f6 + f7 - f8
+
+            rho = m0
+            jx = m3
+            jy = m5
+            ux = jx / rho
+            uy = jy / rho
+            u2 = ux * ux + uy * uy
+
+            m1_eq = rho * (-2.0 + 3.0 * u2)
+            m2_eq = rho * (1.0 - 3.0 * u2)
+            m4_eq = -jx
+            m6_eq = -jy
+            m7_eq = rho * (ux * ux - uy * uy)
+            m8_eq = rho * ux * uy
+
+            dPxx = m7 - m7_eq
+            dPxy = m8 - m8_eq
+            Q = np.sqrt(dPxx * dPxx + 4.0 * dPxy * dPxy)
+            tau_eff = 0.5 * (tau + np.sqrt(tau * tau + 18.0 * c_smag_sq * Q / rho))
+            s_nu_eff = 1.0 / tau_eff
+
+            m1_p = m1 - s_e * (m1 - m1_eq)
+            m2_p = m2 - s_eps * (m2 - m2_eq)
+            m4_p = m4 - s_q * (m4 - m4_eq)
+            m6_p = m6 - s_q * (m6 - m6_eq)
+            m7_p = m7 - s_nu_eff * dPxx
+            m8_p = m8 - s_nu_eff * dPxy
+
+            inv9 = 1.0 / 9.0
+            inv36 = 1.0 / 36.0
+            inv18 = 1.0 / 18.0
+            inv6 = 1.0 / 6.0
+            inv12 = 1.0 / 12.0
+            inv4 = 1.0 / 4.0
+            r9 = rho * inv9
+            f_post_coll[0, x, y] = r9 - m1_p * inv9 + m2_p * inv9
+            f_post_coll[1, x, y] = r9 - m1_p * inv36 - m2_p * inv18 + jx * inv6 - m4_p * inv6 + m7_p * inv4
+            f_post_coll[2, x, y] = r9 - m1_p * inv36 - m2_p * inv18 + jy * inv6 - m6_p * inv6 - m7_p * inv4
+            f_post_coll[3, x, y] = r9 - m1_p * inv36 - m2_p * inv18 - jx * inv6 + m4_p * inv6 + m7_p * inv4
+            f_post_coll[4, x, y] = r9 - m1_p * inv36 - m2_p * inv18 - jy * inv6 + m6_p * inv6 - m7_p * inv4
+            f_post_coll[5, x, y] = r9 + m1_p * inv18 + m2_p * inv36 + jx * inv6 + m4_p * inv12 + jy * inv6 + m6_p * inv12 + m8_p * inv4
+            f_post_coll[6, x, y] = r9 + m1_p * inv18 + m2_p * inv36 - jx * inv6 - m4_p * inv12 + jy * inv6 + m6_p * inv12 - m8_p * inv4
+            f_post_coll[7, x, y] = r9 + m1_p * inv18 + m2_p * inv36 - jx * inv6 - m4_p * inv12 - jy * inv6 - m6_p * inv12 + m8_p * inv4
+            f_post_coll[8, x, y] = r9 + m1_p * inv18 + m2_p * inv36 + jx * inv6 + m4_p * inv12 - jy * inv6 - m6_p * inv12 - m8_p * inv4
+
+    # Bounce-back on solid cells.
+    f_after_bb = np.empty_like(f_post_coll)
+    for x in prange(Nx):
+        for y in range(Ny):
+            if solid_mask[x, y]:
+                for i in range(9):
+                    f_after_bb[i, x, y] = f_post_coll[opp_arr[i], x, y]
+            else:
+                for i in range(9):
+                    f_after_bb[i, x, y] = f_post_coll[i, x, y]
+
+    # Streaming.
+    f_new = np.empty_like(f_after_bb)
+    for x in prange(Nx):
+        for y in range(Ny):
+            for i in range(9):
+                cxi_int = int(cx_arr[i])
+                cyi_int = int(cy_arr[i])
+                xs = (x - cxi_int) % Nx
+                ys = (y - cyi_int) % Ny
+                f_new[i, x, y] = f_after_bb[i, xs, ys]
+
+    # Top/bottom wall bounce-back (kills periodic y-wraparound).
+    for x in prange(Nx):
+        f_new[4, x, Ny - 1] = f_after_bb[2, x, Ny - 1]
+        f_new[7, x, Ny - 1] = f_after_bb[5, x, Ny - 1]
+        f_new[8, x, Ny - 1] = f_after_bb[6, x, Ny - 1]
+        f_new[2, x, 0] = f_after_bb[4, x, 0]
+        f_new[5, x, 0] = f_after_bb[7, x, 0]
+        f_new[6, x, 0] = f_after_bb[8, x, 0]
+
+    # Zou-He inflow (left, x=0) + zero-gradient outflow (right, x=Nx-1).
+    # See step_njit_with_force for the Zou-He derivation; identical formulas
+    # reused. Gated on inflow_dirs being non-empty so the closed-box test
+    # (which passes empty dirs) still skips inflow entirely.
+    if inflow_dirs.shape[0] > 0:
+        rho_in = (f_inflow[0] + f_inflow[1] + f_inflow[2] + f_inflow[3]
+                  + f_inflow[4] + f_inflow[5] + f_inflow[6] + f_inflow[7]
+                  + f_inflow[8])
+        ux_in = (f_inflow[1] - f_inflow[3] + f_inflow[5] - f_inflow[6]
+                 - f_inflow[7] + f_inflow[8]) / rho_in
+        uy_in = (f_inflow[2] - f_inflow[4] + f_inflow[5] + f_inflow[6]
+                 - f_inflow[7] - f_inflow[8]) / rho_in
+        for y in range(Ny):
+            f0_w = f_new[0, 0, y]
+            f2_w = f_new[2, 0, y]
+            f3_w = f_new[3, 0, y]
+            f4_w = f_new[4, 0, y]
+            f6_w = f_new[6, 0, y]
+            f7_w = f_new[7, 0, y]
+            rho_w = (f0_w + f2_w + f4_w + 2.0 * (f3_w + f6_w + f7_w)) / (1.0 - ux_in)
+            f_new[1, 0, y] = f3_w + (2.0 / 3.0) * rho_w * ux_in
+            f_new[5, 0, y] = f7_w - 0.5 * (f2_w - f4_w) + (1.0 / 6.0) * rho_w * ux_in + 0.5 * rho_w * uy_in
+            f_new[8, 0, y] = f6_w + 0.5 * (f2_w - f4_w) + (1.0 / 6.0) * rho_w * ux_in - 0.5 * rho_w * uy_in
+    # Zou-He pressure outflow (rho_w = 1.0) -- see step_njit_with_force for derivation.
+    if outflow_dirs.shape[0] > 0:
+        for y in range(Ny):
+            f0_w = f_new[0, Nx - 1, y]
+            f1_w = f_new[1, Nx - 1, y]
+            f2_w = f_new[2, Nx - 1, y]
+            f4_w = f_new[4, Nx - 1, y]
+            f5_w = f_new[5, Nx - 1, y]
+            f8_w = f_new[8, Nx - 1, y]
+            ux_w = (f0_w + f2_w + f4_w + 2.0 * (f1_w + f5_w + f8_w)) - 1.0
+            rho_int = (f_new[0, Nx - 2, y] + f_new[1, Nx - 2, y] + f_new[2, Nx - 2, y]
+                       + f_new[3, Nx - 2, y] + f_new[4, Nx - 2, y] + f_new[5, Nx - 2, y]
+                       + f_new[6, Nx - 2, y] + f_new[7, Nx - 2, y] + f_new[8, Nx - 2, y])
+            uy_w = (f_new[2, Nx - 2, y] - f_new[4, Nx - 2, y]
+                    + f_new[5, Nx - 2, y] + f_new[6, Nx - 2, y]
+                    - f_new[7, Nx - 2, y] - f_new[8, Nx - 2, y]) / rho_int
+            f_new[3, Nx - 1, y] = f1_w - (2.0 / 3.0) * ux_w
+            f_new[6, Nx - 1, y] = f8_w - 0.5 * (f2_w - f4_w) - (1.0 / 6.0) * ux_w - 0.5 * uy_w
+            f_new[7, Nx - 1, y] = f5_w + 0.5 * (f2_w - f4_w) - (1.0 / 6.0) * ux_w + 0.5 * uy_w
+
+    # Bouzidi interpolated bounce-back at wall links -- see derivation at
+    # module-level bouzidi_correction docstring. Mirrors the block in
+    # step_njit_with_force / step_njit_mrt_with_force.
+    for x in prange(Nx):
+        for y in range(Ny):
+            if solid_mask[x, y]:
+                continue
+            for i in range(1, 9):
+                q_val = q_field[x, y, i]
+                if q_val <= 0.0:
+                    continue
+                opp_i = opp_arr[i]
+                cxi_int = int(cx_arr[i])
+                cyi_int = int(cy_arr[i])
+                f_i = f_after_bb[i, x, y]
+                f_opp_at_xf = f_after_bb[opp_i, x, y]
+                if q_val >= 0.5:
+                    inv_2q = 1.0 / (2.0 * q_val)
+                    f_new[opp_i, x, y] = (
+                        inv_2q * f_i
+                        + (2.0 * q_val - 1.0) * inv_2q * f_opp_at_xf
+                    )
+                else:
+                    xb = x - cxi_int
+                    yb = y - cyi_int
+                    if 0 <= xb < Nx and 0 <= yb < Ny:
+                        f_i_back = f_after_bb[i, xb, yb]
+                        f_new[opp_i, x, y] = (
+                            2.0 * q_val * f_i
+                            + (1.0 - 2.0 * q_val) * f_i_back
+                        )
+                    else:
+                        f_new[opp_i, x, y] = f_i
+
+    return f_new

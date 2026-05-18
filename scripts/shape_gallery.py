@@ -25,7 +25,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from src.lbm import CS2, equilibrium, macroscopic, step_njit_with_force
-from src.shapes import cylinder_mask, ellipse_mask, naca4_airfoil_mask, square_mask
+from src.shapes import (
+    cylinder_mask, ellipse_mask, naca4_airfoil_mask, no_bouzidi_q_field,
+    square_mask,
+)
 
 # --- Common flow setup ---
 Nx, Ny = 500, 100
@@ -96,6 +99,9 @@ PRESETS = [
 def run_one(label, solid_mask, kick_x):
     """Time-march one preset. Returns (label, mask, u_mag_plot, vorticity_plot)."""
     kick_y = cy_center + KICK_Y_OFFSET
+    # Halfway BB across all 5 presets to keep this gallery comparison apples-to-apples.
+    # Production single-shape runs (Streamlit app) use per-shape Bouzidi where available.
+    q_field = no_bouzidi_q_field(Nx, Ny)
 
     # Initial: uniform inflow everywhere
     rho0 = np.ones((Nx, Ny))
@@ -109,7 +115,7 @@ def run_one(label, solid_mask, kick_x):
     t_start = time.perf_counter()
     for step in range(n_steps):
         f, _Fx, _Fy = step_njit_with_force(
-            f, tau, solid_mask, f_inflow_eq, INFLOW_DIRS, OUTFLOW_DIRS
+            f, tau, solid_mask, q_field, f_inflow_eq, INFLOW_DIRS, OUTFLOW_DIRS
         )
         if KICK_START <= step < KICK_END:
             f[2, kick_x, kick_y] += KICK_AMPLITUDE

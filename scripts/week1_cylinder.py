@@ -37,7 +37,7 @@ import numpy as np
 import pandas as pd
 
 from src.lbm import CS2, equilibrium, macroscopic, step_njit_with_force
-from src.shapes import cylinder_mask
+from src.shapes import cylinder_mask, no_bouzidi_q_field
 
 # --- Configuration ---
 # Ny widened from 100 to 400 (2026-05-12) to drop blockage from 20% to 5%.
@@ -70,6 +70,9 @@ print(f"  Running {n_steps} timesteps (Numba JIT)...\n")
 
 # --- Setup ---
 solid_mask = cylinder_mask(Nx, Ny, cx, cy, D / 2)
+# Halfway BB: preserves the original Week-1 validation numbers documented in
+# README. For Bouzidi-corrected production runs see scripts/dev_validate_cfd.py.
+q_field = no_bouzidi_q_field(Nx, Ny)
 f_inflow = equilibrium(1.0, np.array([U_inflow, 0.0]))
 INFLOW_DIRS = np.array([1, 5, 8], dtype=np.int32)
 OUTFLOW_DIRS = np.array([3, 6, 7], dtype=np.int32)
@@ -90,13 +93,13 @@ cl_history = np.zeros(n_steps)
 # Trigger JIT compile on a throwaway call so the timing below is clean.
 print("  Compiling JIT step function (first call only)...")
 t_jit = time.perf_counter()
-_ = step_njit_with_force(f.copy(), tau, solid_mask, f_inflow, INFLOW_DIRS, OUTFLOW_DIRS)
+_ = step_njit_with_force(f.copy(), tau, solid_mask, q_field, f_inflow, INFLOW_DIRS, OUTFLOW_DIRS)
 print(f"  Compile done in {time.perf_counter() - t_jit:.1f} s\n")
 
 # --- Time loop ---
 t_start = time.perf_counter()
 for step in range(n_steps):
-    f, Fx, Fy = step_njit_with_force(f, tau, solid_mask, f_inflow, INFLOW_DIRS, OUTFLOW_DIRS)
+    f, Fx, Fy = step_njit_with_force(f, tau, solid_mask, q_field, f_inflow, INFLOW_DIRS, OUTFLOW_DIRS)
 
     # Transient kick: inject +y momentum at one cell behind cylinder.
     # Adding +amp to f[2] (north) and -amp to f[4] (south) shifts the local

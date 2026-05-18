@@ -21,8 +21,12 @@ from src.lbm import (
     collide,
     equilibrium,
     macroscopic,
+    step_njit_mrt_no_force,
+    step_njit_mrt_with_force,
     step_njit_with_force,
     stream,
+    zou_he_inflow,
+    zou_he_outflow_pressure,
 )
 
 
@@ -378,14 +382,19 @@ def test_bounce_back_preserves_density_at_solid_cells():
 
 def test_step_njit_matches_pure_numpy_single_step():
     """One JIT'd step must bit-equivalent the pure-NumPy reference path on a
-    cylinder configuration with non-trivial state (mass + small y-perturbation)."""
+    cylinder configuration with non-trivial state (mass + small y-perturbation).
+
+    Uses a no-Bouzidi (all -1) q-field so the JIT step's Bouzidi block is a
+    no-op, matching the pure-NumPy reference path which uses halfway BB.
+    A separate Bouzidi-specific test verifies the JIT Bouzidi block."""
     from src.forces import momentum_exchange_force
-    from src.shapes import cylinder_mask
+    from src.shapes import cylinder_mask, no_bouzidi_q_field
 
     Nx, Ny = 60, 40
     tau = 0.6
     U = 0.05
     mask = cylinder_mask(Nx, Ny, cx=20, cy=20, radius=4)
+    q_field = no_bouzidi_q_field(Nx, Ny)
 
     rho0 = np.ones((Nx, Ny))
     u0 = np.zeros((2, Nx, Ny))
@@ -404,12 +413,12 @@ def test_step_njit_matches_pure_numpy_single_step():
     F_pure = momentum_exchange_force(f_post_coll_pure, mask)
     f_pure = bounce_back(f_post_coll_pure, mask)
     f_pure = stream(f_pure)
-    f_pure[inflow_dirs, 0, :] = f_inflow[inflow_dirs, None]
-    f_pure[outflow_dirs, -1, :] = f_pure[outflow_dirs, -2, :]
+    zou_he_inflow(f_pure, ux_in=U, uy_in=0.0)
+    zou_he_outflow_pressure(f_pure, rho_out=1.0)
 
     # --- JIT'd fused step ---
     f_jit, Fx_jit, Fy_jit = step_njit_with_force(
-        f_init.copy(), tau, mask, f_inflow, inflow_dirs, outflow_dirs
+        f_init.copy(), tau, mask, q_field, f_inflow, inflow_dirs, outflow_dirs
     )
 
     # JIT step is compiled with fastmath=True + parallel reduction, which
@@ -426,12 +435,13 @@ def test_step_njit_matches_pure_numpy_after_ten_steps():
     """Same equivalence check, propagated for 10 steps. Catches accumulating
     drift that a single-step test would miss (e.g., subtle BC order bugs)."""
     from src.forces import momentum_exchange_force
-    from src.shapes import cylinder_mask
+    from src.shapes import cylinder_mask, no_bouzidi_q_field
 
     Nx, Ny = 50, 30
     tau = 0.6
     U = 0.04
     mask = cylinder_mask(Nx, Ny, cx=18, cy=15, radius=3)
+    q_field = no_bouzidi_q_field(Nx, Ny)
 
     rho0 = np.ones((Nx, Ny))
     u0 = np.zeros((2, Nx, Ny))
@@ -450,14 +460,14 @@ def test_step_njit_matches_pure_numpy_after_ten_steps():
         f_post = collide(f_pure, tau)
         f_pure = bounce_back(f_post, mask)
         f_pure = stream(f_pure)
-        f_pure[inflow_dirs, 0, :] = f_inflow[inflow_dirs, None]
-        f_pure[outflow_dirs, -1, :] = f_pure[outflow_dirs, -2, :]
+        zou_he_inflow(f_pure, ux_in=U, uy_in=0.0)
+        zou_he_outflow_pressure(f_pure, rho_out=1.0)
 
     # JIT: 10 steps
     f_jit = f_init.copy()
     for _ in range(10):
         f_jit, _, _ = step_njit_with_force(
-            f_jit, tau, mask, f_inflow, inflow_dirs, outflow_dirs
+            f_jit, tau, mask, q_field, f_inflow, inflow_dirs, outflow_dirs
         )
 
     # 10 steps of fastmath round-off can accumulate; we still want the JIT
@@ -465,3 +475,142 @@ def test_step_njit_matches_pure_numpy_after_ten_steps():
     # discretization error of the LBM method itself.
     max_diff = float(np.max(np.abs(f_jit - f_pure)))
     assert np.allclose(f_jit, f_pure, atol=1e-8), f"f drift after 10 steps: {max_diff:g}"
+
+
+# ---------------------------------------------------------------------------
+# MRT JIT path: drives the production Streamlit Real CFD mode. These tests
+# verify the two MRT variants agree, that the operator preserves the
+# physical invariants (mass), and that uniform freestream stays stable.
+# ---------------------------------------------------------------------------
+
+def test_step_njit_mrt_no_force_matches_with_force():
+    """The viz-path MRT (no force loop) must produce identical f to the
+    validation-path MRT (with momentum-exchange force loop). Both apply
+    the same collision + Smagorinsky LES + bounce-back + stream + BCs;
+    only difference is whether forces on the body are summed. If this
+    test fails, the two paths have desynced and validation numbers won't
+    match what the Streamlit app shows."""
+    from src.shapes import cylinder_mask, no_bouzidi_q_field
+
+    Nx, Ny = 60, 40
+    tau = 0.6
+    U = 0.05
+    mask = cylinder_mask(Nx, Ny, cx=20, cy=20, radius=4)
+    q_field = no_bouzidi_q_field(Nx, Ny)
+
+    rho0 = np.ones((Nx, Ny))
+    u0 = np.zeros((2, Nx, Ny))
+    u0[0] = U
+    rng = np.random.default_rng(seed=42)
+    u0[1] = rng.normal(0, 1e-3, size=(Nx, Ny))
+    f_init = equilibrium(rho0, u0)
+
+    f_inflow = equilibrium(1.0, np.array([U, 0.0]))
+    inflow_dirs = np.array([1, 5, 8], dtype=np.int32)
+    outflow_dirs = np.array([3, 6, 7], dtype=np.int32)
+
+    f_with, _Fx, _Fy = step_njit_mrt_with_force(
+        f_init.copy(), tau, mask, q_field, f_inflow, inflow_dirs, outflow_dirs,
+    )
+    f_no = step_njit_mrt_no_force(
+        f_init.copy(), tau, mask, q_field, f_inflow, inflow_dirs, outflow_dirs,
+    )
+
+    # Both functions are JIT-compiled with fastmath + parallel, so identical
+    # arithmetic doesn't always produce bit-identical output (parallel
+    # reduction order can differ). 1e-12 covers that comfortably -- if real
+    # algorithmic drift sneaks in it'll be many orders of magnitude larger.
+    max_diff = float(np.max(np.abs(f_with - f_no)))
+    assert np.allclose(f_with, f_no, atol=1e-12), (
+        f"MRT no_force diverged from with_force: max |Δf| = {max_diff:g}"
+    )
+
+
+def test_step_njit_mrt_conserves_mass_closed_box():
+    """One MRT step in a closed (no inflow / no outflow) box preserves total
+    mass to FP precision. MRT's moment-basis construction makes m0=rho a
+    conserved moment by design; bounce-back and streaming just rearrange
+    populations. If this fails the MRT relaxation rates are leaking mass."""
+    from src.shapes import no_bouzidi_q_field
+
+    Nx, Ny = 40, 30
+    mask = np.zeros((Nx, Ny), dtype=bool)
+    mask[15:20, 12:18] = True  # arbitrary small solid block
+    q_field = no_bouzidi_q_field(Nx, Ny)
+
+    rng = np.random.default_rng(seed=100)
+    rho = rng.uniform(0.95, 1.05, size=(Nx, Ny))
+    u = rng.normal(0, 0.02, size=(2, Nx, Ny))
+    f = equilibrium(rho, u)
+
+    # Empty inflow/outflow direction arrays = closed box (top/bottom walls
+    # bounce back, left/right walls fall back to streaming's periodic).
+    no_dirs = np.empty(0, dtype=np.int32)
+    f_inflow_dummy = equilibrium(1.0, np.array([0.0, 0.0]))
+
+    mass_pre = float(f.sum())
+    f_after = step_njit_mrt_no_force(
+        f, 0.6, mask, q_field, f_inflow_dummy, no_dirs, no_dirs,
+    )
+    mass_post = float(f_after.sum())
+
+    rel_mass_drift = abs(mass_post - mass_pre) / mass_pre
+    assert rel_mass_drift < 1e-10, (
+        f"MRT lost mass: {mass_pre:.6e} -> {mass_post:.6e} "
+        f"(relative drift {rel_mass_drift:.3e})"
+    )
+
+
+def test_step_njit_mrt_uniform_freestream_stays_uniform():
+    """50 MRT steps of uniform inflow over an empty domain must leave the
+    bulk velocity ~ U everywhere (except a thin BL near the top/bottom
+    walls). This catches numerical drift, spurious vorticity injection at
+    the boundaries, or instability in the Smagorinsky correction at zero
+    strain."""
+    from src.shapes import no_bouzidi_q_field
+
+    Nx, Ny = 60, 30
+    U = 0.05
+    mask = np.zeros((Nx, Ny), dtype=bool)
+    q_field = no_bouzidi_q_field(Nx, Ny)
+
+    rho0 = np.ones((Nx, Ny))
+    u0 = np.zeros((2, Nx, Ny))
+    u0[0] = U
+    f = equilibrium(rho0, u0)
+
+    f_inflow = equilibrium(1.0, np.array([U, 0.0]))
+    inflow_dirs = np.array([1, 5, 8], dtype=np.int32)
+    outflow_dirs = np.array([3, 6, 7], dtype=np.int32)
+
+    for _ in range(50):
+        f = step_njit_mrt_no_force(
+            f, 0.7, mask, q_field, f_inflow, inflow_dirs, outflow_dirs,
+        )
+
+    _, u_final = macroscopic(f)
+
+    # Bulk window stays clear of THREE adjustment regions:
+    #   * Zou-He inflow adjustment (the imposed velocity creates a small
+    #     density bump near x=0 that propagates ~10-20 cells inward at 50
+    #     steps and decays over hundreds of steps -- a well-documented LBM
+    #     boundary feature, not a bug. Marginally larger than the previous
+    #     equilibrium inflow's bump, but mass-conserving in exchange)
+    #   * zero-gradient-outflow adjustment (~5 cells from x=Nx-1)
+    #   * top/bottom bounce-back boundary layers (~1-2 cells at tau=0.7)
+    #
+    # Tolerance of 3e-3 (= 6% of U=0.05) admits the small steady-state
+    # inflow bump while still catching real instabilities -- NaN/inf,
+    # exponential growth, wrong-direction flow, or new spurious modes.
+    # A divergent solver would blow this up by 10x+ within a handful of
+    # steps; this threshold is ~30x below any real failure mode.
+    bulk_ux = u_final[0, 25:Nx - 15, 8:Ny - 8]
+    bulk_uy = u_final[1, 25:Nx - 15, 8:Ny - 8]
+
+    assert np.abs(bulk_ux - U).max() < 3e-3, (
+        f"Bulk u_x drifted from inflow value {U}: "
+        f"max abs deviation = {np.abs(bulk_ux - U).max():.4e}"
+    )
+    assert np.abs(bulk_uy).max() < 3e-3, (
+        f"Bulk u_y not zero: max abs = {np.abs(bulk_uy).max():.4e}"
+    )
