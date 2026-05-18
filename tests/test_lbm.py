@@ -412,11 +412,14 @@ def test_step_njit_matches_pure_numpy_single_step():
         f_init.copy(), tau, mask, f_inflow, inflow_dirs, outflow_dirs
     )
 
-    # Both must agree to roughly machine precision.
+    # JIT step is compiled with fastmath=True + parallel reduction, which
+    # relaxes FP associativity. Tolerance is loose enough to absorb that
+    # round-off (well under 1e-10 per cell), tight enough to catch any real
+    # algorithmic bug.
     max_diff = float(np.max(np.abs(f_jit - f_pure)))
-    assert np.allclose(f_jit, f_pure, atol=1e-12), f"f differs from reference by {max_diff:g}"
-    assert np.isclose(Fx_jit, F_pure[0]), f"Fx: JIT={Fx_jit}, ref={F_pure[0]}"
-    assert np.isclose(Fy_jit, F_pure[1]), f"Fy: JIT={Fy_jit}, ref={F_pure[1]}"
+    assert np.allclose(f_jit, f_pure, atol=1e-10), f"f differs from reference by {max_diff:g}"
+    assert np.isclose(Fx_jit, F_pure[0], atol=1e-12), f"Fx: JIT={Fx_jit}, ref={F_pure[0]}"
+    assert np.isclose(Fy_jit, F_pure[1], atol=1e-12), f"Fy: JIT={Fy_jit}, ref={F_pure[1]}"
 
 
 def test_step_njit_matches_pure_numpy_after_ten_steps():
@@ -457,5 +460,8 @@ def test_step_njit_matches_pure_numpy_after_ten_steps():
             f_jit, tau, mask, f_inflow, inflow_dirs, outflow_dirs
         )
 
+    # 10 steps of fastmath round-off can accumulate; we still want the JIT
+    # answer to agree with the reference to ~8 decimal places, far below the
+    # discretization error of the LBM method itself.
     max_diff = float(np.max(np.abs(f_jit - f_pure)))
-    assert np.allclose(f_jit, f_pure, atol=1e-10), f"f drift after 10 steps: {max_diff:g}"
+    assert np.allclose(f_jit, f_pure, atol=1e-8), f"f drift after 10 steps: {max_diff:g}"

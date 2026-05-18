@@ -181,7 +181,7 @@ mesh_v = axes[1].pcolormesh(
 axes[1].set_aspect("equal")
 axes[1].set_xlabel("x")
 axes[1].set_ylabel("y")
-axes[1].set_title("vorticity   (red = clockwise, blue = counter-clockwise)")
+axes[1].set_title("vorticity   (red = counter-clockwise, blue = clockwise)")
 plt.colorbar(mesh_v, ax=axes[1], label=r"$\omega$", pad=0.01, fraction=0.015)
 plt.tight_layout()
 plt.savefig(out_dir / "cylinder_wake.png", dpi=120, bbox_inches="tight")

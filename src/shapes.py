@@ -37,12 +37,16 @@ def cylinder_mask(Nx: int, Ny: int, cx: float, cy: float, radius: float) -> np.n
     return (X - cx) ** 2 + (Y - cy) ** 2 <= radius ** 2
 
 
-def ellipse_mask(Nx: int, Ny: int, cx: float, cy: float, a: float, b: float) -> np.ndarray:
-    """Boolean mask for an axis-aligned ellipse.
+def ellipse_mask(
+    Nx: int, Ny: int, cx: float, cy: float, a: float, b: float,
+    aoa_deg: float = 0.0,
+) -> np.ndarray:
+    """Boolean mask for an ellipse, optionally rotated.
 
-    Condition: ``((x - cx) / a)**2 + ((y - cy) / b)**2 <= 1``. The cylinder is
-    the special case ``a == b == radius`` -- useful for streamlined-vs-bluff
-    comparison studies.
+    Condition: ``((x' / a)**2 + (y' / b)**2 <= 1`` where (x', y') is the world
+    point translated to the ellipse center and rotated INTO the body frame.
+    The cylinder is the special case ``a == b == radius`` -- useful for
+    streamlined-vs-bluff comparison studies.
 
     Parameters
     ----------
@@ -51,28 +55,37 @@ def ellipse_mask(Nx: int, Ny: int, cx: float, cy: float, a: float, b: float) -> 
     cx, cy
         Ellipse center in lattice units.
     a
-        Semi-axis along x (half-width).
+        Semi-axis along the body's local x (half-width before rotation).
     b
-        Semi-axis along y (half-height).
-
-    Returns
-    -------
-    mask : ndarray of bool, shape (Nx, Ny)
+        Semi-axis along the body's local y (half-height before rotation).
+    aoa_deg
+        Rotation about ``(cx, cy)`` in degrees. Positive angle tilts the
+        +x body axis upward in grid coords, matching the NACA convention.
     """
     x = np.arange(Nx)
     y = np.arange(Ny)
     X, Y = np.meshgrid(x, y, indexing="ij")
-    return ((X - cx) / a) ** 2 + ((Y - cy) / b) ** 2 <= 1.0
+    if aoa_deg == 0.0:
+        return ((X - cx) / a) ** 2 + ((Y - cy) / b) ** 2 <= 1.0
+    ang = np.deg2rad(aoa_deg)
+    c, s = np.cos(ang), np.sin(ang)
+    # Inverse of the CW rotation used by naca4_airfoil_mask -- maps world coords
+    # back into body-frame coords where the ellipse is axis-aligned.
+    Xr = c * (X - cx) - s * (Y - cy)
+    Yr = s * (X - cx) + c * (Y - cy)
+    return (Xr / a) ** 2 + (Yr / b) ** 2 <= 1.0
 
 
-def square_mask(Nx: int, Ny: int, cx: float, cy: float, side: float) -> np.ndarray:
-    """Boolean mask for an axis-aligned square.
+def square_mask(
+    Nx: int, Ny: int, cx: float, cy: float, side: float,
+    aoa_deg: float = 0.0,
+) -> np.ndarray:
+    """Boolean mask for a square, optionally rotated.
 
-    Two conditions ANDed: ``|x - cx| <= side/2 AND |y - cy| <= side/2``. The
-    wall is implicit at the half-cell boundary (consistent with halfway
-    bounce-back convention used elsewhere). For a moderate-Re wake this gives
-    the classic bluff-body separation pattern -- much wider wake than a
-    cylinder of equivalent frontal area.
+    Two conditions ANDed: ``|x'| <= side/2 AND |y'| <= side/2`` where the
+    primed coordinates are the world point translated to the center and
+    rotated INTO the body frame. The wall is implicit at the half-cell
+    boundary (consistent with halfway bounce-back convention).
 
     Parameters
     ----------
@@ -81,17 +94,22 @@ def square_mask(Nx: int, Ny: int, cx: float, cy: float, side: float) -> np.ndarr
     cx, cy
         Square center in lattice units.
     side
-        Edge length in lattice units (frontal area = side per unit span).
-
-    Returns
-    -------
-    mask : ndarray of bool, shape (Nx, Ny)
+        Edge length in lattice units.
+    aoa_deg
+        Rotation about ``(cx, cy)`` in degrees. Positive angle tilts the
+        +x body axis upward in grid coords, matching the NACA convention.
     """
     x = np.arange(Nx)
     y = np.arange(Ny)
     X, Y = np.meshgrid(x, y, indexing="ij")
     half = side / 2.0
-    return (np.abs(X - cx) <= half) & (np.abs(Y - cy) <= half)
+    if aoa_deg == 0.0:
+        return (np.abs(X - cx) <= half) & (np.abs(Y - cy) <= half)
+    ang = np.deg2rad(aoa_deg)
+    c, s = np.cos(ang), np.sin(ang)
+    Xr = c * (X - cx) - s * (Y - cy)
+    Yr = s * (X - cx) + c * (Y - cy)
+    return (np.abs(Xr) <= half) & (np.abs(Yr) <= half)
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +163,28 @@ def _naca4_camber(x: np.ndarray, m: float, p: float) -> tuple:
     return y_c, dyc_dx
 
 
+def naca4_outline_xy(naca_code: str, n_pts: int = 200) -> tuple:
+    """High-resolution NACA 4-digit boundary in airfoil-local coords.
+
+    Returns ``(poly_x, poly_y)`` with the LE at the origin and the chord
+    aligned with the +x axis. Same polygon construction the mask function
+    uses, so an overlay drawn from this matches the mask exactly. Caller is
+    responsible for the AoA rotation + grid placement.
+    """
+    m, p, t = _naca4_decode(naca_code)
+    x_a = np.linspace(0.0, 1.0, n_pts)
+    y_t = _naca4_thickness(x_a, t)
+    y_c, dyc_dx = _naca4_camber(x_a, m, p)
+    theta = np.arctan(dyc_dx)
+    x_upper = x_a - y_t * np.sin(theta)
+    y_upper = y_c + y_t * np.cos(theta)
+    x_lower = x_a + y_t * np.sin(theta)
+    y_lower = y_c - y_t * np.cos(theta)
+    poly_x = np.concatenate([x_upper, x_lower[::-1]])
+    poly_y = np.concatenate([y_upper, y_lower[::-1]])
+    return poly_x, poly_y
+
+
 def naca4_airfoil_mask(
     Nx: int,
     Ny: int,
@@ -177,25 +217,7 @@ def naca4_airfoil_mask(
     -------
     mask : ndarray of bool, shape (Nx, Ny)
     """
-    m, p, t = _naca4_decode(naca_code)
-
-    # Sample airfoil-local boundary at high resolution (200 points per surface)
-    # so the polygon faithfully captures the rounded LE and thin TE.
-    n_pts = 200
-    x_a = np.linspace(0.0, 1.0, n_pts)
-    y_t = _naca4_thickness(x_a, t)
-    y_c, dyc_dx = _naca4_camber(x_a, m, p)
-    theta = np.arctan(dyc_dx)
-
-    # Surface points with thickness perpendicular to camber line.
-    x_upper = x_a - y_t * np.sin(theta)
-    y_upper = y_c + y_t * np.cos(theta)
-    x_lower = x_a + y_t * np.sin(theta)
-    y_lower = y_c - y_t * np.cos(theta)
-
-    # Closed polygon: upper LE -> TE, then lower TE -> LE.
-    poly_x = np.concatenate([x_upper, x_lower[::-1]])
-    poly_y = np.concatenate([y_upper, y_lower[::-1]])
+    poly_x, poly_y = naca4_outline_xy(naca_code, n_pts=200)
 
     # Transform from airfoil-local (LE at origin, chord along +x) to grid coords.
     # Positive AoA rotates LE up, which puts TE below the chord direction in

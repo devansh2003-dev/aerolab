@@ -1,4 +1,4 @@
-# Top-level deps pinned to what we tested locally on 2026-05-10.
+# Top-level deps pinned to what we tested locally on 2026-05-18.
 # Bump deliberately; a CI-equivalent doesn't exist yet, so an unpinned upgrade
 # could break the deployed app silently.
 streamlit==1.57.0
@@ -8,3 +8,11 @@ matplotlib==3.10.9
 plotly==6.7.0
 numpy==2.4.4
 numba==0.65.1
+# scipy used in the LBM render path for gaussian_filter (smooths vorticity +
+# velocity fields) and for the body-outline expansion math.
+scipy==1.17.1
+# pandas pulled in via aerosandbox; pinned explicitly so the Cloud doesn't
+# silently grab a version that breaks the polar CSV export.
+pandas==3.0.2
+# Pillow used to assemble the LBM-mode animated GIF (quantize + save_all).
+Pillow>=10.0.0
