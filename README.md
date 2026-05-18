@@ -8,7 +8,7 @@
 Drop in a 2D shape (cylinder, square, ellipse, NACA airfoil), set the angle of attack and Reynolds number, watch the wake develop. Two modes:
 
 - **Fast (NeuralFoil)** — instant ML polar predictions for airfoils. Drag a slider, get lift / drag / drag-polar numbers in under a second.
-- **Real CFD (LBM)** — full Lattice Boltzmann simulation rendered as an animated GIF. Watch the air actually move. ~30 s for a Standard-resolution run, ~2 min for Detailed.
+- **Real CFD (LBM)** — full Lattice Boltzmann simulation rendered as an animated GIF. Watch the air actually move. ~12 s for a Standard-resolution run locally, ~50 s for Detailed. Streamlit Cloud is ~5× slower (~1 min and ~3 min respectively — see "Honest expectations" below).
 
 Built CPU-only with a custom Lattice Boltzmann solver, free to use, mobile-friendly.
 
@@ -18,11 +18,11 @@ Built CPU-only with a custom Lattice Boltzmann solver, free to use, mobile-frien
 
 > ⚠ **The deployed version may lag `main` by 1–2 commits.** Streamlit Cloud auto-redeploys on push, but the URL is only verified after each push. If something looks off, the local instance (`streamlit run app.py`) is authoritative.
 
-> **Honest expectations:** Fast mode is instant. Real CFD mode runs a real LBM simulation on Streamlit's free-tier shared CPU — expect **30–45 s per click on Standard**, **2–3 min on Detailed**. The very first time a Cloud container boots, you'll see a "Pre-warming Numba JIT" spinner for ~35–45 s (~23 s on a modern laptop; measured via `scripts/dev_measure_cold_start.py`). After that, JIT cost is paid; subsequent clicks pay only the simulation time. If you want to play with sliders fast, use Fast mode.
+> **Honest expectations:** Fast mode is instant. Real CFD mode runs a real LBM simulation. **Local (Numba parallel JIT, 4+ cores):** ~12 s Standard, ~50 s Detailed per click. **Streamlit Cloud free tier (1-vCPU shared CPU, no parallel benefit):** ~1 min Standard, ~3 min Detailed. The first CFD click also pays a ~25 s JIT compile (~40 s on Cloud) which we try to hide behind a startup spinner. If you want to play with sliders fast, use Fast mode — Real CFD is for watching the simulation, not iterating quickly.
 
 ### What's working
 
-- **Real CFD (LBM mode):** 5 shape presets (cylinder, square, ellipse, NACA 0012, NACA 4412), Reynolds 50–1500, AoA / rotation per-shape, two grid presets (Standard 320×100, Detailed 720×240). MRT collision + Smagorinsky LES, Zou-He inflow/outflow BCs, Bouzidi interpolated wall correction. Side-by-side comparison, GIF download with parameter-encoded filenames.
+- **Real CFD (LBM mode):** 5 shape presets (cylinder, square, ellipse, NACA 0012, NACA 4412), Reynolds 50–1500, AoA / rotation per-shape, two grid presets (Standard 240×80, Detailed 720×240). MRT collision + Smagorinsky LES, Zou-He inflow/outflow BCs, Bouzidi interpolated wall correction. Side-by-side comparison, GIF download with parameter-encoded filenames.
 - **Fast mode:** NeuralFoil polar sweeps for NACA airfoils with three model sizes (xxxlarge / medium / xsmall).
 - **106 unit tests** covering physics invariants, JIT/reference equivalence, geometric correctness, visual-regression snapshot. `pytest -q` runs in ~21 s warm (the visual-regression test runs a 51-frame canonical cylinder pipeline).
 - **Validation:** lid-driven cavity benchmark hits the Ghia 1982 reference, cylinder Re=100 produces clean von Kármán shedding, full validation audit in `scripts/dev_validate_cfd.py`.
@@ -32,7 +32,7 @@ Built CPU-only with a custom Lattice Boltzmann solver, free to use, mobile-frien
 AeroLab shares the *collision-rule family* (MRT + Smagorinsky LES) with industrial LBM solvers like PowerFLOW, ProLB, and M-Star, and with academic codes like Palabos and waLBerla. Sharing the collision rule is like sharing "has four wheels" with a Formula 1 car. Industrial CFD adds layers we don't have:
 
 - **No GPU acceleration.** Pure CPU + Numba parallel-over-x. Re envelope tops out at 1500 in 2D on a single-process box; industrial solvers run Re ≥ 10⁶ on GPU clusters.
-- **No adaptive mesh refinement.** Uniform 320×100 or 720×240 grid. Real solvers refine near walls and shear layers automatically.
+- **No adaptive mesh refinement.** Uniform 240×80 or 720×240 grid. Real solvers refine near walls and shear layers automatically.
 - **No wall-function turbulence model.** We resolve the boundary layer directly, which is only feasible at low Re. Wall functions are what lets industrial codes skip resolving the viscous sublayer.
 - **No cumulant collision, no multi-block, no automatic time-stepping, no 3D.** Each is a multi-month addition.
 - **No cross-validation against OpenFOAM / Fluent / Star-CCM+.** We compare against textbook numbers (Strouhal 0.165, Cd 1.4 from 1980s reference tables) — not a contemporary co-run. That cross-comparison is roadmapped as Phase 3 work.
@@ -63,7 +63,7 @@ The schedule isn't slipping in calendar time; it's pivoting in *scope*. The solv
 - **Shape mask + q-field library** in [src/shapes.py](src/shapes.py): cylinder, square, ellipse, NACA 4-digit airfoil. Square and ellipse take an `aoa_deg` rotation; NACA airfoils take wing tilt. All four ship analytic q-fields (sub-cell wall-distance per link) for Bouzidi. Polygon-segment intersection for the airfoil, quadratic line-shape for cylinder/ellipse, 4-face linear intersection for the square.
 - **Momentum-exchange force calculation** (Ladd 1994 + Mei 2002) in [src/forces.py](src/forces.py) and inline in the JIT step.
 - **Streamlit LBM mode** in [app.py](app.py):
-  - 320×100 ("Standard", 100 frames) or 720×240 ("Detailed", 150 frames) grid, Reynolds slider 50–1500, rotation sliders per-shape.
+  - 240×80 ("Standard", 60 frames × 35 steps = 2100 LBM steps) or 720×240 ("Detailed", 100 frames × 35 steps = 3500 LBM steps) grid, Reynolds slider 50–1500, rotation sliders per-shape. Frame counts tuned so the wake captures >1 full vortex-shedding period on each preset while keeping per-click wait time bearable on Streamlit Cloud's 1-vCPU shared CPU (~1 min Standard, ~3 min Detailed on Cloud; ~12 s and ~50 s locally with Numba parallel).
   - **Vorticity heatmap** (RdBu_r diverging, alpha-modulated, capped at 90 % opacity) with a vertical wall fade.
   - **Speed-coloured streaklines** on a perceptually-uniform `plasma` colormap. RK4-advected particles seeded from the inflow + from a wake band downstream of the body (with body-interior rejection), so the wake region stays populated even after particles convect out.
   - **Smooth analytic body outline** overlaid on the LBM mask (70 % alpha so the boundary layer is visible, thin slate edge stroke).

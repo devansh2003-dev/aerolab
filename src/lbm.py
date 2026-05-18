@@ -7,7 +7,16 @@ Reference: Kruger et al., "The Lattice Boltzmann Method: Principles and Practice
 (Springer, 2017) -- the standard textbook for this method.
 """
 import numpy as np
-from numba import njit, prange
+from numba import njit
+
+# prange aliased to range so the loop syntax below stays the same. We
+# dropped numba parallel=True after Streamlit Cloud's container produced
+# RuntimeError("Cannot set NUMBA_NUM_THREADS to a [...]") at JIT-compile
+# time -- something in Cloud's environment mutates Numba's thread config
+# between import and compile, and the cleanest fix is to remove threading
+# from the equation entirely. Local loses ~2-3x parallel speedup on the
+# LBM step; Cloud's 1 vCPU was already serial in practice.
+prange = range
 
 # ---------------------------------------------------------------------------
 # D2Q9 lattice
@@ -462,7 +471,7 @@ def zou_he_outflow_pressure(f, rho_out=1.0):
 # Equivalence with the pure-NumPy reference is checked by a unit test in
 # tests/test_lbm.py -- if you change either, the test must still pass.
 
-@njit(cache=True, parallel=True, fastmath=True)
+@njit(fastmath=True)
 def step_njit_with_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs, outflow_dirs):
     """One fused LBM timestep + momentum-exchange force calculation.
 
@@ -860,7 +869,7 @@ def collide_mrt(f, tau):
     return np.einsum("ij,jxy->ixy", M_inv, m_post)
 
 
-@njit(cache=True, parallel=True, fastmath=True)
+@njit(fastmath=True)
 def step_njit_mrt_with_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs, outflow_dirs):
     """One fused MRT-LBM timestep + momentum-exchange force calculation.
 
@@ -1139,7 +1148,7 @@ def step_njit_mrt_with_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs,
     return f_new, Fx, Fy
 
 
-@njit(cache=True, parallel=True, fastmath=True)
+@njit(fastmath=True)
 def step_njit_mrt_no_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs, outflow_dirs):
     """MRT timestep without the momentum-exchange force calculation.
 

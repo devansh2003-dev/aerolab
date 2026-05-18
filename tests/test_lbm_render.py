@@ -37,7 +37,7 @@ from src.lbm_render import (
 )
 
 
-STANDARD = "Standard (320 x 100)"
+STANDARD = "Standard (240 x 80)"
 STANDARD_CFG = RESOLUTION_PRESETS[STANDARD]
 
 
@@ -304,5 +304,11 @@ def test_simulate_and_render_default_n_frames_uses_preset():
         "Cylinder", 200, 0.0, STANDARD, n_frames=1,
     )
     assert result["n_frames"] == 1
-    # Preset's default frame count is still what production uses.
-    assert STANDARD_CFG["n_frames"] == 100
+    # Preset's default frame count is still what production uses. The
+    # exact number is tuned for Cloud wall-time; this test just guards
+    # against the preset accidentally going below the kick window.
+    assert STANDARD_CFG["n_frames"] >= 30, (
+        f"Standard preset n_frames={STANDARD_CFG['n_frames']} is shorter "
+        f"than the kick window (frames 0.6-4) + ~25 frames of recorded wake "
+        f"-- the wake won't develop. Bump back up."
+    )

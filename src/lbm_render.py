@@ -58,11 +58,13 @@ mpl.rcParams["font.sans-serif"] = [
 # =====================================================================
 
 # --- Simulation: timestep schedule, inflow, body perturbation ---
-# STEPS_PER_FRAME: 50 = 5 cells of inflow advance per recorded frame at
+# STEPS_PER_FRAME: 35 = 3.5 cells of inflow advance per recorded frame at
 # U=0.1. Smaller = smoother playback at the cost of more LBM work per
-# frame; larger = jumpy motion. The per-preset N_FRAMES lives in
-# RESOLUTION_PRESETS below (Standard 100 frames, Detailed 150 frames).
-STEPS_PER_FRAME = 50
+# frame; larger = jumpy motion. Was 50 before the Cloud-perf pass --
+# dropping to 35 cuts total LBM work by 30 % with only marginal
+# inter-frame jump visible. The per-preset N_FRAMES lives in
+# RESOLUTION_PRESETS below (Standard 60 frames, Detailed 100 frames).
+STEPS_PER_FRAME = 35
 # U_INFLOW: lattice inflow speed. 0.1 keeps Mach ~ 0.17 (well below the
 # LBM stability limit of ~0.3). Don't increase past 0.15 without
 # widening tau or compressibility errors get visible.
@@ -84,25 +86,31 @@ OUTFLOW_DIRS = np.array([3, 6, 7], dtype=np.int32)
 # fills viewport, wake develops within 5000 steps. Detailed bumps grid
 # ~5.6x in cells and recording to 10000 steps for full limit-cycle.
 RESOLUTION_PRESETS = {
-    "Standard (320 x 100)": dict(
-        Nx=320, Ny=100, body_x=70, cy=50,
-        cylinder_D=20, square_side=20,
-        ellipse_a=22, ellipse_b=11, chord=44,
-        n_frames=100,
+    "Standard (240 x 80)": dict(
+        Nx=240, Ny=80, body_x=52, cy=40,
+        cylinder_D=16, square_side=16,
+        ellipse_a=18, ellipse_b=9, chord=36,
+        n_frames=60,
         gif_palette=192,
     ),
     "Detailed (720 x 240)": dict(
         Nx=720, Ny=240, body_x=160, cy=120,
         cylinder_D=45, square_side=45,
         ellipse_a=50, ellipse_b=25, chord=100,
-        n_frames=150,
+        n_frames=100,
         gif_palette=128,
     ),
-    # n_frames=150 (was 200) on Detailed: the wake fully develops by
-    # frame ~80, so frames 150-200 were repetitive at the cost of ~25 %
-    # more GIF bytes. Trimming brings Detailed from ~18 MB to ~13 MB
-    # per artifact -- meaningful for free-tier Cloud bandwidth without
-    # losing visible wake structure.
+    # Standard preset shrunk from 320x100 to 240x80 (44 % fewer cells)
+    # for Cloud free-tier wall-time. Body sizes scaled with the grid so
+    # blockage stays ~20 % (cylinder D/Ny = 16/80) -- matches the old
+    # Standard's blockage. Detailed is unchanged: opt-in for quality.
+    #
+    # Budget at STEPS_PER_FRAME=35:
+    #   Standard 60 frames * 35 steps = 2100 LBM steps  (~1.4 shedding
+    #     periods at D=16). Cloud ~ 60-75 s; local ~ 12 s.
+    #   Detailed 100 frames * 35 steps = 3500 LBM steps (~2.5 periods
+    #     at D=45). Cloud ~ 3-4 min; local ~ 50 s.
+    # GIF sizes: Standard ~3-4 MB, Detailed ~9-11 MB (palette 192/128).
 }
 # gif_palette: number of colors in the MEDIANCUT palette used to quantize
 # each frame. Lower = smaller GIF, more posterization in smooth gradients.
@@ -198,10 +206,12 @@ SPEED_CMAP = ListedColormap(
 # speed lands at the midpoint and "slower/faster than freestream"
 # reads symmetrically.
 SPEED_CLIP_FACTOR = 2.0
-# Figure: 1100x350 px at 100 DPI. Wider aspect matches Nx/Ny ratios
-# of both presets (3.2 and 3.0). Bumping DPI helps Cloud rendering
-# only marginally, costs ~40ms/frame.
-FIG_W_IN, FIG_H_IN, FIG_DPI = 11.0, 3.5, 100
+# Figure: 968x308 px at 88 DPI. Wider aspect matches Nx/Ny ratios of
+# both presets (3.0 each after the Standard shrink). DPI dropped from
+# 100 to 88 in the Cloud-perf pass -- ~22 % fewer pixels per frame,
+# proportionally faster matplotlib draw + smaller GIF, visually
+# indistinguishable from 100 on a typical display.
+FIG_W_IN, FIG_H_IN, FIG_DPI = 11.0, 3.5, 88
 # GIF_FRAME_MS 67 -> 15 fps. Browser GIF playback caps at ~20 fps
 # reliably; 15 is the safe choice across Chrome/Firefox/Safari.
 GIF_FRAME_MS = 67
@@ -330,14 +340,14 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
     aoa_deg : float
         Body rotation / wing tilt in degrees. Ignored for Cylinder.
     res_key : str
-        One of the keys in RESOLUTION_PRESETS ("Standard (320 x 100)" or
+        One of the keys in RESOLUTION_PRESETS ("Standard (240 x 80)" or
         "Detailed (720 x 240)").
     progress_callback : callable or None
         Signature ``(fraction: float in [0, 1], text: str) -> None``.
         Defaults to a no-op for headless use.
     n_frames : int or None
         Overrides the per-preset frame count. Used by end-to-end tests to
-        run a 5-frame pipeline in ~5 s instead of 100/150. Production
+        run a 5-frame pipeline in ~5 s instead of 60/100. Production
         callers leave it None.
 
     Returns
@@ -418,10 +428,11 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
     body_xs, body_ys = body_outline_xy(shape_preset, res_cfg, aoa_deg)
     body_xs, body_ys = expand_outline(body_xs, body_ys, BODY_OUTLINE_MARGIN)
 
-    # Per-preset frame count. Detailed runs 150 frames at 50 steps/frame
-    # = 7500 lattice timesteps -- enough for the wake to reach periodic
-    # limit cycle even on the bigger 720x240 grid. Standard stays at
-    # 100 frames / 5000 steps. The n_frames kwarg overrides for tests.
+    # Per-preset frame count. Detailed runs 100 frames at 50 steps/frame
+    # = 5000 lattice timesteps -- enough for the wake to develop at least
+    # 2 von Karman shedding periods at the bigger 720x240 grid. Standard
+    # is 60 frames / 3000 steps (~1.5 periods on its smaller body).
+    # The n_frames kwarg overrides for tests.
     n_frames_local = int(n_frames) if n_frames is not None else res_cfg["n_frames"]
     n_steps_local = n_frames_local * STEPS_PER_FRAME
     # GIF palette size from preset; .get() fallback keeps older preset

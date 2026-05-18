@@ -35,7 +35,7 @@ DEFAULT_CONFIG = dict(
     shape="Cylinder",
     re=400,
     aoa=0.0,
-    res="Standard (320 x 100)",
+    res="Standard (240 x 80)",
     frame=50,
 )
 

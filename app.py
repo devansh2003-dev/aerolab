@@ -9,6 +9,24 @@ Run from the project root:
 
 The browser opens automatically at http://localhost:8501.
 """
+# Force NUMBA_NUM_THREADS=16 BEFORE any other import. Diagnosed from a
+# Cloud error log: Cloud's container starts with NUMBA_NUM_THREADS
+# UNSET, numba imports and auto-detects cpu_count=1 (cgroups throttle
+# the container to 1 vCPU) so it launches 1 thread. Then Cloud's
+# request handling later SETS NUMBA_NUM_THREADS to 16 (the underlying
+# host's logical CPU count). When JIT compile fires, numba's
+# reload_config sees env=16 vs launched=1 and crashes with
+# "RuntimeError: Cannot set NUMBA_NUM_THREADS to a different value
+# once the threads have been launched (currently have 1, trying to set
+# 16)".
+#
+# Setting env=16 here pre-empts that: numba launches 16 threads from
+# the start, and Cloud's later assignment is a no-op (already 16). The
+# 16 threads contending for 1 vCPU is wasteful but functionally
+# serial; "wasteful" beats "crashed" every time.
+import os
+os.environ["NUMBA_NUM_THREADS"] = "16"
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -85,30 +103,12 @@ def _cached_simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key)
         progress.empty()
 
 
-# --- JIT pre-warm (module level, cached across Streamlit reruns) ---
-# Each of the three @njit step variants takes ~20-30 s to compile cold.
-# By default that cost lands on the user's first Run-button click, after
-# they've already committed to waiting. We move it earlier: a tiny dummy
-# run on a 16x8 grid forces compilation during page load instead.
-#
-# @st.cache_resource caches the result across all sessions in the
-# process, so this runs exactly once per Streamlit container -- on
-# Streamlit Cloud cold-boots it lands inside the Cloud loading screen,
-# not on a user-visible click.
-@st.cache_resource(
-    show_spinner=":material/local_fire_department: Pre-warming Numba JIT (one-time, ~20-30 s on first boot)..."
-)
-def _warm_jit():
-    from src.warmup import warm
-    return warm()
-
-
 # --- Real CFD (LBM) mode: animated GIF playback of LBM run ---
+# Pre-warm was removed because it didn't survive Streamlit Cloud's
+# environment quirks (NUMBA_NUM_THREADS RuntimeError at JIT-compile
+# time). First user click in a fresh container now pays the full ~20-30 s
+# JIT cost; subsequent clicks are instant (cached by @st.cache_data).
 if mode == "Real CFD (LBM)":
-    # Pre-warm the JIT cache before the user can click Run. The spinner
-    # shows for ~20-30 s on cold boot, then this returns instantly on
-    # every subsequent rerun.
-    _warm_jit()
     # Lazy imports: keep Fast mode's cold-start untouched by Numba + matplotlib.
     # All the heavy lifting (LBM step, rendering, GIF encoding) lives in
     # src.lbm_render -- this branch is only sidebar UI + result display.
@@ -259,10 +259,10 @@ if mode == "Real CFD (LBM)":
             index=0,
             label_visibility="collapsed",
             help=(
-                "**Standard** (320x100, D=20 body, 5000 sim steps) -- "
+                "**Standard** (240x80, D=16 body, 2100 sim steps) -- "
                 "body+wake fill the viewport, wake develops within the "
                 "recording, ~15s per run. **Detailed** (720x240, D=45 body, "
-                "7500 sim steps) -- 5.4x more cells, ~2x bigger bodies, "
+                "3500 sim steps) -- 9x more cells, ~3x bigger bodies, "
                 "longer downstream channel + twice as many simulation steps; "
                 "the wake reaches full periodic limit-cycle inside the loop "
                 "and airfoil downwash is much more visible. ~90-150s per run."
@@ -272,16 +272,17 @@ if mode == "Real CFD (LBM)":
 
         st.markdown("---")
         run_clicked = st.button(
-            ":material/play_arrow: &nbsp; **Run simulation**",
+            ":material/play_arrow:  **Run simulation**",
             type="primary", use_container_width=True,
         )
         if "Standard" in res_display:
-            st.caption(":material/timer: First run ~30-45s (one-time MRT "
-                       "compile). Later runs ~15s; revisits are instant "
-                       "(cached).")
+            st.caption(":material/timer: Local: ~12 s warm, ~35 s first cold "
+                       "click. Streamlit Cloud (1-vCPU shared): ~1 min. "
+                       "Revisits are instant (cached).")
         else:
-            st.caption(":material/timer: First run ~2-3 min. Later runs "
-                       "~90-150s; revisits are instant (cached).")
+            st.caption(":material/timer: Local: ~50 s warm, ~80 s first cold "
+                       "click. Streamlit Cloud (1-vCPU shared): ~3 min. "
+                       "Revisits are instant (cached).")
 
     # === Main page header ===
     st.title("Real CFD")
@@ -432,7 +433,7 @@ if mode == "Real CFD (LBM)":
         action_cols = st.columns([1, 1, 1, 3])
         with action_cols[0]:
             st.download_button(
-                ":material/download: &nbsp; Download GIF",
+                ":material/download:  Download GIF",
                 data=gif_bytes,
                 file_name=_gif_name,
                 mime="image/gif",
@@ -442,29 +443,56 @@ if mode == "Real CFD (LBM)":
             )
         with action_cols[1]:
             _pin_label = (
-                ":material/push_pin: &nbsp; Snapshot pinned"
+                ":material/push_pin:  Pinned (change params to compare)"
                 if snapshot_is_current else
-                ":material/push_pin: &nbsp; Pin for comparison"
+                ":material/push_pin:  Pin for comparison"
             )
             if st.button(
                 _pin_label, use_container_width=True,
                 disabled=snapshot_is_current,
                 help="Save this run as a comparison snapshot. The next run "
-                     "will display side-by-side against it.",
+                     "with different parameters will display side-by-side "
+                     "against this pinned snapshot.",
                 key="pin_for_comparison",
             ):
                 st.session_state["lbm_snapshot"] = _current_config
+                _snap_aoa_part = f" AoA {aoa_deg:+.0f}deg" if abs(aoa_deg) > 0.25 else ""
+                st.toast(
+                    f":material/push_pin: Pinned: {shape_preset} Re={int(reynolds_target)}{_snap_aoa_part}. "
+                    f"Change a parameter and click Run to see side-by-side.",
+                    icon=":material/push_pin:",
+                )
                 st.rerun()
         with action_cols[2]:
             if snapshot is not None:
                 if st.button(
-                    ":material/close: &nbsp; Clear snapshot",
+                    ":material/close:  Clear snapshot",
                     use_container_width=True,
                     help="Remove the pinned snapshot and return to single-run view.",
                     key="clear_comparison",
                 ):
                     del st.session_state["lbm_snapshot"]
                     st.rerun()
+
+        # Persistent pinned-state caption -- gives the user feedback that
+        # something IS pinned, since pinning before changing params has no
+        # other visible effect on the current view.
+        if snapshot is not None:
+            snap_shape, snap_re, snap_aoa, snap_res = snapshot
+            snap_aoa_str = f", AoA {snap_aoa:+.0f}deg" if abs(snap_aoa) > 0.25 else ""
+            snap_res_short = "Standard" if "Standard" in snap_res else "Detailed"
+            if snapshot_is_current:
+                _pin_msg = (
+                    f":material/push_pin: **Pinned: this run.** "
+                    f"Change a parameter and click Run to see side-by-side."
+                )
+            else:
+                _pin_msg = (
+                    f":material/push_pin: **Pinned: {snap_shape}, "
+                    f"Re={snap_re}{snap_aoa_str}, {snap_res_short}.** "
+                    f"Showing side-by-side with the current run above."
+                )
+            st.caption(_pin_msg)
 
         st.markdown(
             "<div style='color:#94a3b8;font-size:0.78rem;"
