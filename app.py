@@ -63,7 +63,7 @@ with st.sidebar:
         "<b style='color:#cbd5e1;'>Fast</b> &mdash; airfoil lift/drag numbers in "
         "&lt;1 s. Drag a slider, get a polar.<br>"
         "<b style='color:#cbd5e1;'>Real CFD</b> &mdash; watch the air actually move "
-        "around a shape. ~30 s per run."
+        "around a shape. ~1 min on Cloud, ~12 s locally."
         "</div>",
         unsafe_allow_html=True,
     )
@@ -261,11 +261,12 @@ if mode == "Real CFD (LBM)":
             help=(
                 "**Standard** (240x80, D=16 body, 2100 sim steps) -- "
                 "body+wake fill the viewport, wake develops within the "
-                "recording, ~15s per run. **Detailed** (720x240, D=45 body, "
-                "3500 sim steps) -- 9x more cells, ~3x bigger bodies, "
-                "longer downstream channel + twice as many simulation steps; "
-                "the wake reaches full periodic limit-cycle inside the loop "
-                "and airfoil downwash is much more visible. ~90-150s per run."
+                "recording. ~12 s local / ~1 min Cloud. **Detailed** "
+                "(720x240, D=45 body, 3500 sim steps) -- 9x more cells, "
+                "~3x bigger bodies, longer downstream channel; the wake "
+                "reaches full periodic limit-cycle inside the loop and "
+                "airfoil downwash is much more visible. ~50 s local / "
+                "~3 min Cloud."
             ),
         )
         res_cfg = RESOLUTION_PRESETS[res_display]
@@ -303,8 +304,8 @@ if mode == "Real CFD (LBM)":
                 f"simulation runs {_preview_n_steps:,} steps, then plays the "
                 f"result back as a smooth 15 fps animation. On the *first* "
                 f"click in a fresh session the solver compiles itself "
-                f"(one-time, ~30s). Every click after that is just the "
-                f"simulation time."
+                f"(one-time, ~25 s local / ~40 s Cloud). Every click after "
+                f"that is just the simulation time."
             )
         with st.expander(
                 ":material/lightbulb: What you'll see -- a quick primer"):

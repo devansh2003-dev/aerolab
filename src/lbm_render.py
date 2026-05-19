@@ -72,8 +72,9 @@ U_INFLOW = 0.1
 # Kick: a small directional perturbation injected near the body during
 # the first ~5 frames to break perfect symmetry (would otherwise leave
 # cylinder wake non-shedding for thousands of steps due to FP-perfect
-# mirror flow). KICK_AMPLITUDE 0.008 is stronger than the 0.005 we used
-# to have warmup, since now the wake has to develop within the recording.
+# mirror flow). KICK_AMPLITUDE 0.008 is stronger than the 0.005 used
+# when we had a separate warmup loop -- now the wake has to develop
+# within the recording itself, so the kick needs to bite harder.
 KICK_START, KICK_END = 30, 200
 KICK_AMPLITUDE = 0.008
 KICK_Y_OFFSET = 2
@@ -82,9 +83,9 @@ INFLOW_DIRS = np.array([1, 5, 8], dtype=np.int32)
 OUTFLOW_DIRS = np.array([3, 6, 7], dtype=np.int32)
 
 # --- Grid presets ---
-# Standard matches the dev_lbm_gif_preview reference geometry: body
-# fills viewport, wake develops within 5000 steps. Detailed bumps grid
-# ~5.6x in cells and recording to 10000 steps for full limit-cycle.
+# Standard: 240x80, body fills viewport, wake develops within the 2100
+# recorded steps. Detailed bumps grid ~9x in cells and 3500 steps for
+# fuller limit-cycle. Both budgets defined explicitly in the dict below.
 RESOLUTION_PRESETS = {
     "Standard (240 x 80)": dict(
         Nx=240, Ny=80, body_x=52, cy=40,

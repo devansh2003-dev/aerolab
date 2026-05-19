@@ -734,7 +734,7 @@ def step_njit_with_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs, out
 # 360, 437-451. The constraint is 0 < s_i < 2 for stability; values near 1.0
 # maximize stability, values near 1/tau minimize accuracy loss vs BGK at low
 # Re. We pick the middle ground here -- empirically stable from Re=50 up
-# through at least Re=1500 on the 320x100 standard preset.
+# through at least Re=1500 on the 240x80 standard preset.
 
 # MRT free relaxation rates (applied to the non-conserved, non-viscous
 # moments). Tuned to 1.4 -- the Lallemand-Luo middle ground validated for
@@ -761,15 +761,17 @@ S_Q = 1.4    # energy-flux moments (m4, m6)  -- ghost-moment damping
 # common engineering range is 0.10-0.20 (Smagorinsky 1963 ~0.16,
 # Deardorff 0.10-0.14).
 #
-# Stability survey (5000 steps, Standard 320x100, every shape+AoA, Re=200,500,
-# 1000,1500) on 2026-05-18:
+# Stability survey (5000 steps, then-Standard 320x100, every shape+AoA,
+# Re=200,500,1000,1500) on 2026-05-18:
 #   * Re<=500: all 9 (shape,AoA) combos stable at 0.14, 0.17, and 0.20.
 #   * Re>=1000 + sharp-corner geometry (Square 45 deg, Ellipse 45 deg): NaN
-#     at all three values. The instability is BC-driven, not LES-driven --
-#     halfway bounce-back on a knife-edge voxelized corner injects spurious
-#     pressure pulses no amount of subgrid damping can absorb. The proper
-#     fix is Bouzidi-Firdaouss-Lallemand interpolated bounce-back, not a
-#     higher C_SMAG.
+#     at all three values WHEN USING halfway bounce-back -- the BC-driven
+#     instability traced to knife-edge voxelized corners injecting spurious
+#     pressure pulses no amount of subgrid damping could absorb. This was
+#     the motivation for adding Bouzidi-Firdaouss-Lallemand interpolated
+#     bounce-back, which is now the production path (square_q_field /
+#     ellipse_q_field in src/shapes.py); the sharp-corner cases are stable
+#     since that change.
 #   * 0.14 ADDS three new unstable cases at moderate Re (Cylinder@Re=1000,
 #     Square 45@Re=1000, Ellipse 30@Re=1500) -- too thin a margin.
 #   * 0.20 was previously claimed to be "stable to Re=1500" but actually
