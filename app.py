@@ -63,7 +63,7 @@ with st.sidebar:
         "<b style='color:#cbd5e1;'>Fast</b> &mdash; airfoil lift/drag numbers in "
         "&lt;1 s. Drag a slider, get a polar.<br>"
         "<b style='color:#cbd5e1;'>Real CFD</b> &mdash; watch the air actually move "
-        "around a shape. ~1 min on Cloud, ~12 s locally."
+        "around a shape. ~2.5 min on Cloud, ~30 s locally."
         "</div>",
         unsafe_allow_html=True,
     )
@@ -259,14 +259,14 @@ if mode == "Real CFD (LBM)":
             index=0,
             label_visibility="collapsed",
             help=(
-                "**Standard** (240x80, D=16 body, 2100 sim steps) -- "
+                "**Standard** (240x80, D=16 body, 5250 sim steps) -- "
                 "body+wake fill the viewport, wake develops within the "
-                "recording. ~12 s local / ~1 min Cloud. **Detailed** "
-                "(720x240, D=45 body, 3500 sim steps) -- 9x more cells, "
+                "recording. ~30 s local / ~2.5 min Cloud. **Detailed** "
+                "(720x240, D=45 body, 5250 sim steps) -- 9x more cells, "
                 "~3x bigger bodies, longer downstream channel; the wake "
                 "reaches full periodic limit-cycle inside the loop and "
-                "airfoil downwash is much more visible. ~50 s local / "
-                "~3 min Cloud."
+                "airfoil downwash is much more visible. ~75 s local / "
+                "~4.5 min Cloud."
             ),
         )
         res_cfg = RESOLUTION_PRESETS[res_display]
@@ -288,12 +288,12 @@ if mode == "Real CFD (LBM)":
             st.session_state.get("lbm_last_displayed_config") == _current_config
         )
         if "Standard" in res_display:
-            st.caption(":material/timer: Local: ~12 s warm, ~35 s first cold "
-                       "click. Streamlit Cloud (1-vCPU shared): ~1 min. "
+            st.caption(":material/timer: Local: ~30 s warm, ~55 s first cold "
+                       "click. Streamlit Cloud (1-vCPU shared): ~2.5 min. "
                        "Revisits are instant (cached).")
         else:
-            st.caption(":material/timer: Local: ~50 s warm, ~80 s first cold "
-                       "click. Streamlit Cloud (1-vCPU shared): ~3 min. "
+            st.caption(":material/timer: Local: ~75 s warm, ~100 s first cold "
+                       "click. Streamlit Cloud (1-vCPU shared): ~4.5 min. "
                        "Revisits are instant (cached).")
 
     # === Main page header ===

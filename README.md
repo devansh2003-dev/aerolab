@@ -18,10 +18,10 @@ CPU-only, free to use, mobile-friendly.
 | Mode                    | Local (4+ cores) | Cloud (1 vCPU) |
 |-------------------------|------------------|-----------------|
 | Fast (NeuralFoil)       | instant          | instant         |
-| CFD Standard (240×80)   | ~12 s            | ~1 min          |
-| CFD Detailed (720×240)  | ~50 s            | ~3 min          |
+| CFD Standard (240×80)   | ~30 s            | ~2.5 min        |
+| CFD Detailed (720×240)  | ~75 s            | ~4.5 min        |
 
-First CFD click also pays a ~25 s JIT compile (~40 s on Cloud), hidden behind a startup spinner. For fast iteration use Fast mode; Real CFD is for watching.
+First CFD click also pays a ~25 s JIT compile (~40 s on Cloud), hidden behind a startup spinner. For fast iteration use Fast mode; Real CFD is for watching the simulation, not iterating quickly.
 
 ## Quickstart
 

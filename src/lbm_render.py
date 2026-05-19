@@ -63,7 +63,9 @@ mpl.rcParams["font.sans-serif"] = [
 # frame; larger = jumpy motion. Was 50 before the Cloud-perf pass --
 # dropping to 35 cuts total LBM work by 30 % with only marginal
 # inter-frame jump visible. The per-preset N_FRAMES lives in
-# RESOLUTION_PRESETS below (Standard 60 frames, Detailed 100 frames).
+# RESOLUTION_PRESETS below (both presets now run 150 frames -- the
+# sim was fast enough that more frames was a better visual win than
+# more grid cells).
 STEPS_PER_FRAME = 35
 # U_INFLOW: lattice inflow speed. 0.1 keeps Mach ~ 0.17 (well below the
 # LBM stability limit of ~0.3). Don't increase past 0.15 without
@@ -91,15 +93,15 @@ RESOLUTION_PRESETS = {
         Nx=240, Ny=80, body_x=52, cy=40,
         cylinder_D=16, square_side=16,
         ellipse_a=18, ellipse_b=9, chord=36,
-        n_frames=60,
+        n_frames=150,
         gif_palette=192,
     ),
     "Detailed (720 x 240)": dict(
         Nx=720, Ny=240, body_x=160, cy=120,
         cylinder_D=45, square_side=45,
         ellipse_a=50, ellipse_b=25, chord=100,
-        n_frames=100,
-        gif_palette=128,
+        n_frames=150,
+        gif_palette=96,
     ),
     # Standard preset shrunk from 320x100 to 240x80 (44 % fewer cells)
     # for Cloud free-tier wall-time. Body sizes scaled with the grid so
@@ -107,11 +109,12 @@ RESOLUTION_PRESETS = {
     # Standard's blockage. Detailed is unchanged: opt-in for quality.
     #
     # Budget at STEPS_PER_FRAME=35:
-    #   Standard 60 frames * 35 steps = 2100 LBM steps  (~1.4 shedding
-    #     periods at D=16). Cloud ~ 60-75 s; local ~ 12 s.
-    #   Detailed 100 frames * 35 steps = 3500 LBM steps (~2.5 periods
-    #     at D=45). Cloud ~ 3-4 min; local ~ 50 s.
-    # GIF sizes: Standard ~3-4 MB, Detailed ~9-11 MB (palette 192/128).
+    #   Standard 150 frames * 35 steps = 5250 LBM steps (~5.6 shedding
+    #     periods at D=16). Cloud ~ 2.5 min; local ~ 30 s.
+    #   Detailed 150 frames * 35 steps = 5250 LBM steps (~2 periods at
+    #     D=45). Cloud ~ 4.5 min; local ~ 75 s.
+    # GIF sizes: Standard ~7-10 MB (palette 192), Detailed ~13-16 MB
+    # (palette 96 -- dropped from 128 to absorb the extra-frames bloat).
 }
 # gif_palette: number of colors in the MEDIANCUT palette used to quantize
 # each frame. Lower = smaller GIF, more posterization in smooth gradients.
@@ -136,13 +139,15 @@ RESOLUTION_PRESETS = {
 #   (b) "Wake region" -- N_WAKE_SPAWN_PER_FRAME particles spawned at random
 #       (x, y) downstream of the body each frame. Without this the wake
 #       had no fresh particles by the time vortices shed -- the inflow
-#       particles passed through 60 frames ago and aged out, leaving the
-#       most physically interesting region visually empty.
-# MAX_AGE 60: particles fade out after 60 frames; with 5000-step
-# Standard sim and STEPS_PER_FRAME=50, 60 frames = 3000 lattice-time
-# of trail -- the trail covers most of the channel before fading.
+#       particles aged out, leaving the most physically interesting region
+#       visually empty. Spawn box extends close to the outflow so Detailed
+#       (Nx=720) doesn't show a long empty stretch past the body.
+# MAX_AGE 100: particles fade out after 100 frames. At STEPS_PER_FRAME=35
+# and U=0.1 that's 350 cells of drift -- enough for one particle to traverse
+# nearly half of the Detailed (720) channel before fading, which makes the
+# wake trail-off gradual instead of abrupt.
 # RK4_SUBSTEPS 4: 4 RK4 substeps per frame, each advecting by
-# STEPS_PER_FRAME/4 = 12.5 lattice-time. More substeps = smoother
+# STEPS_PER_FRAME/4 = ~8.75 lattice-time. More substeps = smoother
 # trajectories near vortices, marginal cost (perf).
 # PARTICLE_BASE_SIZE 22: matplotlib scatter "s" param in px^2 at birth;
 # tapers to ~60% at MAX_AGE.
@@ -150,8 +155,9 @@ SEED_ROW_CELL_SPACING = 12   # one inflow seed row per N cells of Ny
 SEED_ROW_MIN = 8             # never fewer than this many inflow rows
 WAKE_SPAWN_PER_NX = 0.05     # wake particles per frame, as fraction of Nx
 WAKE_SPAWN_MIN = 12          # never fewer than this many wake particles/frame
+WAKE_OUTFLOW_BUFFER = 30     # cells between wake_x_max and channel outflow
 SPAWN_PER_SEED = 3
-MAX_AGE = 60
+MAX_AGE = 100
 RK4_SUBSTEPS = 4
 PARTICLE_BASE_SIZE = 22.0
 
@@ -429,11 +435,12 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
     body_xs, body_ys = body_outline_xy(shape_preset, res_cfg, aoa_deg)
     body_xs, body_ys = expand_outline(body_xs, body_ys, BODY_OUTLINE_MARGIN)
 
-    # Per-preset frame count. Detailed runs 100 frames at 50 steps/frame
-    # = 5000 lattice timesteps -- enough for the wake to develop at least
-    # 2 von Karman shedding periods at the bigger 720x240 grid. Standard
-    # is 60 frames / 3000 steps (~1.5 periods on its smaller body).
-    # The n_frames kwarg overrides for tests.
+    # Per-preset frame count. Both presets now run 150 frames at
+    # STEPS_PER_FRAME=35 = 5250 lattice timesteps. On Standard (D=16)
+    # that's ~5.6 von Karman shedding periods (lots of wake variety in
+    # the recording); on Detailed (D=45) it's ~2 periods (the wake
+    # reaches full limit-cycle inside the loop). The n_frames kwarg
+    # overrides for tests.
     n_frames_local = int(n_frames) if n_frames is not None else res_cfg["n_frames"]
     n_steps_local = n_frames_local * STEPS_PER_FRAME
     # GIF palette size from preset; .get() fallback keeps older preset
@@ -451,13 +458,26 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
     # box every frame so vortices that shed off the body have fresh
     # streakline tracers passing through them. The box starts just
     # downstream of the body footprint (BODY_X + char_length is past every
-    # supported shape, including NACA at 30 deg AoA) and ends short of the
-    # outflow so escaped particles aren't pulled into the boundary BC zone.
+    # supported shape, including NACA at 30 deg AoA) and extends to
+    # LBM_NX - WAKE_OUTFLOW_BUFFER so Detailed runs don't show a long
+    # particle-free stretch past the body. The fixed-cell buffer (30
+    # cells) keeps spawned particles safely back from the outflow BC
+    # zone regardless of grid size.
     wake_x_min = BODY_X + char_length
-    wake_x_max = LBM_NX * 0.78
+    wake_x_max = LBM_NX - WAKE_OUTFLOW_BUFFER
     wake_y_min = LBM_NY * 0.08
     wake_y_max = LBM_NY * 0.92
     n_wake_spawn = max(WAKE_SPAWN_MIN, int(LBM_NX * WAKE_SPAWN_PER_NX))
+
+    # Wake-spawn ramp-up: avoids the "particles teleport behind the body"
+    # artifact on early frames. We hold wake spawning at 0 until the time
+    # an inflow particle (born at x=3, drifting at U_INFLOW) would have
+    # physically reached wake_x_min, then ramp linearly to full strength.
+    # Without this, frame 0 already shows random particles in the wake
+    # region before any flow has reached it.
+    wake_ramp_frames = max(
+        1.0, (wake_x_min - 3.0) / (U_INFLOW * STEPS_PER_FRAME)
+    )
 
     # === Phase 1: simulate, store snapshots ===
     rho0 = np.ones((LBM_NX, LBM_NY))
@@ -658,17 +678,26 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
         inflow_new_y = np.repeat(inflow_y, SPAWN_PER_SEED).astype(np.float64)
         inflow_new_y = inflow_new_y + spawn_rng.uniform(-0.7, 0.7, size=inflow_new_y.shape)
 
-        # (b) Wake-region spawn: spawn at random (x, y) inside the wake box.
-        # Reject any spawn that lands inside the body before adding it to the
-        # particle pool (the cull step would catch these on the next frame
-        # anyway, but rejecting now avoids a 1-frame visual artifact).
-        wake_x_candidates = spawn_rng.uniform(wake_x_min, wake_x_max, size=n_wake_spawn)
-        wake_y_candidates = spawn_rng.uniform(wake_y_min, wake_y_max, size=n_wake_spawn)
-        xi_cand = np.clip(np.round(wake_x_candidates).astype(np.int32), 0, LBM_NX - 1)
-        yi_cand = np.clip(np.round(wake_y_candidates).astype(np.int32), 0, LBM_NY - 1)
-        valid_wake = ~mask[xi_cand, yi_cand]
-        wake_new_x = wake_x_candidates[valid_wake]
-        wake_new_y = wake_y_candidates[valid_wake]
+        # (b) Wake-region spawn: spawn at random (x, y) inside the wake box,
+        # scaled by the ramp so frame 0 spawns 0 wake particles and full
+        # strength kicks in once inflow particles would have naturally
+        # reached the wake region. Reject any spawn that lands inside the
+        # body before adding it to the particle pool (the cull step would
+        # catch these on the next frame anyway, but rejecting now avoids a
+        # 1-frame visual artifact).
+        wake_ramp = min(1.0, i / wake_ramp_frames)
+        n_wake_this_frame = int(round(n_wake_spawn * wake_ramp))
+        if n_wake_this_frame > 0:
+            wake_x_candidates = spawn_rng.uniform(wake_x_min, wake_x_max, size=n_wake_this_frame)
+            wake_y_candidates = spawn_rng.uniform(wake_y_min, wake_y_max, size=n_wake_this_frame)
+            xi_cand = np.clip(np.round(wake_x_candidates).astype(np.int32), 0, LBM_NX - 1)
+            yi_cand = np.clip(np.round(wake_y_candidates).astype(np.int32), 0, LBM_NY - 1)
+            valid_wake = ~mask[xi_cand, yi_cand]
+            wake_new_x = wake_x_candidates[valid_wake]
+            wake_new_y = wake_y_candidates[valid_wake]
+        else:
+            wake_new_x = np.empty(0, dtype=np.float64)
+            wake_new_y = np.empty(0, dtype=np.float64)
 
         new_x = np.concatenate([inflow_new_x, wake_new_x])
         new_y = np.concatenate([inflow_new_y, wake_new_y])
