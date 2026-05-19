@@ -276,6 +276,17 @@ if mode == "Real CFD (LBM)":
             ":material/play_arrow:  **Run simulation**",
             type="primary", use_container_width=True,
         )
+        # Track the last-displayed config so post-run buttons (Pin, Clear
+        # snapshot) keep the GIF visible after their st.rerun(). Without
+        # this, run_clicked is False on the rerun and the gate below bails
+        # back to the "Ready to run" preview, even though the user just
+        # clicked Pin on a successful run.
+        _current_config = (shape_preset, int(reynolds_target), float(aoa_deg), res_display)
+        if run_clicked:
+            st.session_state["lbm_last_displayed_config"] = _current_config
+        _should_display_run = run_clicked or (
+            st.session_state.get("lbm_last_displayed_config") == _current_config
+        )
         if "Standard" in res_display:
             st.caption(":material/timer: Local: ~12 s warm, ~35 s first cold "
                        "click. Streamlit Cloud (1-vCPU shared): ~1 min. "
@@ -293,7 +304,7 @@ if mode == "Real CFD (LBM)":
         "and once tore a bridge apart."
     )
 
-    if not run_clicked:
+    if not _should_display_run:
         _preview_n_steps = res_cfg["n_frames"] * STEPS_PER_FRAME
         with st.container(border=True):
             st.markdown(
@@ -366,8 +377,8 @@ if mode == "Real CFD (LBM)":
     # session state; we re-run via the cache (instant since it's the same
     # cache key) instead of stashing the GIF bytes themselves -- avoids
     # session bloat. Single pinned snapshot for now; expand to a list when
-    # the use case justifies it.
-    _current_config = (shape_preset, int(reynolds_target), float(aoa_deg), res_display)
+    # the use case justifies it. _current_config was computed up in the
+    # sidebar block so the post-run gate could use it.
     snapshot = st.session_state.get("lbm_snapshot")
     snapshot_is_current = snapshot == _current_config
 
