@@ -9,7 +9,7 @@ conda create -n aerolab python=3.11 -y
 conda activate aerolab
 pip install -r requirements.txt
 pip install -r requirements-dev.txt
-pytest -q          # should pass 104 tests in ~11 s warm
+pytest -q          # should pass 106 tests in ~21 s warm
 streamlit run app.py
 ```
 
@@ -64,10 +64,8 @@ The live demo at [aerolab-devansh.streamlit.app](https://aerolab-devansh.streaml
 1. **Run tests locally** — `pytest -q`. Don't push red.
 2. **Smoke-test locally** — `streamlit run app.py`, click through both modes, verify the CFD mode runs cleanly on a Standard-grid cylinder Re=400 AoA=0 and on a Detailed-grid NACA 4412 Re=1000 AoA=10.
 3. **Commit + push to `main`**. Streamlit Cloud picks up the change within 1–3 minutes.
-4. **Smoke-test the deployed URL** on the same two canonical configs from step 2. If the cold-boot JIT warmup spinner doesn't fire on the first CFD click, the deploy hasn't picked up the new `src/warmup.py` yet — wait a minute and refresh.
+4. **Smoke-test the deployed URL** on the same two canonical configs from step 2. The first CFD click on a fresh Cloud container pays a ~40 s JIT compile cost (no separate warmup step — it's amortized into the first run). If the first click takes much longer than that, check the Cloud logs.
 5. **Only then** consider the deploy good. If something is off, push a revert before opening any PR / pinging anyone about the live demo.
-
-The Cloud's cold-boot container is fresh on every deploy, so the JIT pre-warm spinner will fire for the first user. That's expected, not a bug.
 
 ## Filing issues
 

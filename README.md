@@ -118,8 +118,7 @@ aerolab/
 │   ├── lbm_render.py               # simulate_and_render: sim + streaklines + GIF
 │   ├── forces.py                   # Ladd 1994 + Mei 2002 momentum exchange
 │   ├── shapes.py                   # cylinder, square, ellipse, NACA 4-digit + q-fields
-│   ├── airfoils.py                 # NeuralFoil/AeroSandbox wrapper
-│   └── warmup.py                   # JIT pre-warm
+│   └── airfoils.py                 # NeuralFoil/AeroSandbox wrapper
 ├── scripts/
 │   ├── lid_cavity_smoke.py         # cavity benchmark
 │   ├── week1_cylinder.py           # cylinder Re=100 reference run

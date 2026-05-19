@@ -483,11 +483,12 @@ def step_njit_with_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs, out
         zou_he_inflow(f_new, ux_in, uy_in)       # mass-conserving left BC
         f_new[outflow_dirs, -1, :] = f_new[outflow_dirs, -2, :]
 
-    Compiled with ``parallel=True`` -- the outer x-loops in each section run on
-    every available CPU core via Numba's ``prange``. On a 4-core machine that
-    gives ~2.5x speedup vs the serial JIT, scaling roughly linearly with cores.
-    Combined with ``fastmath=True`` (relaxed FP associativity for SIMD-friendly
-    inner loops), warm-step throughput on a 320x100 grid is ~0.3 ms/step.
+    Compiled with ``fastmath=True`` only -- ``parallel=True`` was stripped after
+    Streamlit Cloud's container produced a NUMBA_NUM_THREADS RuntimeError at
+    JIT-compile time. ``prange`` in this file is aliased to ``range`` (top of
+    module) so the loop syntax stays unchanged. Warm-step throughput on a
+    240x80 grid is ~0.2 ms/step serial; local loses the ~2-3x parallel speedup
+    but Cloud's 1 vCPU was already serial in practice.
 
     First call triggers JIT compilation (~5-8 sec). Subsequent calls reuse the
     cached binary.
@@ -883,7 +884,7 @@ def step_njit_mrt_with_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs,
     populations -- no matrix multiplies inside the hot loop.
 
     Compile time: ~6-10 sec on first call, cached thereafter. Warm-step
-    throughput on 320x100: ~0.6 ms/step (~2x slower than BGK, acceptable
+    throughput on 240x80 serial: ~0.4 ms/step (~2x slower than BGK, acceptable
     for the much larger stable Re envelope).
     """
     Nx = f.shape[1]
@@ -1153,11 +1154,11 @@ def step_njit_mrt_no_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs, o
     """MRT timestep without the momentum-exchange force calculation.
 
     Drop-in for the Streamlit visualization path (it doesn't consume Fx/Fy).
-    Identical physics to ``step_njit_mrt_with_force`` minus the serial
-    8-direction force-accumulator loop. On a 320x100 grid this saves
-    ~5-8% per step -- small per step, useful across 4000+ warmup+record
-    steps. Validation scripts that need Fx/Fy keep using the with-force
-    variant; this is a pure performance refinement for the viz path.
+    Identical physics to ``step_njit_mrt_with_force`` minus the
+    8-direction force-accumulator loop. On a 240x80 grid this saves
+    ~5-8% per step -- small per step, useful across 2000+ record steps.
+    Validation scripts that need Fx/Fy keep using the with-force variant;
+    this is a pure performance refinement for the viz path.
     """
     Nx = f.shape[1]
     Ny = f.shape[2]

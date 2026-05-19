@@ -359,29 +359,6 @@ if mode == "Real CFD (LBM)":
             "down for cleaner physics."
         )
 
-    # Sharp-corner instability warning: at Re >= 1000 with a 45-ish-degree
-    # rotated square or ellipse, the voxelized halfway-BB boundary at the
-    # knife-edge corner injects pressure pulses the LES can't damp. The
-    # solver may produce NaN frames midway through the run (visible as
-    # black voids in the wake). This is a real LBM limitation -- the
-    # proper fix is interpolated bounce-back (Bouzidi 2001), tracked
-    # separately. For now, flag the case explicitly to the user.
-    _is_sharp_rotated = (
-        shape_preset in ("Square", "Ellipse")
-        and abs(aoa_deg) > 30
-        and reynolds_target >= 1000
-    )
-    if _is_sharp_rotated:
-        st.warning(
-            ":material/warning: At Re >= 1000 with a sharply rotated "
-            f"**{shape_preset.lower()}** (|angle| > 30 deg), the solver's "
-            "voxelized boundary can inject pressure pulses at the corner "
-            "that the LES model can't damp -- you may see the wake go "
-            "black/garbled midway through the animation. This is a known "
-            "LBM limitation we haven't fixed yet (interpolated bounce-back "
-            "would solve it). Rotate less, or drop Re below 1000."
-        )
-
     # === Comparison snapshot (matches Fast-mode side-by-side affordance) ===
     # User can "pin" any run; the next run displays side-by-side with the
     # pinned one. Pinned config is a (shape, Re, AoA, res) tuple stored in
@@ -613,7 +590,8 @@ if mode == "Real CFD (LBM)":
             f"**Zou & He** velocity inflow + pressure outflow. Bounce-back at "
             f"top/bottom walls (no periodic-y wraparound). Numba-JIT compiled "
             f"fused step (collide + force + bounce-back + stream + BCs in one "
-            f"function, parallel over x).\n\n"
+            f"function, serial; threading was stripped after a Streamlit "
+            f"Cloud env conflict).\n\n"
             f"**Why MRT + LES:** MRT projects the 9 populations onto a moment "
             f"basis and relaxes each moment with its own rate. The "
             f"viscous-stress moments use s = 1/tau (same kinematic viscosity as "
