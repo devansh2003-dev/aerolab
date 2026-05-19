@@ -33,6 +33,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
+          pip install ruff
+
+      # Lint runs informationally for now -- continue-on-error so it
+      # surfaces violations in the action log without blocking merges
+      # while we burn down any pre-existing issues. Flip to blocking
+      # once the codebase is ruff-clean.
+      - name: Lint with ruff
+        run: ruff check .
+        continue-on-error: true
 
       - name: Run pytest
         run: pytest -q

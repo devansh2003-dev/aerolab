@@ -1,6 +1,7 @@
-# Top-level deps pinned to what we tested locally on 2026-05-18.
-# Bump deliberately; a CI-equivalent doesn't exist yet, so an unpinned upgrade
-# could break the deployed app silently.
+# Top-level deps pinned to what we tested locally. Bump deliberately;
+# GitHub Actions runs pytest on every push, but mismatches between Cloud's
+# resolved versions and ours could still surface in production -- pin both
+# here and in pyproject.toml.
 streamlit==1.57.0
 aerosandbox==4.2.9
 neuralfoil==0.3.2

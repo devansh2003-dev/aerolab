@@ -13,6 +13,7 @@ venv/
 # IDE
 .vscode/
 .idea/
+*.code-workspace
 
 # OS
 Thumbs.db
