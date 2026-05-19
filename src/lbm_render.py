@@ -155,7 +155,7 @@ SEED_ROW_CELL_SPACING = 12   # one inflow seed row per N cells of Ny
 SEED_ROW_MIN = 8             # never fewer than this many inflow rows
 WAKE_SPAWN_PER_NX = 0.05     # wake particles per frame, as fraction of Nx
 WAKE_SPAWN_MIN = 12          # never fewer than this many wake particles/frame
-WAKE_OUTFLOW_BUFFER = 30     # cells between wake_x_max and channel outflow
+WAKE_OUTFLOW_FRAC = 0.15     # last 15 % of channel is the trail-off zone (no wake spawn)
 SPAWN_PER_SEED = 3
 MAX_AGE = 100
 RK4_SUBSTEPS = 4
@@ -456,28 +456,43 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
 
     # Wake-region spawn box. Particles spawn at random (x, y) inside this
     # box every frame so vortices that shed off the body have fresh
-    # streakline tracers passing through them. The box starts just
-    # downstream of the body footprint (BODY_X + char_length is past every
-    # supported shape, including NACA at 30 deg AoA) and extends to
-    # LBM_NX - WAKE_OUTFLOW_BUFFER so Detailed runs don't show a long
-    # particle-free stretch past the body. The fixed-cell buffer (30
-    # cells) keeps spawned particles safely back from the outflow BC
-    # zone regardless of grid size.
-    wake_x_min = BODY_X + char_length
-    wake_x_max = LBM_NX - WAKE_OUTFLOW_BUFFER
+    # streakline tracers passing through them.
+    # * wake_x_min was BODY_X + char_length (one full body length past
+    #   center). On Detailed NACA (chord=100) that left ~50 cells of
+    #   empty channel between the trailing edge and the spawn box --
+    #   visible as "streams trail off past the leading edge". We now use
+    #   char_length/2 + 6: that's just past the body's trailing edge at
+    #   AoA=0 and still past it at AoA=45 (since x-extent shrinks with
+    #   cos(AoA)). Spawns that land INSIDE the rotated body footprint
+    #   are still rejected by the mask check below.
+    # * wake_x_max = LBM_NX * (1 - WAKE_OUTFLOW_FRAC). Last 15 % of the
+    #   channel is the trail-off zone: no fresh spawns, but aged wake
+    #   particles drift through it and fade out. On Detailed (Nx=720)
+    #   that's a 108-cell trail-off vs the old 0.22*Nx (=158-cell) one
+    #   the user described as "trails off after the leading edge" --
+    #   the channel-end emptiness was from wake_x_max being too far
+    #   back, leaving the body-to-mid-channel region under-spawned.
+    wake_x_min = BODY_X + char_length / 2 + 6
+    wake_x_max = LBM_NX * (1.0 - WAKE_OUTFLOW_FRAC)
     wake_y_min = LBM_NY * 0.08
     wake_y_max = LBM_NY * 0.92
     n_wake_spawn = max(WAKE_SPAWN_MIN, int(LBM_NX * WAKE_SPAWN_PER_NX))
 
-    # Wake-spawn ramp-up: avoids the "particles teleport behind the body"
-    # artifact on early frames. We hold wake spawning at 0 until the time
-    # an inflow particle (born at x=3, drifting at U_INFLOW) would have
-    # physically reached wake_x_min, then ramp linearly to full strength.
-    # Without this, frame 0 already shows random particles in the wake
-    # region before any flow has reached it.
-    wake_ramp_frames = max(
+    # Wake-spawn ramp-up: holds at 0 until inflow particles have nearly
+    # reached wake_x_min, then quadratically ramps to full strength.
+    # Earlier linear ramp still spawned a visible 2-3 wake particles by
+    # frame ~5 -- physically wrong because flow hadn't yet propagated
+    # into the wake region. Quadratic ease-in keeps n_wake near zero
+    # until well into the ramp window. WAKE_HOLD_FRAC = 0.8 means we
+    # don't begin ramping until inflow particles have travelled 80% of
+    # the distance from x=3 to wake_x_min; the ramp completes ~10 frames
+    # after they fully arrive. Net effect: wake region appears to fill
+    # naturally from the flow that reaches it, not from random spawns.
+    wake_arrival_frames = max(
         1.0, (wake_x_min - 3.0) / (U_INFLOW * STEPS_PER_FRAME)
     )
+    wake_hold_frames = wake_arrival_frames * 0.8
+    wake_ramp_window = max(8.0, wake_arrival_frames * 0.2 + 10.0)
 
     # === Phase 1: simulate, store snapshots ===
     rho0 = np.ones((LBM_NX, LBM_NY))
@@ -679,13 +694,16 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
         inflow_new_y = inflow_new_y + spawn_rng.uniform(-0.7, 0.7, size=inflow_new_y.shape)
 
         # (b) Wake-region spawn: spawn at random (x, y) inside the wake box,
-        # scaled by the ramp so frame 0 spawns 0 wake particles and full
-        # strength kicks in once inflow particles would have naturally
-        # reached the wake region. Reject any spawn that lands inside the
-        # body before adding it to the particle pool (the cull step would
-        # catch these on the next frame anyway, but rejecting now avoids a
-        # 1-frame visual artifact).
-        wake_ramp = min(1.0, i / wake_ramp_frames)
+        # scaled by a held-then-quadratic ramp so frame 0 spawns 0 wake
+        # particles, the next ~20 frames (Standard) / ~50 frames (Detailed)
+        # spawn very few, and full strength only kicks in once inflow
+        # particles have physically reached and crossed the wake_x_min
+        # boundary. Reject any spawn that lands inside the body before
+        # adding it to the particle pool (the cull step would catch these
+        # on the next frame anyway, but rejecting now avoids a 1-frame
+        # visual artifact).
+        raw_ramp = max(0.0, (i - wake_hold_frames) / wake_ramp_window)
+        wake_ramp = min(1.0, raw_ramp * raw_ramp)  # quadratic ease-in
         n_wake_this_frame = int(round(n_wake_spawn * wake_ramp))
         if n_wake_this_frame > 0:
             wake_x_candidates = spawn_rng.uniform(wake_x_min, wake_x_max, size=n_wake_this_frame)
