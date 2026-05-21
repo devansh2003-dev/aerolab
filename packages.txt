@@ -1,0 +1,8 @@
+# System apt packages Streamlit Cloud installs before pip resolution.
+# Required so pillow-heif and pillow-avif-plugin can find their decoder
+# libs at runtime (the Python packages are pure-bindings -- they expect
+# the system libs to be present).
+libheif1
+libde265-0
+libaom3
+libavif15

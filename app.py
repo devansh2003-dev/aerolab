@@ -196,22 +196,30 @@ if mode == "Real CFD (LBM)":
             st.markdown("")
             st.markdown(":material/upload_file: **Your shape**")
             uploaded = st.file_uploader(
-                "Upload a PNG or JPG",
-                type=["png", "jpg", "jpeg"],
+                "Upload an image",
+                type=[
+                    "png", "jpg", "jpeg", "gif", "bmp", "tiff", "tif",
+                    "webp", "ico", "ppm", "tga",
+                    "heic", "heif",  # iPhone / HEIF
+                    "avif",          # modern web (Chrome/Firefox/Edge)
+                ],
                 accept_multiple_files=False,
                 label_visibility="collapsed",
                 help=(
                     "Drop in any image with a clear subject on a uniform "
                     "background (white, black, grey, or any solid colour). "
-                    "Transparent PNGs work. Minimum 100x100 px. The "
-                    "extractor auto-pads, so shapes near the edge are "
-                    "fine. Tip: orient your image so the FRONT of the "
-                    "shape faces left -- wind comes from the left in the "
-                    "simulation, and source orientation is preserved. "
-                    "The simulation uses halfway bounce-back at the wall "
-                    "(analytic Bouzidi is on the roadmap), so Cd will "
-                    "read a bit high on bluff custom shapes but wake "
-                    "structure is correct."
+                    "All common formats supported: PNG, JPG, GIF, BMP, "
+                    "TIFF, WEBP, HEIC (iPhone), AVIF, plus ICO / PPM / "
+                    "TGA. Transparent PNGs and EXIF-rotated phone photos "
+                    "are auto-handled. Minimum 100x100 px. The extractor "
+                    "auto-pads, so shapes near the edge are fine. Tip: "
+                    "orient your image so the FRONT of the shape faces "
+                    "left -- wind comes from the left in the simulation, "
+                    "and source orientation is preserved. The simulation "
+                    "uses halfway bounce-back at the wall (analytic "
+                    "Bouzidi is on the roadmap), so Cd will read a bit "
+                    "high on bluff custom shapes but wake structure is "
+                    "correct."
                 ),
                 key="lbm_custom_upload",
             )

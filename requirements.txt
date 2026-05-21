@@ -25,3 +25,10 @@ scikit-image==0.26.0
 # streamlit-drawable-canvas: in-browser polygon drawing for the "draw your
 # own shape" custom-shape path.
 streamlit-drawable-canvas==0.9.3
+# Image-format coverage:
+# * pillow-heif: HEIC / HEIF (iPhone default photo format). Needs libheif1
+#   + libde265-0 from packages.txt at runtime; silently no-ops if missing.
+# * pillow-avif-plugin: AVIF (modern web image, Chrome/Firefox/Edge default
+#   in 2025). Needs libavif from packages.txt; silently no-ops if missing.
+pillow-heif==1.1.1
+pillow-avif-plugin==1.5.4

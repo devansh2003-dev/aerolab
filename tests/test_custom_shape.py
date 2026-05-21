@@ -133,6 +133,47 @@ def test_morphological_closing_bridges_thin_gaps():
     assert result.n_components_found == 1
 
 
+@pytest.mark.parametrize("fmt", ["PNG", "JPEG", "BMP", "TIFF", "WEBP", "GIF"])
+def test_extracts_from_common_raster_formats(fmt):
+    """All common raster formats should round-trip through the extractor
+    via PIL's native plugins. Same shape, same expected polygon shape."""
+    img = Image.new("RGB", (400, 300), "white")
+    d = ImageDraw.Draw(img)
+    d.ellipse((100, 80, 300, 220), fill="black")
+    buf = io.BytesIO()
+    img.save(buf, format=fmt)
+    result = extract_silhouette_from_image(buf.getvalue())
+    assert len(result.polygon_xy) >= 8
+    assert abs(result.polygon_xy[:, 0].min() - 100) < 8
+    assert abs(result.polygon_xy[:, 0].max() - 300) < 8
+
+
+def test_extracts_first_frame_of_animated_gif():
+    """Animated GIFs / multi-page TIFFs / animated WebPs have n_frames > 1;
+    the extractor should pick frame 0 and surface a friendly warning."""
+    frame_a = Image.new("RGB", (400, 300), "white")
+    ImageDraw.Draw(frame_a).ellipse((100, 80, 300, 220), fill="black")
+    frame_b = Image.new("RGB", (400, 300), "white")
+    ImageDraw.Draw(frame_b).rectangle((50, 50, 350, 250), fill="black")
+    buf = io.BytesIO()
+    frame_a.save(
+        buf, format="GIF", save_all=True, append_images=[frame_b],
+        duration=200, loop=0,
+    )
+    result = extract_silhouette_from_image(buf.getvalue())
+    # First frame is the ellipse, not the bigger rectangle. The polygon's
+    # bbox should match the ellipse's bbox, not the rectangle's.
+    assert abs(result.polygon_xy[:, 0].min() - 100) < 8
+    assert abs(result.polygon_xy[:, 0].max() - 300) < 8
+    assert any("frames" in w for w in result.warnings)
+
+
+def test_rejects_corrupt_image():
+    """Non-image bytes should raise a clean ValueError, not a PIL crash."""
+    with pytest.raises(ValueError, match="Couldn't decode"):
+        extract_silhouette_from_image(b"this is not an image, just text")
+
+
 def test_rejects_image_too_small():
     png = _make_png_with_shape(
         lambda d, fg: d.ellipse((10, 10, 50, 50), fill=fg),

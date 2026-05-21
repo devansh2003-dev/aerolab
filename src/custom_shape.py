@@ -23,11 +23,29 @@ from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 from scipy.ndimage import binary_closing, binary_fill_holes, binary_opening
 from scipy.ndimage import label as ndimage_label
 from skimage.measure import approximate_polygon, find_contours
 from skimage.filters import threshold_otsu
+
+# Register HEIF/HEIC opener (iPhone photos default to .heic). Optional --
+# the package needs libheif at runtime, so on stripped-down deploys
+# this gracefully falls back to "format not supported".
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+    HEIF_AVAILABLE = True
+except (ImportError, OSError):
+    HEIF_AVAILABLE = False
+
+# Register AVIF opener (modern web image format -- Chrome, Firefox, Edge
+# all serve AVIF in 2025). Same optional-fallback pattern as HEIF.
+try:
+    import pillow_avif  # noqa: F401  -- side-effect registers the opener
+    AVIF_AVAILABLE = True
+except (ImportError, OSError):
+    AVIF_AVAILABLE = False
 
 MIN_IMAGE_DIM = 100   # pixels per side -- minimum upload size
 MAX_IMAGE_DIM = 2048  # resize-down cap for extraction speed
@@ -86,7 +104,31 @@ def extract_silhouette_from_image(png_bytes: bytes) -> SilhouetteResult:
     """
     warnings: list = []
 
-    pil_img = Image.open(io.BytesIO(png_bytes))
+    try:
+        pil_img = Image.open(io.BytesIO(png_bytes))
+    except Exception as e:
+        raise ValueError(
+            "Couldn't decode the image. Make sure it's a recognised "
+            "image file (PNG, JPG, GIF, BMP, TIFF, WEBP, HEIC, AVIF, "
+            "ICO, PPM, or TGA)."
+        ) from e
+
+    # Multi-frame formats (animated GIF, multi-page TIFF, animated WEBP):
+    # take the first frame. The user is uploading a single-shape silhouette
+    # source so animation/page metadata is noise here.
+    if getattr(pil_img, "n_frames", 1) > 1:
+        pil_img.seek(0)
+        warnings.append(
+            f"Image has {pil_img.n_frames} frames -- using the first one."
+        )
+
+    # EXIF orientation: phone cameras commonly write photos in landscape
+    # sensor orientation with a rotation tag saying "display this rotated
+    # 90 / 180 / 270 deg." Without exif_transpose, an iPhone portrait shot
+    # would extract as a sideways silhouette. Applied BEFORE any pixel
+    # processing so every subsequent step sees the upright image.
+    pil_img = ImageOps.exif_transpose(pil_img)
+
     # Alpha compositing: PNGs from many tools (transparent-background
     # exports from Photoshop, AI image generators, 3D render pipelines)
     # store their visible pixels with the subject's RGB and use the alpha
@@ -104,6 +146,10 @@ def extract_silhouette_from_image(png_bytes: bytes) -> SilhouetteResult:
         white_bg.paste(rgba, mask=rgba.split()[-1])
         img = white_bg.convert("L")
     else:
+        # Catch-all for L / RGB / CMYK / YCbCr / 1-bit / 16-bit-grayscale /
+        # palette without transparency / etc. PIL.Image.convert("L") handles
+        # the full set -- ITU-R 601-2 luma transform for colour, direct
+        # bit-depth conversion for grayscale variants.
         img = pil_img.convert("L")
 
     w, h = img.size
