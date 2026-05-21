@@ -2,7 +2,7 @@
 
 > Browser-based aerodynamics playground. No install, no signup.
 
-![Cylinder Re=400 von Karman wake](assets/hero_cylinder_re400.gif)
+![NACA 4412 airfoil at Re=600, +15° AoA](assets/hero_naca4412_re600_aoa15.gif)
 
 Drop in a 2D shape (cylinder, square, ellipse, NACA 4-digit airfoil, or **upload your own image**), set wind speed, watch the wake develop. Two modes:
 
@@ -18,8 +18,8 @@ CPU-only, free to use, mobile-friendly.
 | Mode                    | Local (4+ cores) | Cloud (1 vCPU) |
 |-------------------------|------------------|-----------------|
 | Fast (NeuralFoil)       | instant          | instant         |
-| CFD Standard (240×80)   | ~30 s            | ~2.5 min        |
-| CFD Detailed (720×240)  | ~75 s            | ~4.5 min        |
+| CFD Standard (320×80)   | ~40 s            | ~3.3 min        |
+| CFD Detailed (960×240)  | ~100 s           | ~6 min          |
 
 First CFD click also pays a ~25 s JIT compile (~40 s on Cloud), hidden behind a startup spinner. For fast iteration use Fast mode; Real CFD is for watching the simulation, not iterating quickly.
 

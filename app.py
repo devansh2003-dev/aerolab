@@ -355,14 +355,14 @@ if mode == "Real CFD (LBM)":
             index=0,
             label_visibility="collapsed",
             help=(
-                "**Standard** (240x80, D=16 body, 5250 sim steps) -- "
+                "**Standard** (320x80, D=28 body, 5250 sim steps) -- "
                 "body+wake fill the viewport, wake develops within the "
-                "recording. ~30 s local / ~2.5 min Cloud. **Detailed** "
-                "(720x240, D=45 body, 5250 sim steps) -- 9x more cells, "
+                "recording. ~40 s local / ~3.3 min Cloud. **Detailed** "
+                "(960x240, D=80 body, 5250 sim steps) -- 9x more cells, "
                 "~3x bigger bodies, longer downstream channel; the wake "
                 "reaches full periodic limit-cycle inside the loop and "
-                "airfoil downwash is much more visible. ~75 s local / "
-                "~4.5 min Cloud."
+                "airfoil downwash is much more visible. ~100 s local / "
+                "~6 min Cloud."
             ),
         )
         res_cfg = RESOLUTION_PRESETS[res_display]

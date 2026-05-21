@@ -64,7 +64,7 @@ def test_canonical_cylinder_frame50_matches_baseline(tmp_path):
     )
 
     out = simulate_and_render(
-        "Cylinder", 400, 0.0, "Standard (240 x 80)", n_frames=51,
+        "Cylinder", 400, 0.0, "Standard (320 x 80)", n_frames=51,
     )
     gif = Image.open(io.BytesIO(out["gif_bytes"]))
     gif.seek(50)
@@ -108,7 +108,7 @@ def test_canonical_pipeline_returns_expected_keys():
     matches the baseline. n_frames=2 keeps this under ~3 s warm.
     """
     out = simulate_and_render(
-        "Cylinder", 400, 0.0, "Standard (240 x 80)", n_frames=2,
+        "Cylinder", 400, 0.0, "Standard (320 x 80)", n_frames=2,
     )
     expected = {
         "gif_bytes", "vort_cbar_bytes", "speed_cbar_bytes",
@@ -119,5 +119,5 @@ def test_canonical_pipeline_returns_expected_keys():
         f"missing keys: {expected - set(out.keys())}"
     )
     assert isinstance(out["gif_bytes"], bytes) and len(out["gif_bytes"]) > 0
-    assert out["lbm_nx"] == 240 and out["lbm_ny"] == 80
+    assert out["lbm_nx"] == 320 and out["lbm_ny"] == 80
     assert out["n_frames"] == 2

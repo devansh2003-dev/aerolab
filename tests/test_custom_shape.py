@@ -237,12 +237,12 @@ def test_simulate_and_render_accepts_custom_polygon():
 
     out = simulate_and_render(
         "Custom", reynolds_target=200, aoa_deg=0.0,
-        res_key="Standard (240 x 80)",
+        res_key="Standard (320 x 80)",
         n_frames=3,  # tiny for speed
         custom_polygon=result.polygon_xy,
     )
     assert isinstance(out["gif_bytes"], bytes) and len(out["gif_bytes"]) > 0
-    assert out["lbm_nx"] == 240 and out["lbm_ny"] == 80
+    assert out["lbm_nx"] == 320 and out["lbm_ny"] == 80
     assert out["label"].startswith("Custom shape")
     # char_length should equal the preset's custom_extent (Standard = 60).
     assert out["char_length"] == pytest.approx(60.0)
@@ -260,11 +260,11 @@ def test_simulate_and_render_rotates_custom_polygon():
     poly = extract_silhouette_from_image(png).polygon_xy
 
     out_0 = simulate_and_render(
-        "Custom", 200, 0.0, "Standard (240 x 80)",
+        "Custom", 200, 0.0, "Standard (320 x 80)",
         n_frames=2, custom_polygon=poly,
     )
     out_45 = simulate_and_render(
-        "Custom", 200, 45.0, "Standard (240 x 80)",
+        "Custom", 200, 45.0, "Standard (320 x 80)",
         n_frames=2, custom_polygon=poly,
     )
     assert "rotation" not in out_0["label"]
@@ -275,7 +275,7 @@ def test_simulate_and_render_rejects_custom_without_polygon():
     from src.lbm_render import simulate_and_render
     with pytest.raises(ValueError, match="custom_polygon"):
         simulate_and_render(
-            "Custom", 200, 0.0, "Standard (240 x 80)", n_frames=2,
+            "Custom", 200, 0.0, "Standard (320 x 80)", n_frames=2,
         )
 
 
@@ -299,12 +299,12 @@ def test_phase2_w5_gate_sample_silhouettes_run_clean(sample_name):
     polygon = SAMPLE_SHAPES[sample_name]()
     out = simulate_and_render(
         "Custom", reynolds_target=200, aoa_deg=0.0,
-        res_key="Standard (240 x 80)",
+        res_key="Standard (320 x 80)",
         n_frames=4, custom_polygon=polygon,
     )
     assert isinstance(out["gif_bytes"], bytes)
     assert len(out["gif_bytes"]) > 5000   # non-empty animation
-    assert out["lbm_nx"] == 240 and out["lbm_ny"] == 80
+    assert out["lbm_nx"] == 320 and out["lbm_ny"] == 80
     # tau >= 0.5 means the kinematic-viscosity setup didn't degenerate.
     assert out["tau"] > 0.5
 

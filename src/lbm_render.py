@@ -85,38 +85,41 @@ INFLOW_DIRS = np.array([1, 5, 8], dtype=np.int32)
 OUTFLOW_DIRS = np.array([3, 6, 7], dtype=np.int32)
 
 # --- Grid presets ---
-# Standard: 240x80, body fills viewport, wake develops within the 2100
-# recorded steps. Detailed bumps grid ~9x in cells and 3500 steps for
+# Standard: 320x80, body fills viewport, wake develops within the 5250
+# recorded steps. Detailed bumps grid ~9x in cells and 5250 steps for
 # fuller limit-cycle. Both budgets defined explicitly in the dict below.
 RESOLUTION_PRESETS = {
-    "Standard (240 x 80)": dict(
-        Nx=240, Ny=80, body_x=70, cy=40,
+    "Standard (320 x 80)": dict(
+        Nx=320, Ny=80, body_x=70, cy=40,
         cylinder_D=28, square_side=28,
         ellipse_a=32, ellipse_b=16, chord=60,
         custom_extent=60,
         n_frames=150,
         gif_palette=192,
     ),
-    "Detailed (720 x 240)": dict(
-        Nx=720, Ny=240, body_x=210, cy=120,
+    "Detailed (960 x 240)": dict(
+        Nx=960, Ny=240, body_x=210, cy=120,
         cylinder_D=80, square_side=80,
         ellipse_a=90, ellipse_b=45, chord=170,
         custom_extent=170,
         n_frames=150,
         gif_palette=96,
     ),
-    # Standard preset shrunk from 320x100 to 240x80 (44 % fewer cells)
-    # for Cloud free-tier wall-time. Body sizes scaled with the grid so
-    # blockage stays ~20 % (cylinder D/Ny = 16/80) -- matches the old
-    # Standard's blockage. Detailed is unchanged: opt-in for quality.
+    # Body sizes were bumped (~80 % bigger) in the prior release so each
+    # shape fills the channel visibly. To keep the wake from running off
+    # the right edge, Nx was then extended: Standard 240 -> 320 (wake
+    # region 170 -> 250 cells, ~9D at D=28); Detailed 720 -> 960 (wake
+    # region 510 -> 710 cells, ~9D at D=80). body_x is unchanged so the
+    # inflow runway stays identical; the extra width goes entirely into
+    # downstream wake visibility.
     #
     # Budget at STEPS_PER_FRAME=35:
-    #   Standard 150 frames * 35 steps = 5250 LBM steps (~5.6 shedding
-    #     periods at D=16). Cloud ~ 2.5 min; local ~ 30 s.
+    #   Standard 150 frames * 35 steps = 5250 LBM steps (~3.2 shedding
+    #     periods at D=28). Cloud ~ 3.3 min; local ~ 40 s.
     #   Detailed 150 frames * 35 steps = 5250 LBM steps (~2 periods at
-    #     D=45). Cloud ~ 4.5 min; local ~ 75 s.
-    # GIF sizes: Standard ~7-10 MB (palette 192), Detailed ~13-16 MB
-    # (palette 96 -- dropped from 128 to absorb the extra-frames bloat).
+    #     D=80). Cloud ~ 6 min; local ~ 100 s.
+    # GIF sizes: Standard ~9-13 MB (palette 192), Detailed ~17-20 MB
+    # (palette 96).
 }
 # gif_palette: number of colors in the MEDIANCUT palette used to quantize
 # each frame. Lower = smaller GIF, more posterization in smooth gradients.
@@ -372,8 +375,8 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
     aoa_deg : float
         Body rotation / wing tilt in degrees. Ignored for Cylinder.
     res_key : str
-        One of the keys in RESOLUTION_PRESETS ("Standard (240 x 80)" or
-        "Detailed (720 x 240)").
+        One of the keys in RESOLUTION_PRESETS ("Standard (320 x 80)" or
+        "Detailed (960 x 240)").
     progress_callback : callable or None
         Signature ``(fraction: float in [0, 1], text: str) -> None``.
         Defaults to a no-op for headless use.
@@ -484,11 +487,10 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
     body_xs, body_ys = expand_outline(body_xs, body_ys, BODY_OUTLINE_MARGIN)
 
     # Per-preset frame count. Both presets now run 150 frames at
-    # STEPS_PER_FRAME=35 = 5250 lattice timesteps. On Standard (D=16)
-    # that's ~5.6 von Karman shedding periods (lots of wake variety in
-    # the recording); on Detailed (D=45) it's ~2 periods (the wake
-    # reaches full limit-cycle inside the loop). The n_frames kwarg
-    # overrides for tests.
+    # STEPS_PER_FRAME=35 = 5250 lattice timesteps. On Standard (D=28)
+    # that's ~3.2 von Karman shedding periods; on Detailed (D=80) it's
+    # ~2 periods (the wake reaches full limit-cycle inside the loop).
+    # The n_frames kwarg overrides for tests.
     n_frames_local = int(n_frames) if n_frames is not None else res_cfg["n_frames"]
     n_steps_local = n_frames_local * STEPS_PER_FRAME
     # GIF palette size from preset; .get() fallback keeps older preset
@@ -515,8 +517,8 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
     #   are still rejected by the mask check below.
     # * wake_x_max = LBM_NX * (1 - WAKE_OUTFLOW_FRAC). Last 15 % of the
     #   channel is the trail-off zone: no fresh spawns, but aged wake
-    #   particles drift through it and fade out. On Detailed (Nx=720)
-    #   that's a 108-cell trail-off vs the old 0.22*Nx (=158-cell) one
+    #   particles drift through it and fade out. On Detailed (Nx=960)
+    #   that's a 144-cell trail-off vs the old 0.22*Nx (=158-cell) one
     #   the user described as "trails off after the leading edge" --
     #   the channel-end emptiness was from wake_x_max being too far
     #   back, leaving the body-to-mid-channel region under-spawned.

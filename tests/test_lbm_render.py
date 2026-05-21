@@ -37,7 +37,7 @@ from src.lbm_render import (
 )
 
 
-STANDARD = "Standard (240 x 80)"
+STANDARD = "Standard (320 x 80)"
 STANDARD_CFG = RESOLUTION_PRESETS[STANDARD]
 
 
