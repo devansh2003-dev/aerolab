@@ -226,13 +226,16 @@ def polygon_to_lbm_mask(
 
     scale = target_extent_cells / longest
 
-    # Center on origin, scale, flip y AND flip x. The x-flip is what makes
-    # natural-orientation drawings (fish/car/etc facing right in the image)
-    # face INTO the flow once placed on the lattice: LBM flow goes +x, so
-    # the body's nose/front should land at -x relative to the body center.
+    # Center on origin, scale, flip y. The y-flip is required because PIL
+    # image coords have y increasing downward but the lattice has y
+    # increasing upward -- without it the body would appear vertically
+    # mirrored relative to the source. We do NOT flip x: uploaded shapes
+    # should appear in the tunnel with the same left-right orientation as
+    # the source image. Sample polygons in src/sample_shapes.py are
+    # pre-defined with the "front" on the left side of their bbox so they
+    # face the inflow naturally.
     centred = poly - np.array([(x_min + x_max) / 2, (y_min + y_max) / 2])
     centred *= scale
-    centred[:, 0] *= -1.0
     centred[:, 1] *= -1.0
 
     # Rotate (CCW positive in math convention -- matches square/ellipse).
@@ -363,7 +366,6 @@ def polygon_outline_xy(
     scale = target_extent_cells / longest
     centred = poly - np.array([(x_min + x_max) / 2, (y_min + y_max) / 2])
     centred *= scale
-    centred[:, 0] *= -1.0
     centred[:, 1] *= -1.0
 
     if aoa_deg != 0.0:

@@ -18,40 +18,42 @@ import numpy as np
 def fish_polygon() -> np.ndarray:
     """A fish silhouette: streamlined body with triangular tail fin.
 
-    ~200 px wide x 100 px tall in image coords. The mouth is on the right
-    (positive x) so the natural orientation has the fish facing into the
-    flow (which comes from the left). aoa_deg=180 would flip head-on-tail.
+    ~200 px wide x 100 px tall in image coords. The mouth is on the LEFT
+    (low x) so the natural orientation has the fish facing into the
+    inflow (which comes from x=0 in lattice coords). polygon_to_lbm_mask
+    no longer flips x, so this orientation is preserved as-is in the
+    simulation -- same convention applies to user uploads.
     """
     return np.array([
-        # Mouth tip (right side of body, in image coords)
-        (192.0, 50.0),
+        # Mouth tip (LEFT side of body, in image coords)
+        (0.0, 50.0),
         # Top of head curving up to dorsal line
-        (178.0, 32.0),
-        (160.0, 22.0),
-        (138.0, 16.0),
-        (110.0, 14.0),
-        (82.0, 16.0),
+        (14.0, 32.0),
+        (32.0, 22.0),
+        (54.0, 16.0),
+        (82.0, 14.0),
+        (110.0, 16.0),
         # Dorsal fin small bump
-        (62.0, 8.0),
-        (52.0, 18.0),
+        (130.0, 8.0),
+        (140.0, 18.0),
         # Continue along top toward tail
-        (40.0, 22.0),
-        (24.0, 28.0),
-        # Tail fin: triangular notch
-        (8.0, 14.0),
-        (4.0, 30.0),
-        (16.0, 50.0),
-        (4.0, 70.0),
-        (8.0, 86.0),
-        (24.0, 72.0),
+        (152.0, 22.0),
+        (168.0, 28.0),
+        # Tail fin: triangular notch (RIGHT side of body)
+        (184.0, 14.0),
+        (188.0, 30.0),
+        (176.0, 50.0),
+        (188.0, 70.0),
+        (184.0, 86.0),
+        (168.0, 72.0),
         # Back along underside
-        (40.0, 78.0),
-        (62.0, 84.0),
-        (90.0, 86.0),
-        (118.0, 84.0),
-        (144.0, 80.0),
-        (164.0, 72.0),
-        (180.0, 64.0),
+        (152.0, 78.0),
+        (130.0, 84.0),
+        (102.0, 86.0),
+        (74.0, 84.0),
+        (48.0, 80.0),
+        (28.0, 72.0),
+        (12.0, 64.0),
     ], dtype=np.float64)
 
 
@@ -60,33 +62,34 @@ def car_profile_polygon() -> np.ndarray:
 
     ~300 px wide x 100 px tall. Wheels omitted because we want a closed
     body for clean LBM rasterization; the bottom is a single flat line.
-    Hood is on the right (positive x) so it faces into the leftward flow
-    -- the natural drag-test orientation.
+    Hood is on the LEFT (low x) so it faces into the inflow -- the natural
+    drag-test orientation. Matches the upload convention: orient your
+    source image with the front of your shape on the left.
     """
     return np.array([
-        # Front bumper bottom-right corner
-        (290.0, 88.0),
+        # Front bumper bottom-left corner
+        (0.0, 88.0),
         # Front bumper top
-        (290.0, 70.0),
+        (0.0, 70.0),
         # Hood slope going back/up
-        (260.0, 56.0),
-        (210.0, 48.0),
+        (30.0, 56.0),
+        (80.0, 48.0),
         # Windshield slope up to roof
-        (185.0, 22.0),
+        (105.0, 22.0),
         # Roof top-front
-        (150.0, 18.0),
+        (140.0, 18.0),
         # Roof top-back
-        (90.0, 18.0),
+        (200.0, 18.0),
         # Rear window slope down to trunk
-        (62.0, 32.0),
+        (228.0, 32.0),
         # Trunk top
-        (35.0, 38.0),
+        (255.0, 38.0),
         # Rear bumper top
-        (10.0, 46.0),
-        # Rear bumper top-left
-        (4.0, 60.0),
-        # Rear bumper bottom-left
-        (4.0, 88.0),
+        (280.0, 46.0),
+        # Rear bumper top-right
+        (286.0, 60.0),
+        # Rear bumper bottom-right
+        (286.0, 88.0),
         # Underbody (single straight line back to start)
     ], dtype=np.float64)
 
