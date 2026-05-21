@@ -2,9 +2,7 @@
 
 > Browser-based aerodynamics playground. No install, no signup.
 
-<video src="assets/hero_cylinder_re400.mp4" controls autoplay muted loop playsinline width="100%">
-  Your browser doesn't render video inline. Open <a href="assets/hero_cylinder_re400.mp4">assets/hero_cylinder_re400.mp4</a>.
-</video>
+![Cylinder Re=400 von Karman wake](assets/hero_cylinder_re400.gif)
 
 Drop in a 2D shape (cylinder, square, ellipse, NACA 4-digit airfoil, or **upload your own image**), set wind speed, watch the wake develop. Two modes:
 

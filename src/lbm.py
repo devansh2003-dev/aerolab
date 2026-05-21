@@ -168,13 +168,15 @@ def macroscopic(f):
 
     if f.ndim == 1:
         rho = f.sum()
-        ux = np.sum(f * cx) / rho
-        uy = np.sum(f * cy) / rho
+        rho_safe = rho if rho > 1e-12 else 1e-12
+        ux = np.sum(f * cx) / rho_safe
+        uy = np.sum(f * cy) / rho_safe
         u = np.array([ux, uy], dtype=np.float64)
     else:
         rho = f.sum(axis=0)                                   # shape (Nx, Ny)
-        ux = np.sum(f * cx[:, None, None], axis=0) / rho      # shape (Nx, Ny)
-        uy = np.sum(f * cy[:, None, None], axis=0) / rho
+        rho_safe = np.where(rho > 1e-12, rho, 1e-12)
+        ux = np.sum(f * cx[:, None, None], axis=0) / rho_safe
+        uy = np.sum(f * cy[:, None, None], axis=0) / rho_safe
         u = np.stack([ux, uy], axis=0)                        # shape (2, Nx, Ny)
     return rho, u
 

@@ -226,9 +226,13 @@ def polygon_to_lbm_mask(
 
     scale = target_extent_cells / longest
 
-    # Center on origin, scale, flip y.
+    # Center on origin, scale, flip y AND flip x. The x-flip is what makes
+    # natural-orientation drawings (fish/car/etc facing right in the image)
+    # face INTO the flow once placed on the lattice: LBM flow goes +x, so
+    # the body's nose/front should land at -x relative to the body center.
     centred = poly - np.array([(x_min + x_max) / 2, (y_min + y_max) / 2])
     centred *= scale
+    centred[:, 0] *= -1.0
     centred[:, 1] *= -1.0
 
     # Rotate (CCW positive in math convention -- matches square/ellipse).
@@ -245,7 +249,19 @@ def polygon_to_lbm_mask(
     pil_img = Image.new("L", (Nx, Ny), 0)
     draw = ImageDraw.Draw(pil_img)
     draw.polygon([(float(p[0]), float(p[1])) for p in final], fill=1)
-    return np.asarray(pil_img, dtype=bool).T
+    mask = np.asarray(pil_img, dtype=bool).T
+
+    # Drop isolated solid-cell islands -- a thin appendage on the input
+    # silhouette (kite tail-string, hair-thin fish whiskers) can rasterize
+    # to a single 1-cell-wide chain that pinches off from the main body
+    # and causes solver instability. Keep only the largest connected
+    # component so the LBM sees a single closed body.
+    labels, n_labels = ndimage_label(mask)
+    if n_labels > 1:
+        sizes = np.bincount(labels.ravel())
+        sizes[0] = 0
+        mask = labels == int(np.argmax(sizes))
+    return mask
 
 
 def render_silhouette_preview(
@@ -325,6 +341,7 @@ def polygon_outline_xy(
     scale = target_extent_cells / longest
     centred = poly - np.array([(x_min + x_max) / 2, (y_min + y_max) / 2])
     centred *= scale
+    centred[:, 0] *= -1.0
     centred[:, 1] *= -1.0
 
     if aoa_deg != 0.0:
