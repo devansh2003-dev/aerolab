@@ -273,6 +273,43 @@ def test_rasterize_square_polygon_to_mask():
     assert inside.sum() > 350  # 20x20 = 400 cells, allow rasterization slack
 
 
+def test_rasterize_preserves_thin_features():
+    """A character-like polygon (tall body + thin arms / legs) should
+    retain its appendages after rasterizing onto an 80-cell-tall grid.
+    Regression: earlier versions ran binary_opening here to remove
+    1-cell solver protrusions, which also erased legitimate thin
+    features and caused user-visible 'parts get cut off' bugs."""
+    # Stick-figure: head + body + arms + legs, with 3-px-wide limbs.
+    poly = np.array([
+        # Head outline (top of figure)
+        (50, 0), (60, 5), (65, 15), (60, 25), (50, 30),
+        # Down right side of body to right arm
+        (52, 35), (75, 38), (78, 40), (75, 42), (52, 45),
+        # Continue body to right leg
+        (52, 70), (60, 105), (58, 108), (50, 80),
+        # Across to left leg
+        (50, 108), (42, 105), (50, 70),
+        # Left arm
+        (48, 45), (25, 42), (22, 40), (25, 38), (48, 35),
+        # Back up to head
+        (40, 25), (35, 15), (40, 5),
+    ], dtype=np.float64)
+    mask = polygon_to_lbm_mask(
+        poly, Nx=320, Ny=80, cx=70.0, cy=40.0,
+        target_extent_cells=60.0, aoa_deg=0.0,
+    )
+    # The figure spans the full 60-cell target_extent in y. Verify that
+    # both the upper (head) and lower (feet) halves have solid cells --
+    # if opening were erasing the limbs, the top + bottom rows of the
+    # body would be sparse.
+    ys = np.where(mask.any(axis=0))[0]
+    assert ys.min() < 15, f"top of figure missing: y_min={ys.min()}"
+    assert ys.max() > 65, f"bottom of figure missing: y_max={ys.max()}"
+    # Solid-cell count should be substantial -- if features were eroded
+    # we'd see < 200 cells; the figure (body + limbs) is ~400-600.
+    assert mask.sum() > 200, f"too few solid cells: {mask.sum()}"
+
+
 def test_rasterize_respects_rotation():
     """A square rotated 45 deg should have a smaller axis-aligned bbox in the
     grid (the diamond fits inside a wider/taller box, but the cells on the

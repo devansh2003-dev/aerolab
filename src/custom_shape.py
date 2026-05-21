@@ -24,7 +24,7 @@ from typing import Optional
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageOps
-from scipy.ndimage import binary_closing, binary_fill_holes, binary_opening
+from scipy.ndimage import binary_closing, binary_fill_holes
 from scipy.ndimage import label as ndimage_label
 from skimage.measure import approximate_polygon, find_contours
 from skimage.filters import threshold_otsu
@@ -377,19 +377,16 @@ def polygon_to_lbm_mask(
     draw.polygon([(float(p[0]), float(p[1])) for p in final], fill=1)
     mask = np.asarray(pil_img, dtype=bool).T
 
-    # Morphological opening: erode by 1 cell then dilate by 1 cell. Removes
-    # 1-cell-wide protrusions (kite tail-string, hair-thin whiskers) AND
-    # isolated single-cell islands AND tight pinch-points. These features
-    # are unphysical in a discrete-grid solver -- bounce-back on a 1-cell
-    # appendage can't sustain mass, density collapses to ~0, and the next
-    # step's MRT moment loop divides by zero. We remove them at the source
-    # rather than band-aiding the solver.
-    mask = binary_opening(mask, iterations=1)
-
-    # Then keep only the largest connected component (opening may still
-    # leave smaller closed regions, e.g. a wing tip that detached from the
-    # main body after erosion). Single closed body -> single contiguous
-    # solid region -> clean solver state.
+    # Keep only the largest connected component, in case the rasterizer
+    # produced an isolated single-cell island somewhere (very rare on
+    # closed polygons, but cheap to guard against). We deliberately do
+    # NOT do a morphological opening here -- earlier versions did, but
+    # opening also erodes legitimately-thin features like a character's
+    # arms or legs, causing the user-visible "parts get cut off" bug.
+    # Solver safety against thin appendages is handled by the
+    # solid-cell-reset pass in simulate_and_render (every step pins
+    # solid cells to rho=1, u=0 equilibrium), so thin geometry doesn't
+    # destabilise the moment loop.
     labels, n_labels = ndimage_label(mask)
     if n_labels > 1:
         sizes = np.bincount(labels.ravel())
@@ -397,8 +394,9 @@ def polygon_to_lbm_mask(
         mask = labels == int(np.argmax(sizes))
     elif n_labels == 0:
         raise ValueError(
-            "Shape vanished during morphological cleanup -- the silhouette "
-            "is too thin / spindly for the LBM grid. Try a chunkier shape."
+            "Polygon rasterised to an empty mask -- the shape is smaller "
+            "than one grid cell at the current resolution. Pick a "
+            "bigger source image or switch to the Detailed preset."
         )
     return mask
 
