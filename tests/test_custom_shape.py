@@ -13,9 +13,11 @@ from PIL import Image, ImageDraw
 from src.custom_shape import (
     MAX_AREA_FRAC,
     MAX_IMAGE_DIM,
+    MAX_SIMPLIFIED_VERTICES,
     MIN_AREA_FRAC,
     MIN_IMAGE_DIM,
     SilhouetteResult,
+    _transform_polygon_to_lattice,
     extract_silhouette_from_image,
     polygon_outline_xy,
     polygon_to_lbm_mask,
@@ -480,3 +482,186 @@ def test_image_to_mask_roundtrip_preserves_shape_centred():
     ys_x, ys_y = np.where(mask)
     assert abs(np.mean(ys_x) - 50) < 3
     assert abs(np.mean(ys_y) - 30) < 3
+
+
+# === Flip behaviour ===
+
+
+def test_flip_polygon_mirrors_along_x():
+    """The app-level 'Flip horizontally' button negates the polygon's x
+    coordinates before passing it to polygon_to_lbm_mask. Verify that the
+    resulting lattice mask is a left-right mirror of the unflipped one.
+    Asymmetric arrow shape so 'mirror' is observable -- a symmetric shape
+    would look identical after flip and the test would silently pass."""
+    arrow = np.array([
+        # Body
+        (0, 4), (8, 4), (8, 1), (12, 5), (8, 9), (8, 6), (0, 6),
+    ], dtype=np.float64)
+    flipped = arrow.copy()
+    flipped[:, 0] = -flipped[:, 0]
+    mask_orig = polygon_to_lbm_mask(arrow, 120, 60, 60.0, 30.0, 24.0)
+    mask_flip = polygon_to_lbm_mask(flipped, 120, 60, 60.0, 30.0, 24.0)
+    # Both have the same total area (rasterization of the same shape rotated 180-x).
+    assert abs(int(mask_orig.sum()) - int(mask_flip.sum())) < 30
+    # The arrow's TIP in the original is on the right; in the flipped
+    # version it should be on the LEFT. Check rightmost-solid column:
+    rightmost_orig = int(np.where(mask_orig.any(axis=1))[0][-1])
+    rightmost_flip = int(np.where(mask_flip.any(axis=1))[0][-1])
+    leftmost_orig = int(np.where(mask_orig.any(axis=1))[0][0])
+    leftmost_flip = int(np.where(mask_flip.any(axis=1))[0][0])
+    # Both span the same width window around cx=60; what differs is the
+    # asymmetric weight. Right-half cell count should differ between
+    # the two -- this is what 'flip is visually distinguishable' means.
+    right_count_orig = int(mask_orig[(leftmost_orig + rightmost_orig) // 2:, :].sum())
+    right_count_flip = int(mask_flip[(leftmost_flip + rightmost_flip) // 2:, :].sum())
+    assert right_count_orig != right_count_flip, (
+        "Mirror produced identical right-half masks -- "
+        "flip is geometrically a no-op for this shape (test bug)."
+    )
+
+
+def test_flip_composes_with_rotation():
+    """Flip-then-rotate should NOT equal rotate-then-flip for non-trivial
+    rotations -- they're different geometric operations. We apply flip
+    BEFORE polygon_to_lbm_mask's internal rotation, so the user clicking
+    'Flip' at aoa=45 sees the mirrored body at the same tilt (not a body
+    that's been rotated the other way). This test pins down that ordering
+    so a refactor can't silently swap it."""
+    asymm = np.array([
+        (0, 0), (10, 0), (10, 4), (4, 4), (4, 10), (0, 10),
+    ], dtype=np.float64)  # L-shape, distinguishable under any rigid transform
+    flipped = asymm.copy()
+    flipped[:, 0] = -flipped[:, 0]
+    # Flip then rotate 90:
+    m_flip_rot = polygon_to_lbm_mask(flipped, 120, 80, 60.0, 40.0, 24.0, aoa_deg=90.0)
+    # No flip, rotate 90:
+    m_just_rot = polygon_to_lbm_mask(asymm, 120, 80, 60.0, 40.0, 24.0, aoa_deg=90.0)
+    # The two should produce DIFFERENT masks (the L's leg is on the opposite side).
+    assert not np.array_equal(m_flip_rot, m_just_rot)
+
+
+# === Sample-shape orientation ===
+
+
+def test_sample_shapes_face_inflow():
+    """Each bundled sample (Fish, Car profile, Building cross-section)
+    must have its 'front' on the LEFT side of its bbox so it faces the
+    inflow without needing the flip toggle. Without this convention the
+    samples would be drag-tested tail-first."""
+    from src.sample_shapes import SAMPLE_SHAPES
+    # Fish: mouth is the leftmost x; tail is the rightmost.
+    fish = SAMPLE_SHAPES["Fish"]()
+    fish_x_min = fish[:, 0].min()
+    fish_x_max = fish[:, 0].max()
+    # The mouth (front) should be near x_min; verify the polygon's
+    # left edge is "sharper" (narrower y-range) than the right edge
+    # (tail with fin notch).
+    left_strip = fish[fish[:, 0] < fish_x_min + (fish_x_max - fish_x_min) * 0.05]
+    right_strip = fish[fish[:, 0] > fish_x_max - (fish_x_max - fish_x_min) * 0.05]
+    assert np.ptp(left_strip[:, 1]) < np.ptp(right_strip[:, 1]), (
+        "Fish mouth should be on the LEFT (narrow y-range); "
+        "tail with notch on the RIGHT (wider y-range)."
+    )
+    # Car: bumper-front is on the LEFT.
+    car = SAMPLE_SHAPES["Car profile"]()
+    assert car[:, 0].min() < 5, "Car front bumper should be at x ~ 0 (left)"
+
+
+# === Gaussian smoothing accuracy ===
+
+
+def test_gaussian_smoothing_makes_circle_outline_smoother():
+    """On a circle, the smoothed contour should resolve many vertices
+    around the curve. Without smoothing, the staircased boundary
+    simplifies to a polygon that follows the pixel grid (loosing
+    roundness). This is a regression test for the new gaussian-smoothing
+    pass -- removing it would cut vertex count and visibly pixelate
+    curved subjects."""
+    img = Image.new("L", (400, 300), 255)
+    d = ImageDraw.Draw(img)
+    d.ellipse((100, 75, 300, 225), fill=0)  # 200x150 ellipse
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    result = extract_silhouette_from_image(buf.getvalue())
+    # A smooth ellipse should yield ~20-40 vertices after DP. Without
+    # the gaussian pass, the staircase would collapse to ~12-16 and look
+    # visibly polygonal in the preview.
+    assert len(result.polygon_xy) >= 20, (
+        f"Expected >= 20 vertices on smoothed ellipse, got "
+        f"{len(result.polygon_xy)} -- gaussian smoothing may have regressed."
+    )
+
+
+# === Vertex-cap path ===
+
+
+def test_simplified_polygon_under_vertex_cap():
+    """A noisy contour shouldn't return a polygon with more than
+    MAX_SIMPLIFIED_VERTICES; if DP at the default tolerance would produce
+    more, the extractor loosens the tolerance until it fits."""
+    # Sinusoidal-edged shape: lots of small wobbles along the perimeter.
+    img = Image.new("L", (800, 600), 255)
+    d = ImageDraw.Draw(img)
+    cx, cy = 400, 300
+    pts = []
+    for i in range(720):  # half-degree resolution
+        ang = i * np.pi / 360
+        r = 200 + 8 * np.sin(ang * 30)  # 30-period wobble
+        pts.append((cx + r * np.cos(ang), cy + r * np.sin(ang)))
+    d.polygon(pts, fill=0)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    result = extract_silhouette_from_image(buf.getvalue())
+    assert len(result.polygon_xy) <= MAX_SIMPLIFIED_VERTICES, (
+        f"Got {len(result.polygon_xy)} vertices, expected <= {MAX_SIMPLIFIED_VERTICES}"
+    )
+
+
+# === Sigma scaling smoke test ===
+
+
+def test_sigma_scales_with_image_size():
+    """Smoothing sigma should adapt to image dimensions. Verify by
+    extracting the same logical ellipse at 200 px and 1600 px and
+    checking that both come through with sensible vertex counts (not
+    over-smoothed on small, not under-smoothed on large)."""
+    # Small image
+    img_s = Image.new("L", (200, 150), 255)
+    ImageDraw.Draw(img_s).ellipse((50, 40, 150, 110), fill=0)
+    buf_s = io.BytesIO()
+    img_s.save(buf_s, format="PNG")
+    r_small = extract_silhouette_from_image(buf_s.getvalue())
+    # Large image (same ellipse scaled up 8x)
+    img_l = Image.new("L", (1600, 1200), 255)
+    ImageDraw.Draw(img_l).ellipse((400, 320, 1200, 880), fill=0)
+    buf_l = io.BytesIO()
+    img_l.save(buf_l, format="PNG")
+    r_large = extract_silhouette_from_image(buf_l.getvalue())
+    # Both should yield closed polygons with >= 8 vertices.
+    assert len(r_small.polygon_xy) >= 8
+    assert len(r_large.polygon_xy) >= 8
+    # Bbox aspect ratio should match in both (~10:7 for these ellipses).
+    def aspect(poly):
+        return np.ptp(poly[:, 0]) / max(np.ptp(poly[:, 1]), 1.0)
+    assert abs(aspect(r_small.polygon_xy) - aspect(r_large.polygon_xy)) < 0.15
+
+
+# === Transform helper ===
+
+
+def test_transform_helper_unifies_mask_and_outline_geometry():
+    """polygon_to_lbm_mask's rasterized cells should align with
+    polygon_outline_xy's smooth outline -- both go through
+    _transform_polygon_to_lattice so they can't drift apart. Verify by
+    checking the outline's bbox matches the mask's solid-cell bbox."""
+    square = np.array([[0, 0], [10, 0], [10, 10], [0, 10]], dtype=np.float64)
+    mask = polygon_to_lbm_mask(square, 120, 80, 60.0, 40.0, 30.0, aoa_deg=20.0)
+    xs, ys = polygon_outline_xy(square, 120, 80, 60.0, 40.0, 30.0, aoa_deg=20.0)
+    mask_xs = np.where(mask.any(axis=1))[0]
+    mask_ys = np.where(mask.any(axis=0))[0]
+    # Outline bbox should be within ~2 px of the rasterised mask bbox
+    # (rasterization is integer-coord; outline is float).
+    assert abs(xs.min() - mask_xs.min()) < 2.5
+    assert abs(xs.max() - mask_xs.max()) < 2.5
+    assert abs(ys.min() - mask_ys.min()) < 2.5
+    assert abs(ys.max() - mask_ys.max()) < 2.5

@@ -61,8 +61,19 @@ SIMPLIFY_TOLERANCE_FRAC = 0.005
 # interpolates a sub-pixel boundary through the gradient instead of
 # tracing the staircase between integer-coord pixels. Result: visibly
 # rounder curves and cleaner diagonal edges on rasterized silhouettes.
-# 0.8 is mild enough not to blur out genuine corners.
-CONTOUR_SMOOTH_SIGMA = 0.8
+# Sigma scales with image size: on tiny (100 px) uploads we want a
+# small sigma so 3-px-wide features survive; on big (2 k px) uploads
+# we want a larger sigma so anti-aliasing staircases on long edges
+# actually get smoothed. min/max clamps keep behaviour predictable.
+CONTOUR_SMOOTH_SIGMA_FRAC = 0.002   # 0.2 % of shorter dim
+CONTOUR_SMOOTH_SIGMA_MIN = 0.5
+CONTOUR_SMOOTH_SIGMA_MAX = 2.5
+# Soft cap on the simplified polygon's vertex count. Pathological
+# uploads (scribbles, photos with noisy edges) can produce thousands
+# of vertices after DP -- functional but slow to rasterize / render
+# downstream. Above this we re-simplify at a looser tolerance and
+# surface a warning. Hard upper bound on what we'll return.
+MAX_SIMPLIFIED_VERTICES = 600
 # Reject shapes outside these area-fraction bounds (relative to the
 # ORIGINAL image area, before auto-padding). MIN catches "tiny dot" noise
 # uploads; MAX catches "shape fills entire frame, no bg to sample" cases.
@@ -289,11 +300,15 @@ def extract_silhouette_from_image(png_bytes: bytes) -> SilhouetteResult:
     # interpolates a sub-pixel-precise boundary through a smooth gradient
     # field instead of tracing the staircase between integer-coord
     # pixels. Big accuracy win on curved subjects (heads, wheels, fish)
-    # and diagonal edges (jets, building roofs at an angle) -- without
-    # this, the outline looks pixelated even though the simulation grid
-    # is fine. CONTOUR_SMOOTH_SIGMA is small enough that genuine sharp
-    # corners survive intact.
-    smooth = gaussian_filter(filled.astype(np.float64), sigma=CONTOUR_SMOOTH_SIGMA)
+    # and diagonal edges (jets, building roofs at an angle). Sigma is
+    # scaled to image size so behaviour is consistent across the
+    # 100-2048 px upload range.
+    sigma = float(np.clip(
+        CONTOUR_SMOOTH_SIGMA_FRAC * min(w, h),
+        CONTOUR_SMOOTH_SIGMA_MIN,
+        CONTOUR_SMOOTH_SIGMA_MAX,
+    ))
+    smooth = gaussian_filter(filled.astype(np.float64), sigma=sigma)
     contours = find_contours(smooth, level=0.5)
     if not contours:
         raise ValueError("Couldn't trace the outline of the shape.")
@@ -306,6 +321,23 @@ def extract_silhouette_from_image(png_bytes: bytes) -> SilhouetteResult:
 
     tolerance = SIMPLIFY_TOLERANCE_FRAC * min(w, h)
     simplified = approximate_polygon(polygon, tolerance=tolerance)
+    # If DP produced too many vertices (very noisy / detailed contour),
+    # loosen the tolerance and re-simplify until we're under the soft
+    # cap. Doubles the tolerance each iteration, max 5 attempts. Surface
+    # a warning so the user knows their upload was noisy.
+    _orig_tol = tolerance
+    _attempts = 0
+    while len(simplified) > MAX_SIMPLIFIED_VERTICES and _attempts < 5:
+        tolerance *= 2.0
+        simplified = approximate_polygon(polygon, tolerance=tolerance)
+        _attempts += 1
+    if _attempts > 0:
+        warnings.append(
+            f"Outline had {len(approximate_polygon(polygon, tolerance=_orig_tol))} "
+            f"vertices at the default tolerance; loosened to {tolerance:.1f} px "
+            f"to keep it under {MAX_SIMPLIFIED_VERTICES}. Result has "
+            f"{len(simplified)} vertices."
+        )
     # A rectangle legitimately reduces to 4 (+1 closing) vertices, so the
     # minimum has to be 4. Lower than that means the contour collapsed to a
     # degenerate line or point -- usually a noisy upload that should be
@@ -327,6 +359,55 @@ def extract_silhouette_from_image(png_bytes: bytes) -> SilhouetteResult:
     )
 
 
+def _transform_polygon_to_lattice(
+    polygon_xy: np.ndarray,
+    cx: float,
+    cy: float,
+    target_extent_cells: float,
+    aoa_deg: float,
+) -> np.ndarray:
+    """Image-coord polygon -> lattice-coord polygon, shared by mask and outline.
+
+    Steps:
+      1. Validate (N, 2) shape with N >= 3.
+      2. Translate so bbox centre is at the origin.
+      3. Scale so the longer bbox dimension equals ``target_extent_cells``.
+      4. Flip y (PIL is y-down, lattice is y-up). NO x-flip -- the source-
+         image orientation is preserved; samples pre-orient their fronts on
+         the left to face the inflow.
+      5. Rotate by ``aoa_deg`` around the origin (CCW positive in math
+         convention, matching the square / ellipse / NACA helpers).
+      6. Translate to (cx, cy).
+
+    Returns the transformed (N, 2) polygon in lattice float coords.
+    Raises ValueError on degenerate input.
+    """
+    poly = np.asarray(polygon_xy, dtype=np.float64)
+    if poly.ndim != 2 or poly.shape[1] != 2 or len(poly) < 3:
+        raise ValueError(
+            f"polygon_xy must be (N, 2) with N >= 3; got shape {poly.shape}"
+        )
+
+    x_min, y_min = poly.min(axis=0)
+    x_max, y_max = poly.max(axis=0)
+    longest = max(x_max - x_min, y_max - y_min)
+    if longest <= 0:
+        raise ValueError("Polygon has zero extent -- can't rasterize.")
+
+    scale = target_extent_cells / longest
+    centred = poly - np.array([(x_min + x_max) / 2, (y_min + y_max) / 2])
+    centred *= scale
+    centred[:, 1] *= -1.0
+
+    if aoa_deg != 0.0:
+        theta = np.deg2rad(aoa_deg)
+        cos_t, sin_t = np.cos(theta), np.sin(theta)
+        rot = np.array([[cos_t, -sin_t], [sin_t, cos_t]])
+        centred = centred @ rot.T
+
+    return centred + np.array([cx, cy])
+
+
 def polygon_to_lbm_mask(
     polygon_xy: np.ndarray,
     Nx: int,
@@ -338,53 +419,13 @@ def polygon_to_lbm_mask(
 ) -> np.ndarray:
     """Rasterize a polygon onto the (Nx, Ny) LBM grid.
 
-    Steps:
-      1. Translate the polygon so its bbox centre is at the origin.
-      2. Scale so its longest bbox dimension equals target_extent_cells.
-      3. Flip y (PIL is y-down, lattice is y-up).
-      4. Rotate by aoa_deg around the origin (counter-clockwise positive,
-         matching the existing rotation convention for square/ellipse).
-      5. Translate to (cx, cy).
-      6. Rasterize via PIL ImageDraw onto a (Nx, Ny) bool mask.
-
-    Returns a bool array of shape (Nx, Ny), True inside the polygon.
+    Transforms the polygon via the shared _transform_polygon_to_lattice
+    helper, then rasterizes via PIL ImageDraw onto a bool mask. Returns
+    an (Nx, Ny) bool array, True inside the polygon.
     """
-    poly = np.asarray(polygon_xy, dtype=np.float64)
-    if poly.ndim != 2 or poly.shape[1] != 2 or len(poly) < 3:
-        raise ValueError(
-            f"polygon_xy must be (N, 2) with N >= 3; got shape {poly.shape}"
-        )
-
-    x_min, y_min = poly.min(axis=0)
-    x_max, y_max = poly.max(axis=0)
-    extent_x = x_max - x_min
-    extent_y = y_max - y_min
-    longest = max(extent_x, extent_y)
-    if longest <= 0:
-        raise ValueError("Polygon has zero extent -- can't rasterize.")
-
-    scale = target_extent_cells / longest
-
-    # Center on origin, scale, flip y. The y-flip is required because PIL
-    # image coords have y increasing downward but the lattice has y
-    # increasing upward -- without it the body would appear vertically
-    # mirrored relative to the source. We do NOT flip x: uploaded shapes
-    # should appear in the tunnel with the same left-right orientation as
-    # the source image. Sample polygons in src/sample_shapes.py are
-    # pre-defined with the "front" on the left side of their bbox so they
-    # face the inflow naturally.
-    centred = poly - np.array([(x_min + x_max) / 2, (y_min + y_max) / 2])
-    centred *= scale
-    centred[:, 1] *= -1.0
-
-    # Rotate (CCW positive in math convention -- matches square/ellipse).
-    if aoa_deg != 0.0:
-        theta = np.deg2rad(aoa_deg)
-        cos_t, sin_t = np.cos(theta), np.sin(theta)
-        rot = np.array([[cos_t, -sin_t], [sin_t, cos_t]])
-        centred = centred @ rot.T
-
-    final = centred + np.array([cx, cy])
+    final = _transform_polygon_to_lattice(
+        polygon_xy, cx, cy, target_extent_cells, aoa_deg,
+    )
 
     # PIL ImageDraw.polygon takes (W, H) image and a list of (x, y) tuples,
     # then we transpose back to (Nx, Ny) for the LBM mask convention.
@@ -491,27 +532,13 @@ def polygon_outline_xy(
 
     Mirror of polygon_to_lbm_mask but returns separate (xs, ys) arrays so the
     LBM renderer can draw the smooth analytic body outline on top of the
-    voxelized mask -- same convention as cylinder_outline_xy etc.
+    voxelized mask -- same convention as cylinder_outline_xy etc. The
+    transformation pipeline is shared via _transform_polygon_to_lattice
+    so mask and outline can never drift apart.
     """
-    poly = np.asarray(polygon_xy, dtype=np.float64)
-    x_min, y_min = poly.min(axis=0)
-    x_max, y_max = poly.max(axis=0)
-    longest = max(x_max - x_min, y_max - y_min)
-    if longest <= 0:
-        raise ValueError("Polygon has zero extent.")
-
-    scale = target_extent_cells / longest
-    centred = poly - np.array([(x_min + x_max) / 2, (y_min + y_max) / 2])
-    centred *= scale
-    centred[:, 1] *= -1.0
-
-    if aoa_deg != 0.0:
-        theta = np.deg2rad(aoa_deg)
-        cos_t, sin_t = np.cos(theta), np.sin(theta)
-        rot = np.array([[cos_t, -sin_t], [sin_t, cos_t]])
-        centred = centred @ rot.T
-
-    final = centred + np.array([cx, cy])
+    final = _transform_polygon_to_lattice(
+        polygon_xy, cx, cy, target_extent_cells, aoa_deg,
+    )
     # Close the polygon for matplotlib
     closed = np.vstack([final, final[0]])
     return closed[:, 0], closed[:, 1]
