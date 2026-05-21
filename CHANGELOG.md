@@ -2,6 +2,29 @@
 
 All notable changes to AeroLab. Dates are absolute; versions follow [SemVer](https://semver.org/).
 
+## [0.3.0] — 2026-05-21
+
+**Phase 2 W5 shipped: custom shape upload — the headline differentiator.**
+
+### Added
+- **Upload PNG/JPG** as a 6th shape option in the LBM sidebar. Otsu threshold + connected-component extraction + Douglas-Peucker simplification (1 % of shorter dim tolerance) via scikit-image. Inline error messages for sanity-gate failures (image too small, shape touches edge, low contrast, area < 2 % or > 85 %).
+- **Three bundled sample silhouettes** (fish, car profile, building cross-section) via "Try a sample" buttons. Closes the Phase 2 W5 gate per README ("end-to-end on three real-world silhouettes").
+- **Live silhouette preview** on the LBM grid before clicking Run — shows orientation + scale + AoA-rotated outline.
+- **Pin / Clear snapshot** now supports custom shapes — polygon array stashed in session state alongside the snapshot tuple.
+- **Velocity (m/s) slider** replaces the Reynolds number slider as the user-facing input. Re = U·L/ν with L = 5 mm (fountain-pen scale) in standard air; slider 0.15–4.5 m/s maps to Re 50–1500. Re displayed alongside so the educational angle stays.
+- **Cd-accuracy `st.info` card** post-run for custom shapes, explaining the halfway-BB caveat.
+- Differentiated GIF filenames for custom shapes — sample name (e.g., `aerolab_custom_fish_re200.gif`) or polygon hash for uploads.
+- `src/custom_shape.py` (silhouette extraction + polygon rasterization) and `src/sample_shapes.py` (parametric polygons for the bundled samples).
+- 23 new tests (`tests/test_custom_shape.py`): synthetic-image extraction, sanity-gate rejections, rasterization, rotation, end-to-end simulate_and_render with Custom polygon, Phase 2 W5 gate tests for the 3 bundled samples. **Total: 129 passing (was 106 at 0.2.0).**
+
+### Changed
+- Hero in README is now an MP4 (`assets/hero_cylinder_re400.mp4`, LFS-tracked) instead of the 1.1 MB GIF — smaller bandwidth footprint per render and higher visual quality.
+- `custom_extent` per-preset: 30 cells (Standard), 80 cells (Detailed). Reduces aliasing on thin features like a fish tail.
+- Pin button no longer disabled for custom shapes.
+
+### Dependencies
+- Added `scikit-image==0.26.0` (silhouette extraction) and `streamlit-drawable-canvas==0.9.3` (planned for the hand-draw feature, Day 3 of Phase 2 W5). Pinned in both `requirements.txt` and `pyproject.toml`.
+
 ## [0.2.1] — 2026-05-19
 
 **Wake-streakline polish.** Particle visualization now reads correctly from the very first frame and trails off gradually on the Detailed preset.

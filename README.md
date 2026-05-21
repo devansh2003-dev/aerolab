@@ -2,12 +2,14 @@
 
 > Browser-based aerodynamics playground. No install, no signup.
 
-![AeroLab — cylinder wake at Re=400, von Kármán shedding visualised with plasma streaklines on a vorticity heatmap](assets/hero_cylinder_re400.gif)
+<video src="assets/hero_cylinder_re400.mp4" controls autoplay muted loop playsinline width="100%">
+  Your browser doesn't render video inline. Open <a href="assets/hero_cylinder_re400.mp4">assets/hero_cylinder_re400.mp4</a>.
+</video>
 
-Drop in a 2D shape (cylinder, square, ellipse, NACA 4-digit airfoil), set angle of attack and Reynolds number, watch the wake develop. Two modes:
+Drop in a 2D shape (cylinder, square, ellipse, NACA 4-digit airfoil, or **upload your own image**), set wind speed, watch the wake develop. Two modes:
 
 - **Fast (NeuralFoil)** — instant ML polar predictions for airfoils.
-- **Real CFD (LBM)** — full Lattice Boltzmann simulation rendered as a GIF.
+- **Real CFD (LBM)** — full Lattice Boltzmann simulation rendered as an animated GIF, on any shape you can sketch.
 
 CPU-only, free to use, mobile-friendly.
 
@@ -39,17 +41,18 @@ streamlit run app.py
 ```
 
 ```powershell
-pytest -q                                # 106 unit tests, ~21 s warm
+pytest -q                                # 129 unit tests, ~70 s warm
 python scripts/dev_validate_cfd.py       # 4 physics gates + 3 diagnostics, ~90 s
 ```
 
 ## Features
 
 **Real CFD (LBM mode)**
-- 5 shape presets: cylinder, square, ellipse, NACA 0012, NACA 4412
-- Reynolds 50–1500, per-shape AoA / rotation, two grid presets
-- MRT collision + Smagorinsky LES, Zou-He inflow/outflow, Bouzidi interpolated bounce-back
-- Side-by-side pinned comparison, GIF download with parameter-encoded filenames
+- **6 shape options:** cylinder, square, ellipse, NACA 0012, NACA 4412, **and "Upload your own"** (PNG/JPG → silhouette extraction → live preview → CFD GIF)
+- **Try-a-sample buttons:** built-in fish, car profile, and building cross-section silhouettes — one click, no upload needed
+- Velocity slider 0.15–4.5 m/s (mapped to Re 50–1500 via Re = U·L/ν), per-shape AoA / rotation, two grid presets
+- MRT collision + Smagorinsky LES, Zou-He inflow/outflow, Bouzidi interpolated bounce-back for built-in shapes (halfway BB for custom uploads — Bouzidi q-field for arbitrary polygons is on the roadmap)
+- Side-by-side pinned comparison (works for custom shapes too), GIF download with parameter + shape encoded filenames
 - Vorticity heatmap (RdBu_r) + speed-coloured RK4 streaklines (plasma) + smooth body outline + flow/scale annotations baked in
 
 **Fast (NeuralFoil)**
@@ -57,16 +60,14 @@ python scripts/dev_validate_cfd.py       # 4 physics gates + 3 diagnostics, ~90 
 
 ## Status
 
-**Day 14 of a 12-week build.**
+**Day ~21 of a 12-week build. Phase 2 W5 (image upload) shipped.**
 
-Phase 1 (solver core, W1–4) shipped Day 5, then expanded Days 6–14 with originally-Phase-2/3 work: MRT, Bouzidi, Zou-He, Mei momentum exchange, UI polish, repo hygiene.
-
-**Phase 2's headline — image/SVG upload with silhouette extraction — has not started.** Multi-viz modes (pressure, streamline density) also pending. Scope is pivoting, not slipping: solver got more rigorous, but the upload feature that differentiates AeroLab from "another LBM demo" is still ahead.
+Phase 1 (solver core, W1–4) shipped Day 5, expanded Days 6–14 with originally-Phase-2/3 work (MRT, Bouzidi, Zou-He, Mei momentum exchange). Phase 2 W5 (image/SVG upload with silhouette extraction — the headline differentiator) shipped on Day ~21.
 
 | Phase | Weeks | Deliverable | Status |
 |------:|------:|------|------|
 | 1 — Solver core | 1–4 | LBM works, validated, deployed with 5+ shapes | ✅ Day 5; expanded to D14 |
-| 2 — Shape freedom | 5–8 | **Image/SVG upload + silhouette extraction**, multi-viz, side-by-side, GIF export, gallery | Side-by-side ✅, GIF ✅, gallery ✅. **Upload + multi-viz: not started.** |
+| 2 — Shape freedom | 5–8 | **Image upload + silhouette extraction**, multi-viz, side-by-side, GIF export, gallery | **Upload ✅**, sample silhouettes ✅, side-by-side ✅, GIF ✅, gallery ✅. **Multi-viz (pressure / `\|u\|` / streamline density): pending.** Drawable canvas (hand-draw on trackpad): pending. |
 | 3 — Polish + 3D | 9–12 | NeuralFoil ✅, optional AeroSandbox+AVL 3D, OpenFOAM cross-validation, launch | NeuralFoil + Cloud deploy ✅; 3D + OpenFOAM pending |
 
 ## Validation
@@ -85,6 +86,8 @@ Phase 1 (solver core, W1–4) shipped Day 5, then expanded Days 6–14 with orig
 
 **NACA 0012 polar (Re_c=200, 8 angles −5° to +15°):** lift curve is portfolio-grade (CL(0°)=−1e-4, antisymmetric to 4 decimals, slope ~0.048/deg). **Drag curve is non-physical** — chord=40 cells discretization + BGK-τ artifact stack. Use lift only. Trustworthy polar needs chord ≥ 80 cells.
 
+**Phase 2 W5 gate:** 3 real-world bundled silhouettes (fish, car profile, building cross-section) run end-to-end at Re=200 Standard without NaN — verified by `test_phase2_w5_gate_sample_silhouettes_run_clean[*]` in the test suite.
+
 Artifacts in `data/`: `cylinder_convergence.png`, `validation_grid_convergence.png`, `naca0012_aoa_polar.png`.
 
 ## What this solver isn't
@@ -95,14 +98,16 @@ Shares the *collision-rule family* (MRT + Smagorinsky LES) with industrial LBM s
 - Adaptive mesh refinement → uniform 240×80 or 720×240
 - Wall-function turbulence → we resolve the boundary layer directly (only feasible at low Re)
 - Cumulant collision, multi-block, automatic time-stepping, 3D, OpenFOAM/Fluent cross-validation
+- Bouzidi q-field for arbitrary uploaded polygons (built-ins have it; custom uploads use halfway BB)
 
-Every choice on the production hot path is textbook-correct. The *envelope* is firmly academic-tutorial.
+Every choice on the production hot path is textbook-correct for built-in shapes. The *envelope* (Re, dimensionality, scope) is firmly academic-tutorial.
 
 ## Stack
 
 - **Solver:** NumPy reference + Numba `@njit(fastmath=True)` fused-step (collide + force + bounce-back + stream + Zou-He + Bouzidi in one function)
 - **UI:** Streamlit
-- **Viz:** matplotlib (LBM render), Plotly (airfoil polars), Pillow (GIF assembly), `scipy.ndimage.gaussian_filter` (smoothing)
+- **Silhouette extraction:** scikit-image (Otsu threshold + find_contours + Douglas-Peucker)
+- **Viz:** matplotlib (LBM render), Plotly (airfoil polars), Pillow (GIF assembly + polygon rasterization), `scipy.ndimage.gaussian_filter` (smoothing)
 - **ML mode:** [NeuralFoil](https://github.com/peterdsharpe/NeuralFoil) + [AeroSandbox](https://github.com/peterdsharpe/AeroSandbox)
 - **Hosting:** Streamlit Community Cloud (auto-redeploys on push to `main`)
 
@@ -118,6 +123,8 @@ aerolab/
 │   ├── lbm_render.py               # simulate_and_render: sim + streaklines + GIF
 │   ├── forces.py                   # Ladd 1994 + Mei 2002 momentum exchange
 │   ├── shapes.py                   # cylinder, square, ellipse, NACA 4-digit + q-fields
+│   ├── custom_shape.py             # Upload silhouette extraction + polygon rasterization
+│   ├── sample_shapes.py            # Bundled fish / car / building polygons
 │   └── airfoils.py                 # NeuralFoil/AeroSandbox wrapper
 ├── scripts/
 │   ├── lid_cavity_smoke.py         # cavity benchmark
@@ -126,7 +133,7 @@ aerolab/
 │   ├── naca0012_aoa_polar.py       # 8-angle airfoil polar
 │   ├── dev_validate_cfd.py         # 4 physics gates + 3 diagnostics
 │   └── dev_grid_convergence.py     # Std vs Detailed + Richardson extrapolation
-└── tests/                          # 106 unit tests
+└── tests/                          # 129 unit tests (incl. Phase 2 W5 gate)
 ```
 
 ## License
