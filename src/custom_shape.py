@@ -24,7 +24,7 @@ from typing import Optional
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageOps
-from scipy.ndimage import binary_closing, binary_fill_holes
+from scipy.ndimage import binary_closing, binary_fill_holes, gaussian_filter
 from scipy.ndimage import label as ndimage_label
 from skimage.measure import approximate_polygon, find_contours
 from skimage.filters import threshold_otsu
@@ -50,9 +50,19 @@ except (ImportError, OSError):
 MIN_IMAGE_DIM = 100   # pixels per side -- minimum upload size
 MAX_IMAGE_DIM = 2048  # resize-down cap for extraction speed
 # Douglas-Peucker tolerance as a fraction of the shorter image dimension.
-# 0.01 = "aggressive but not too aggressive" smoothing -- removes obvious
-# pixel-staircase noise while preserving sharp corners (~10 px at 1024 px).
-SIMPLIFY_TOLERANCE_FRAC = 0.01
+# 0.005 = ~2 px tolerance on a 400-px-shorter-side image. Halved from
+# the previous 0.01 because the gaussian-smoothed find_contours pass
+# below already removes most pixel-staircase noise; we want DP to keep
+# more of the genuine geometry (small notches, fine corners, holding
+# objects on character uploads) and only smooth out long flat runs.
+SIMPLIFY_TOLERANCE_FRAC = 0.005
+# Pre-contour gaussian smoothing radius (pixels). Smooths the binary
+# mask into a float gradient field; find_contours at level=0.5 then
+# interpolates a sub-pixel boundary through the gradient instead of
+# tracing the staircase between integer-coord pixels. Result: visibly
+# rounder curves and cleaner diagonal edges on rasterized silhouettes.
+# 0.8 is mild enough not to blur out genuine corners.
+CONTOUR_SMOOTH_SIGMA = 0.8
 # Reject shapes outside these area-fraction bounds (relative to the
 # ORIGINAL image area, before auto-padding). MIN catches "tiny dot" noise
 # uploads; MAX catches "shape fills entire frame, no bg to sample" cases.
@@ -275,10 +285,16 @@ def extract_silhouette_from_image(png_bytes: bytes) -> SilhouetteResult:
     pixels_after = int(filled.sum())
     n_holes_filled = 1 if pixels_after > pixels_before else 0
 
-    # find_contours returns a list of polylines at the given level. Pick the
-    # longest one -- that's the outer boundary. Output is (row, col); we
-    # swap to (x=col, y=row) so callers can think in PIL coords.
-    contours = find_contours(filled.astype(np.float64), level=0.5)
+    # Gaussian-smooth the binary mask before contouring so find_contours
+    # interpolates a sub-pixel-precise boundary through a smooth gradient
+    # field instead of tracing the staircase between integer-coord
+    # pixels. Big accuracy win on curved subjects (heads, wheels, fish)
+    # and diagonal edges (jets, building roofs at an angle) -- without
+    # this, the outline looks pixelated even though the simulation grid
+    # is fine. CONTOUR_SMOOTH_SIGMA is small enough that genuine sharp
+    # corners survive intact.
+    smooth = gaussian_filter(filled.astype(np.float64), sigma=CONTOUR_SMOOTH_SIGMA)
+    contours = find_contours(smooth, level=0.5)
     if not contours:
         raise ValueError("Couldn't trace the outline of the shape.")
     contour = max(contours, key=len)

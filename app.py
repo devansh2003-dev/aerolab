@@ -224,6 +224,16 @@ if mode == "Real CFD (LBM)":
             )
             if uploaded is not None:
                 from src.custom_shape import extract_silhouette_from_image
+                import hashlib as _hl
+                # Detect new-file events: hash the upload bytes and
+                # compare to the last hash we saw. On a fresh file the
+                # flip toggle should reset so a user uploading a
+                # right-facing shape doesn't get it pre-flipped from a
+                # previous left-facing upload.
+                _upload_hash = _hl.sha1(uploaded.getvalue()).hexdigest()[:12]
+                if _upload_hash != st.session_state.get("lbm_last_upload_hash"):
+                    st.session_state["lbm_last_upload_hash"] = _upload_hash
+                    st.session_state["lbm_custom_flipped"] = False
                 try:
                     result = extract_silhouette_from_image(uploaded.getvalue())
                     custom_polygon = result.polygon_xy
@@ -262,8 +272,24 @@ if mode == "Real CFD (LBM)":
                 ):
                     st.session_state["lbm_custom_polygon"] = sample_fn()
                     st.session_state["lbm_custom_label"] = sample_name
+                    # Reset flip on sample swap -- the bundled samples
+                    # all face the inflow already, so the user should
+                    # start unflipped.
+                    st.session_state["lbm_custom_flipped"] = False
+                    st.session_state.pop("lbm_last_upload_hash", None)
                     st.rerun()
             custom_polygon = st.session_state.get("lbm_custom_polygon", custom_polygon)
+            # Apply the "Flip horizontally" toggle (state lives in
+            # lbm_custom_flipped). We flip the polygon in image-coord
+            # space here so every downstream consumer -- preview, cache
+            # key hash, pin snapshot, simulate_and_render -- sees the
+            # post-flip geometry without any extra plumbing.
+            if (
+                custom_polygon is not None
+                and st.session_state.get("lbm_custom_flipped", False)
+            ):
+                custom_polygon = custom_polygon.copy()
+                custom_polygon[:, 0] = -custom_polygon[:, 0]
             # Clear sample-label hint if the user uploaded their own
             # image (which already happened above on a successful upload).
             if uploaded is not None:
@@ -389,6 +415,28 @@ if mode == "Real CFD (LBM)":
             st.markdown("")
             st.caption(":material/preview: Preview on the LBM grid:")
             st.image(preview_png, width="stretch")
+            # "Flip horizontally" toggle -- only meaningful for custom
+            # uploads / drawings (built-ins use aoa_deg for orientation).
+            # Label reflects current state so the user sees "Flipped"
+            # vs "Flip" instead of having to remember the toggle parity.
+            if shape_preset == "Custom" and custom_polygon is not None:
+                _is_flipped = st.session_state.get("lbm_custom_flipped", False)
+                _flip_label = (
+                    ":material/flip:  Flipped (click to undo)"
+                    if _is_flipped
+                    else ":material/flip:  Flip horizontally"
+                )
+                if st.button(
+                    _flip_label, width="stretch", key="lbm_flip_btn",
+                    help=(
+                        "Mirror the shape left-to-right. Useful when your "
+                        "source image was facing the wrong way -- the flow "
+                        "comes from the LEFT in the simulation, so the "
+                        "front of the shape should face that way."
+                    ),
+                ):
+                    st.session_state["lbm_custom_flipped"] = not _is_flipped
+                    st.rerun()
 
         # Custom shape requires a polygon -- disable Run if not present, so
         # the user gets a clear "upload first" hint instead of a stack trace.
