@@ -112,6 +112,8 @@ def test_canonical_pipeline_returns_expected_keys():
     )
     expected = {
         "gif_bytes", "vort_cbar_bytes", "speed_cbar_bytes",
+        "force_plot_bytes", "cd_history", "cl_history",
+        "cd_mean", "cl_mean", "strouhal",
         "label", "tau", "nu", "char_length",
         "lbm_nx", "lbm_ny", "n_frames", "n_steps", "near_stable",
     }
@@ -121,3 +123,48 @@ def test_canonical_pipeline_returns_expected_keys():
     assert isinstance(out["gif_bytes"], bytes) and len(out["gif_bytes"]) > 0
     assert out["lbm_nx"] == 320 and out["lbm_ny"] == 80
     assert out["n_frames"] == 2
+    # New: force histories should match the step count, plot is non-empty.
+    assert len(out["cd_history"]) == out["n_steps"]
+    assert len(out["cl_history"]) == out["n_steps"]
+    assert isinstance(out["force_plot_bytes"], bytes)
+    assert len(out["force_plot_bytes"]) > 1000  # a real PNG, not a header
+
+
+def test_force_readouts_are_in_physical_ballpark():
+    """Sanity check on the new Cd/Cl/Strouhal readouts. Cylinder at Re=200,
+    Standard preset: textbook values are Cd ~ 1.3 (we'll read it high due
+    to channel confinement and grid resolution, but it must be positive
+    and below ~5), Cl mean near zero (symmetric body at AoA=0), Strouhal
+    in 0.10-0.40 (textbook is 0.197, allow generous slack for the
+    short-run FFT).
+
+    This is the regression test for the W6 force-readout feature -- if
+    a refactor breaks the conversion factor or the FFT logic, these
+    bounds will catch it before users do.
+    """
+    out = simulate_and_render(
+        "Cylinder", 200, 0.0, "Standard (320 x 80)", n_frames=60,
+    )
+    assert 0.5 < out["cd_mean"] < 5.0, (
+        f"Cd out of plausible band: {out['cd_mean']}"
+    )
+    assert abs(out["cl_mean"]) < 0.5, (
+        f"Cl mean for symmetric cylinder at AoA=0 should be near zero; "
+        f"got {out['cl_mean']}"
+    )
+    import numpy as np
+    if np.isfinite(out["strouhal"]):
+        assert 0.10 < out["strouhal"] < 0.40, (
+            f"Strouhal out of plausible band for Re=200: {out['strouhal']}"
+        )
+
+
+def test_naca_at_positive_aoa_produces_positive_lift():
+    """A cambered airfoil (NACA 4412) at +15 degrees AoA should produce
+    clearly positive Cl. If sign convention flips, this catches it."""
+    out = simulate_and_render(
+        "NACA 4412", 600, 15.0, "Standard (320 x 80)", n_frames=40,
+    )
+    assert out["cl_mean"] > 0.05, (
+        f"Expected positive Cl for NACA 4412 at +15 deg AoA, got {out['cl_mean']}"
+    )

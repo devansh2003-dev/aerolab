@@ -82,6 +82,42 @@ with st.sidebar:
     st.divider()
 
 # --- Cached LBM simulate+render wrapper (module level) ---
+# Textbook 2D cylinder Cd / Strouhal vs Reynolds. Williamson (1996),
+# Norberg (1994), and the standard fluid-dynamics references agree on
+# these to within ~5 %. Used for the "your sim vs textbook" badge below
+# the Cd time-series plot -- gives a student an instant calibration on
+# whether the simulation is in the right ballpark for the validated case.
+_CYLINDER_REFERENCE_CD = {
+    40: 1.55, 80: 1.40, 100: 1.40, 150: 1.32, 200: 1.30,
+    300: 1.35, 500: 1.40, 800: 1.41, 1000: 1.40, 1500: 1.42,
+}
+_CYLINDER_REFERENCE_ST = {
+    80: 0.155, 100: 0.165, 150: 0.180, 200: 0.197, 300: 0.207,
+    500: 0.215, 800: 0.215, 1000: 0.21, 1500: 0.21,
+}
+
+
+def _cylinder_reference(re_value: int):
+    """Linear-interpolated textbook (Cd, St) for a 2-D cylinder at Re=re_value.
+
+    Returns (None, None) if Re falls outside the validated range (below
+    Re=40 the wake hasn't started shedding; above Re=1500 our slider
+    can't even go).
+    """
+    if re_value < min(_CYLINDER_REFERENCE_CD) or re_value > max(_CYLINDER_REFERENCE_CD):
+        return None, None
+    cd_keys = sorted(_CYLINDER_REFERENCE_CD)
+    cd_vals = [_CYLINDER_REFERENCE_CD[k] for k in cd_keys]
+    cd_ref = float(np.interp(re_value, cd_keys, cd_vals))
+    if re_value < min(_CYLINDER_REFERENCE_ST):
+        st_ref = None
+    else:
+        st_keys = sorted(_CYLINDER_REFERENCE_ST)
+        st_vals = [_CYLINDER_REFERENCE_ST[k] for k in st_keys]
+        st_ref = float(np.interp(re_value, st_keys, st_vals))
+    return cd_ref, st_ref
+
+
 # Lives outside the conditional so @st.cache_data isn't re-decorated on every
 # Streamlit rerun. The heavy imports happen lazily on first call (the wrapper
 # is never called in Fast mode, so Fast mode's cold-start stays untouched).
@@ -562,19 +598,10 @@ if mode == "Real CFD (LBM)":
             "down for cleaner physics."
         )
 
-    # Halfway-BB caveat for custom shapes. Preset shapes ship analytic
-    # Bouzidi q-fields, custom shapes don't (yet) -- so Cd reads ~30-50%
-    # high but the wake structure is correct. Surface this where the user
-    # actually sees it (rather than buried in the upload tooltip).
-    if shape_preset == "Custom":
-        st.info(
-            ":material/info: **Custom-shape note:** Uploaded and drawn shapes "
-            "currently use halfway bounce-back at the wall (cylinder, square, "
-            "ellipse, and NACA use the more accurate Bouzidi interpolated BC). "
-            "**Wake structure is physically correct**, but reported drag "
-            "would read ~30-50 % higher than a Bouzidi run on the same shape. "
-            "Analytic q-field for arbitrary polygons is on the roadmap."
-        )
+    # Custom-shape Cd caveat is hoisted into the new metrics block below
+    # the Cd number, where the user is actually looking. (Old: a separate
+    # st.info banner sat above the GIF -- visually disconnected from the
+    # number it explains.)
 
     # === Comparison snapshot (matches Fast-mode side-by-side affordance) ===
     # User can "pin" any run; the next run displays side-by-side with the
@@ -732,10 +759,123 @@ if mode == "Real CFD (LBM)":
                 )
             st.caption(_pin_msg)
 
+        # === Measured aerodynamics: Cd / Cl / Strouhal ===
+        # The solver runs a momentum-exchange force calculation on the
+        # body every step. Mean values are taken over the last third of
+        # the run so the initial transient doesn't bias the number. The
+        # Strouhal estimate comes from the dominant FFT peak of the
+        # lift-coefficient history (vortex shedding modulates lift at
+        # the shedding frequency for symmetric bodies).
         st.markdown(
             "<div style='color:#94a3b8;font-size:0.78rem;"
             "letter-spacing:0.05em;text-transform:uppercase;"
-            "margin:0.4rem 0 0.1rem 0;'>"
+            "margin:1.2rem 0 0.3rem 0;'>"
+            "Measured forces"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        _metric_cols = st.columns(3)
+        with _metric_cols[0]:
+            st.metric(
+                "Drag coefficient (Cd)",
+                f"{sim_result['cd_mean']:.2f}",
+                help=(
+                    "Mean drag coefficient, averaged over the last third "
+                    "of the simulation to skip the start-up transient."
+                ),
+            )
+        with _metric_cols[1]:
+            st.metric(
+                "Lift coefficient (Cl)",
+                f"{sim_result['cl_mean']:+.2f}",
+                help=(
+                    "Mean lift coefficient. Near zero for symmetric "
+                    "shapes at AoA=0; rises sharply with AoA on airfoils."
+                ),
+            )
+        with _metric_cols[2]:
+            _st_val = sim_result.get("strouhal", float("nan"))
+            if np.isfinite(_st_val):
+                st.metric(
+                    "Strouhal (St)",
+                    f"{_st_val:.3f}",
+                    help=(
+                        "Dimensionless vortex-shedding frequency, "
+                        "St = f * L / U. From an FFT of the Cl history."
+                    ),
+                )
+            else:
+                st.metric(
+                    "Strouhal (St)", "—",
+                    help="Not enough samples in the run for a stable FFT.",
+                )
+        st.image(sim_result["force_plot_bytes"], width="stretch")
+        st.caption(
+            ":material/info: The shaded band is the window used for the "
+            "mean Cd / Cl values above. Look at it: if Cd hasn't settled "
+            "yet at the right edge, the run is still transient and the "
+            "mean is unreliable -- try a longer / Detailed run."
+        )
+
+        # Textbook comparison for cylinder (the canonical validated case).
+        # We DON'T score this pass/fail because our 320x80 channel runs
+        # at ~35 % blockage (D=28, Ny=80) -- textbook Cd is for an
+        # essentially-infinite domain (~5 % blockage), so confinement
+        # alone inflates Cd by ~50-100 %. Plus low body-cell resolution
+        # adds another ~20 % on top. Honest framing: show both numbers
+        # so the student calibrates expectations, and call out that St
+        # is the cleaner cross-check (it's far less sensitive to grid
+        # and blockage than Cd).
+        if shape_preset == "Cylinder":
+            _cd_ref, _st_ref = _cylinder_reference(int(reynolds_target))
+            if _cd_ref is not None:
+                _badge_parts = [
+                    f"Textbook Cd ≈ **{_cd_ref:.2f}**, your sim: "
+                    f"**{sim_result['cd_mean']:.2f}**"
+                ]
+                _st_match = False
+                if _st_ref is not None and np.isfinite(_st_val):
+                    _st_err_pct = abs(_st_val - _st_ref) / _st_ref * 100
+                    _badge_parts.append(
+                        f"Textbook St ≈ **{_st_ref:.3f}**, your sim: "
+                        f"**{_st_val:.3f}** ({_st_err_pct:.0f}% off)"
+                    )
+                    _st_match = _st_err_pct < 25
+                if _st_match:
+                    st.success(
+                        ":material/check_circle: **Shedding physics match** "
+                        "(Strouhal within 25 % of textbook). "
+                        + "  ·  ".join(_badge_parts) +
+                        ".  Cd is biased high by ~ 50-100 % because of channel "
+                        "confinement (D/Ny = 35 %) and limited grid resolution -- "
+                        "that's expected on a CPU-only browser solver."
+                    )
+                else:
+                    st.info(
+                        ":material/info: **Textbook reference at Re="
+                        f"{int(reynolds_target)}:**  "
+                        + "  ·  ".join(_badge_parts) +
+                        ".  Cd is biased high by ~ 50-100 % (channel confinement "
+                        "+ grid resolution). Strouhal is the cleaner physics "
+                        "check; if it's far off, try a longer / Detailed run "
+                        "so the FFT has more cycles to lock onto."
+                    )
+
+        # Custom shapes use halfway BB everywhere -- the Cd reads ~30-50 %
+        # high. Hoisted out of the generic caveat block above so it sits
+        # right next to the Cd number, where the user is looking.
+        if shape_preset == "Custom":
+            st.caption(
+                ":material/info: **Cd note for custom shapes:** halfway "
+                "bounce-back is less accurate than the analytic Bouzidi "
+                "scheme used for built-in shapes, so this Cd reads ~30-50 % "
+                "high. Wake structure and Strouhal are fine."
+            )
+
+        st.markdown(
+            "<div style='color:#94a3b8;font-size:0.78rem;"
+            "letter-spacing:0.05em;text-transform:uppercase;"
+            "margin:1.2rem 0 0.1rem 0;'>"
             "Background heatmap — air's rotation"
             "</div>",
             unsafe_allow_html=True,

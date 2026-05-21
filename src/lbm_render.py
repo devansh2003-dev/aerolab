@@ -28,7 +28,7 @@ from matplotlib.patches import Polygon
 from PIL import Image
 from scipy.ndimage import gaussian_filter
 
-from src.lbm import CS2, equilibrium, macroscopic, step_njit_mrt_no_force
+from src.lbm import CS2, equilibrium, macroscopic, step_njit_mrt_with_force
 from src.shapes import (
     cylinder_mask, cylinder_q_field, ellipse_mask, ellipse_q_field,
     naca4_airfoil_mask, naca4_outline_xy, naca4_q_field, no_bouzidi_q_field,
@@ -404,6 +404,13 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
     -------
     dict
         gif_bytes, vort_cbar_bytes, speed_cbar_bytes : bytes for st.image
+        force_plot_bytes                             : PNG of Cd/Cl vs time
+        cd_history, cl_history                       : float32 arrays
+                                                       (length = n_steps)
+        cd_mean, cl_mean                             : floats, mean over the
+                                                       last third of the run
+        strouhal                                     : float (NaN if too few
+                                                       samples for FFT)
         label                                        : short title string
         tau, nu, char_length                         : physics scalars
         lbm_nx, lbm_ny, n_frames, n_steps            : grid + sim sizes
@@ -578,14 +585,20 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
     progress(0.0, ":material/sync: Phase 1 of 2 -- simulating flow (MRT)...")
     snapshots = []
     step_counter = 0
+    # Force history accumulators for Cd/Cl/Strouhal post-processing.
+    # ~5250 float64 entries on either preset -> ~42 KB per array.
+    fx_history = np.empty(n_steps_local, dtype=np.float64)
+    fy_history = np.empty(n_steps_local, dtype=np.float64)
     # No separate warmup -- frame 0 captures uniform inflow and the
     # wake develops visibly over the first ~30 frames. The kick fires
     # inside the early record steps to break perfect symmetry.
     for frame in range(n_frames_local):
         for _ in range(STEPS_PER_FRAME):
-            f = step_njit_mrt_no_force(
+            f, Fx_step, Fy_step = step_njit_mrt_with_force(
                 f, tau, mask, q_field, f_inflow_eq, INFLOW_DIRS, OUTFLOW_DIRS,
             )
+            fx_history[step_counter] = Fx_step
+            fy_history[step_counter] = Fy_step
             # Defensive solid-cell reset: see f_eq_solid comment above.
             f[:, mask] = f_eq_solid[:, None]
             if KICK_START <= step_counter < KICK_END:
@@ -910,10 +923,77 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
         tick_labels=["Stalled (slow)", "Inflow speed", "Accelerated (fast)"],
     )
 
+    # Post-process forces -> Cd / Cl / Strouhal -----------------------------
+    # In 2D lattice units with rho ~ 1, the drag/lift coefficients are
+    # Cd = 2 * F_x / (rho * U^2 * L), Cl = 2 * F_y / (rho * U^2 * L),
+    # where L = char_length and U = U_INFLOW (set above). step_njit_mrt_with_force
+    # returns F_x / F_y per step; we keep the full history for the time-series
+    # plot and compute summary stats over the last third of the run (to skip
+    # the initial transient before vortex shedding locks in).
+    cd_history = 2.0 * fx_history / (U_INFLOW ** 2 * char_length)
+    cl_history = 2.0 * fy_history / (U_INFLOW ** 2 * char_length)
+    _stable_tail_start = max(1, n_steps_local // 3 * 2)  # last third
+    cd_mean = float(np.mean(cd_history[_stable_tail_start:]))
+    cl_mean = float(np.mean(cl_history[_stable_tail_start:]))
+
+    # Strouhal: dominant frequency of Cl oscillation (vortex shedding sheds
+    # at the lift's oscillation rate, ~half the drag's rate for symmetric
+    # bodies). FFT on the last-half of the run, in lattice-step units.
+    # St = f * L / U where f is in cycles per lattice step.
+    cl_tail = cl_history[len(cl_history) // 2:]
+    cl_tail_centered = cl_tail - cl_tail.mean()
+    if len(cl_tail_centered) >= 16:
+        fft_mag = np.abs(np.fft.rfft(cl_tail_centered))
+        freqs_per_step = np.fft.rfftfreq(len(cl_tail_centered), d=1.0)
+        # Skip DC bin (index 0); pick the loudest non-DC frequency.
+        peak_idx = int(np.argmax(fft_mag[1:])) + 1
+        peak_freq = float(freqs_per_step[peak_idx])
+        strouhal = peak_freq * char_length / U_INFLOW
+    else:
+        strouhal = float("nan")
+
+    # Time-series plot of Cd + Cl on the same axis. Dark-theme to match the
+    # vorticity GIF; fixed size that reads nicely under the GIF.
+    fig_ts, ax_ts = plt.subplots(figsize=(8.0, 2.4), dpi=80)
+    t_axis = np.arange(n_steps_local)
+    ax_ts.plot(t_axis, cd_history, color="#94a3b8", linewidth=1.0, label="Cd (drag)")
+    ax_ts.plot(t_axis, cl_history, color="#fbbf24", linewidth=1.0, label="Cl (lift)")
+    ax_ts.axhline(0.0, color="#475569", linewidth=0.5)
+    # Shade the "stable tail" so the user can see where the mean was taken.
+    ax_ts.axvspan(
+        _stable_tail_start, n_steps_local,
+        color="#fbbf24", alpha=0.07, zorder=0,
+    )
+    ax_ts.set_xlabel("Lattice timestep", color="#94a3b8", fontsize=9)
+    ax_ts.set_ylabel("Force coefficient", color="#94a3b8", fontsize=9)
+    ax_ts.legend(
+        loc="upper right", facecolor="#0b1220", edgecolor="#334155",
+        labelcolor="#cbd5e1", fontsize=8,
+    )
+    ax_ts.set_facecolor("#0b1220")
+    fig_ts.patch.set_facecolor("#0b1220")
+    for spine in ax_ts.spines.values():
+        spine.set_color("#334155")
+    ax_ts.tick_params(axis="both", colors="#64748b", labelsize=8)
+    ax_ts.grid(True, color="#1e293b", linestyle="--", linewidth=0.5)
+    force_plot_buf = io.BytesIO()
+    fig_ts.savefig(
+        force_plot_buf, format="png", facecolor="#0b1220",
+        bbox_inches="tight", pad_inches=0.1,
+    )
+    plt.close(fig_ts)
+    force_plot_bytes = force_plot_buf.getvalue()
+
     return {
         "gif_bytes": gif_buf_local.getvalue(),
         "vort_cbar_bytes": vort_cbar_b,
         "speed_cbar_bytes": speed_cbar_b,
+        "force_plot_bytes": force_plot_bytes,
+        "cd_history": cd_history.astype(np.float32),
+        "cl_history": cl_history.astype(np.float32),
+        "cd_mean": cd_mean,
+        "cl_mean": cl_mean,
+        "strouhal": float(strouhal),
         "label": label,
         "tau": float(tau),
         "nu": float(nu),
