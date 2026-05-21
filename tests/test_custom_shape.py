@@ -223,6 +223,62 @@ def test_polygon_outline_is_closed():
 # === End-to-end ===
 
 
+def test_simulate_and_render_accepts_custom_polygon():
+    """End-to-end smoke: extract a polygon from a synthetic PNG, feed it to
+    simulate_and_render with shape_preset='Custom', verify we get a GIF
+    back with the expected metadata keys."""
+    from src.lbm_render import simulate_and_render
+
+    png = _make_png_with_shape(
+        lambda d, fg: d.ellipse((80, 80, 320, 220), fill=fg),
+        size=(400, 300),
+    )
+    result = extract_silhouette_from_image(png)
+
+    out = simulate_and_render(
+        "Custom", reynolds_target=200, aoa_deg=0.0,
+        res_key="Standard (240 x 80)",
+        n_frames=3,  # tiny for speed
+        custom_polygon=result.polygon_xy,
+    )
+    assert isinstance(out["gif_bytes"], bytes) and len(out["gif_bytes"]) > 0
+    assert out["lbm_nx"] == 240 and out["lbm_ny"] == 80
+    assert out["label"].startswith("Custom shape")
+    # char_length should equal the preset's custom_extent (Standard = 24).
+    assert out["char_length"] == pytest.approx(24.0)
+
+
+def test_simulate_and_render_rotates_custom_polygon():
+    """Same polygon at AoA=0 vs AoA=45 should produce different labels and
+    different masks (verified indirectly via label string)."""
+    from src.lbm_render import simulate_and_render
+
+    png = _make_png_with_shape(
+        lambda d, fg: d.rectangle((100, 110, 300, 190), fill=fg),
+        size=(400, 300),
+    )
+    poly = extract_silhouette_from_image(png).polygon_xy
+
+    out_0 = simulate_and_render(
+        "Custom", 200, 0.0, "Standard (240 x 80)",
+        n_frames=2, custom_polygon=poly,
+    )
+    out_45 = simulate_and_render(
+        "Custom", 200, 45.0, "Standard (240 x 80)",
+        n_frames=2, custom_polygon=poly,
+    )
+    assert "rotation" not in out_0["label"]
+    assert "+45.0" in out_45["label"]
+
+
+def test_simulate_and_render_rejects_custom_without_polygon():
+    from src.lbm_render import simulate_and_render
+    with pytest.raises(ValueError, match="custom_polygon"):
+        simulate_and_render(
+            "Custom", 200, 0.0, "Standard (240 x 80)", n_frames=2,
+        )
+
+
 def test_image_to_mask_roundtrip_preserves_shape_centred():
     """Upload a 200x150 ellipse PNG, extract polygon, rasterize back to a
     100x60 LBM grid. The mask should be centred and roughly elliptical."""

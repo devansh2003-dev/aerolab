@@ -93,6 +93,7 @@ RESOLUTION_PRESETS = {
         Nx=240, Ny=80, body_x=52, cy=40,
         cylinder_D=16, square_side=16,
         ellipse_a=18, ellipse_b=9, chord=36,
+        custom_extent=24,
         n_frames=150,
         gif_palette=192,
     ),
@@ -100,6 +101,7 @@ RESOLUTION_PRESETS = {
         Nx=720, Ny=240, body_x=160, cy=120,
         cylinder_D=45, square_side=45,
         ellipse_a=50, ellipse_b=25, chord=100,
+        custom_extent=65,
         n_frames=150,
         gif_palette=96,
     ),
@@ -241,16 +243,32 @@ def expand_outline(xs, ys, margin):
     return xs + margin * dx / r_safe, ys + margin * dy / r_safe
 
 
-def body_outline_xy(shape_preset, res_cfg, aoa_deg):
+def body_outline_xy(shape_preset, res_cfg, aoa_deg, custom_polygon=None):
     """Smooth analytic boundary (xs, ys) in grid coords for the body.
 
     The LBM mask is voxelized to grid cells, which makes the body's edge look
     staircase-y when rendered. We overlay this high-resolution outline as a
     filled patch so the displayed shape edge stays crisp regardless of grid
     resolution. The mask itself (used for physics) is unchanged.
+
+    For shape_preset == "Custom", ``custom_polygon`` must be provided -- the
+    extracted-from-image / drawn-on-canvas polygon in image-pixel coords.
+    The smooth outline is then the polygon itself, transformed into lattice
+    space via custom_shape.polygon_outline_xy.
     """
     body_x = res_cfg["body_x"]
     cy = res_cfg["cy"]
+    if shape_preset == "Custom":
+        if custom_polygon is None:
+            raise ValueError("Custom shape requires custom_polygon")
+        # Local import: keeps src.custom_shape's scikit-image import lazy,
+        # so the LBM-only code path (tests, scripts) doesn't pay for it.
+        from src.custom_shape import polygon_outline_xy
+        target_extent = res_cfg.get("custom_extent", 30)
+        return polygon_outline_xy(
+            custom_polygon, res_cfg["Nx"], res_cfg["Ny"],
+            body_x, cy, target_extent, aoa_deg,
+        )
     aoa_rad = np.deg2rad(aoa_deg)
     cos_a = np.cos(aoa_rad)
     sin_a = np.sin(aoa_rad)
@@ -332,7 +350,8 @@ def _noop_progress(frac, text):
 
 
 def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
-                         *, progress_callback=None, n_frames=None):
+                         *, progress_callback=None, n_frames=None,
+                         custom_polygon=None):
     """Run LBM and render to GIF + colorbars.
 
     Pure function with no Streamlit dependency. The caller owns all I/O.
@@ -340,7 +359,13 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
     Parameters
     ----------
     shape_preset : str
-        One of "Cylinder", "Square", "Ellipse", "NACA 0012", "NACA 4412".
+        One of "Cylinder", "Square", "Ellipse", "NACA 0012", "NACA 4412",
+        or "Custom" (requires ``custom_polygon`` to be supplied).
+    custom_polygon : np.ndarray or None
+        Shape (N, 2) polygon in image-pixel coords (PIL convention, y down).
+        Required when shape_preset == "Custom"; ignored otherwise. The
+        rasterizer centres, scales, flips, and rotates it onto the LBM grid
+        using res_cfg["custom_extent"] cells as the longest-axis size.
     reynolds_target : float
         Reynolds number based on the body's characteristic length (diameter
         for cylinder/ellipse, side for square, chord for airfoil).
@@ -406,6 +431,27 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
         char_length = 2 * b
         kick_x = BODY_X + a + 10
         label = "Ellipse" if abs(aoa_deg) < 0.25 else f"Ellipse  ·  {aoa_deg:+.1f}° rotation"
+    elif shape_preset == "Custom":
+        if custom_polygon is None:
+            raise ValueError("shape_preset='Custom' requires custom_polygon")
+        # Local import keeps scikit-image out of the preset-only code path.
+        from src.custom_shape import polygon_to_lbm_mask
+        target_extent = res_cfg.get("custom_extent", 30)
+        mask = polygon_to_lbm_mask(
+            custom_polygon, LBM_NX, LBM_NY,
+            cx=BODY_X, cy=CY_CENTER,
+            target_extent_cells=target_extent, aoa_deg=aoa_deg,
+        )
+        # Uploaded / drawn polygons use halfway bounce-back for now -- analytic
+        # Bouzidi q-field from a polygon requires per-link polygon-segment
+        # intersection, scheduled for Phase 2 W5.5.
+        q_field = no_bouzidi_q_field(LBM_NX, LBM_NY)
+        char_length = float(target_extent)
+        kick_x = BODY_X + int(target_extent) + 10
+        label = (
+            "Custom shape" if abs(aoa_deg) < 0.25
+            else f"Custom shape  ·  {aoa_deg:+.1f}° rotation"
+        )
     else:
         chord = res_cfg["chord"]
         naca_code = shape_preset.split()[1]
@@ -432,7 +478,9 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
     vorticity_cmap = ListedColormap(_rdbu, name="rdbu_alpha70")
     vorticity_cmap.set_bad((0.0, 0.0, 0.0, 0.0))
 
-    body_xs, body_ys = body_outline_xy(shape_preset, res_cfg, aoa_deg)
+    body_xs, body_ys = body_outline_xy(
+        shape_preset, res_cfg, aoa_deg, custom_polygon=custom_polygon,
+    )
     body_xs, body_ys = expand_outline(body_xs, body_ys, BODY_OUTLINE_MARGIN)
 
     # Per-preset frame count. Both presets now run 150 frames at

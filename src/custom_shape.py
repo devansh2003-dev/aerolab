@@ -248,6 +248,58 @@ def polygon_to_lbm_mask(
     return np.asarray(pil_img, dtype=bool).T
 
 
+def render_silhouette_preview(
+    polygon_xy: np.ndarray,
+    Nx: int,
+    Ny: int,
+    cx: float,
+    cy: float,
+    target_extent_cells: float,
+    aoa_deg: float = 0.0,
+) -> bytes:
+    """Render a quick PNG preview of how the polygon will sit on the LBM grid.
+
+    Same transform pipeline as polygon_to_lbm_mask -- the user sees the
+    extracted polygon already centred, scaled, and rotated, with a flow
+    arrow on the left so they can confirm orientation before clicking Run.
+    Returns PNG bytes suitable for st.image().
+    """
+    import matplotlib.pyplot as plt
+
+    xs, ys = polygon_outline_xy(
+        polygon_xy, Nx, Ny, cx, cy, target_extent_cells, aoa_deg,
+    )
+
+    aspect = max(2.0, 8.0 * Ny / Nx)
+    fig, ax = plt.subplots(figsize=(8.0, aspect), dpi=80)
+    ax.set_xlim(0, Nx)
+    ax.set_ylim(0, Ny)
+    ax.set_aspect("equal")
+    ax.fill(xs, ys, color="#cbd5e1", alpha=0.75, zorder=2)
+    ax.plot(xs, ys, color="#f8fafc", linewidth=1.6, zorder=3)
+    ax.annotate(
+        "", xy=(Nx * 0.12, Ny * 0.5), xytext=(Nx * 0.02, Ny * 0.5),
+        arrowprops=dict(arrowstyle="->", color="#94a3b8", lw=2),
+    )
+    ax.text(
+        Nx * 0.02, Ny * 0.62, "flow",
+        color="#94a3b8", fontsize=9, fontfamily="monospace",
+    )
+    ax.set_facecolor("#0b1220")
+    fig.patch.set_facecolor("#0b1220")
+    for spine in ax.spines.values():
+        spine.set_color("#334155")
+    ax.tick_params(axis="both", colors="#64748b", labelsize=8)
+
+    buf = io.BytesIO()
+    fig.savefig(
+        buf, format="png", facecolor="#0b1220",
+        bbox_inches="tight", pad_inches=0.05,
+    )
+    plt.close(fig)
+    return buf.getvalue()
+
+
 def polygon_outline_xy(
     polygon_xy: np.ndarray,
     Nx: int,

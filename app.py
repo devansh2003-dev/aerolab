@@ -87,7 +87,9 @@ with st.sidebar:
 # is never called in Fast mode, so Fast mode's cold-start stays untouched).
 # max_entries=12 caps memory at ~20 MB of cached GIFs -- well within Cloud limits.
 @st.cache_data(show_spinner=False, max_entries=12)
-def _cached_simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key):
+def _cached_simulate_and_render(
+    shape_preset, reynolds_target, aoa_deg, res_key, custom_polygon=None,
+):
     from src.lbm_render import simulate_and_render
     progress = st.progress(
         0.0, text=":material/sync: Phase 1 of 2 -- simulating flow (MRT)...",
@@ -97,7 +99,7 @@ def _cached_simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key)
             progress.progress(frac, text=text)
         return simulate_and_render(
             shape_preset, reynolds_target, aoa_deg, res_key,
-            progress_callback=cb,
+            progress_callback=cb, custom_polygon=custom_polygon,
         )
     finally:
         progress.empty()
@@ -127,6 +129,7 @@ if mode == "Real CFD (LBM)":
         "Ellipse  (stretched oval)": "Ellipse",
         "NACA 0012  (symmetric wing)": "NACA 0012",
         "NACA 4412  (curved wing)": "NACA 4412",
+        "Upload your own  (PNG / JPG)": "Custom",
     }
 
     def regime_label(re):
@@ -183,6 +186,61 @@ if mode == "Real CFD (LBM)":
             ),
         )
         shape_preset = SHAPE_PRESETS[shape_display]
+
+        # --- Custom shape upload (only when 'Upload your own' is selected) ---
+        # Polygon lives in session state so it survives Streamlit reruns from
+        # the Pin / Clear / slider widgets. The uploader writes only on
+        # successful extraction; errors render inline without touching state.
+        custom_polygon = None
+        if shape_preset == "Custom":
+            st.markdown("")
+            st.markdown(":material/upload_file: **Your shape**")
+            uploaded = st.file_uploader(
+                "Upload a PNG or JPG",
+                type=["png", "jpg", "jpeg"],
+                accept_multiple_files=False,
+                label_visibility="collapsed",
+                help=(
+                    "Drop in any image with a clear dark shape on a light "
+                    "background (or vice versa). Minimum 100x100 px. Leave "
+                    "some whitespace around the shape -- if it touches the "
+                    "edge we can't trace the outline cleanly. The simulation "
+                    "uses halfway bounce-back at the wall (analytic Bouzidi "
+                    "is on the roadmap), so Cd will read a bit high on "
+                    "bluff custom shapes but wake structure is correct."
+                ),
+                key="lbm_custom_upload",
+            )
+            if uploaded is not None:
+                from src.custom_shape import (
+                    extract_silhouette_from_image,
+                    render_silhouette_preview,
+                )
+                try:
+                    result = extract_silhouette_from_image(uploaded.getvalue())
+                    custom_polygon = result.polygon_xy
+                    st.session_state["lbm_custom_polygon"] = custom_polygon
+                    for w in result.warnings:
+                        st.warning(f":material/info: {w}")
+                    st.caption(
+                        f":material/check_circle: Extracted a "
+                        f"{len(custom_polygon)}-corner outline from a "
+                        f"{result.image_w}x{result.image_h} px image."
+                    )
+                except ValueError as e:
+                    st.error(f":material/error: {e}")
+                    st.session_state.pop("lbm_custom_polygon", None)
+                    custom_polygon = None
+            else:
+                # No new upload this run -- keep the previously-extracted
+                # polygon if the user is just adjusting other sliders.
+                custom_polygon = st.session_state.get("lbm_custom_polygon")
+                if custom_polygon is None:
+                    st.caption(
+                        ":material/info: Upload an image to continue. "
+                        "Try a hand-drawn silhouette in any drawing app."
+                    )
+
 
         st.markdown("")
         st.markdown(":material/speed: **Flow speed** &nbsp; :gray[(m/s)]")
@@ -282,17 +340,54 @@ if mode == "Real CFD (LBM)":
         )
         res_cfg = RESOLUTION_PRESETS[res_display]
 
+        # Custom-shape preview: render the extracted silhouette already
+        # centred, scaled, and rotated onto the selected resolution preset.
+        # Gives instant visual feedback on orientation and scale before Run.
+        if shape_preset == "Custom" and custom_polygon is not None:
+            from src.custom_shape import render_silhouette_preview
+            preview_png = render_silhouette_preview(
+                custom_polygon, res_cfg["Nx"], res_cfg["Ny"],
+                res_cfg["body_x"], res_cfg["cy"],
+                res_cfg.get("custom_extent", 30), aoa_deg,
+            )
+            st.markdown("")
+            st.caption(":material/preview: Preview on the LBM grid:")
+            st.image(preview_png, use_container_width=True)
+
+        # Custom shape requires a polygon -- disable Run if not present, so
+        # the user gets a clear "upload first" hint instead of a stack trace.
+        _custom_ready = shape_preset != "Custom" or custom_polygon is not None
         st.markdown("---")
         run_clicked = st.button(
             ":material/play_arrow:  **Run simulation**",
             type="primary", use_container_width=True,
+            disabled=not _custom_ready,
+            help=(
+                "Upload a PNG / JPG first -- the Run button activates once "
+                "the silhouette is extracted."
+                if not _custom_ready else None
+            ),
         )
+        # Polygon goes into the config tuple via a short content hash so the
+        # cache key stays stable across reruns AND distinguishes different
+        # uploads. Polygon bytes themselves are too long to compare tuple-
+        # equal cheaply (and numpy arrays aren't hashable).
+        if custom_polygon is not None:
+            import hashlib
+            _polygon_key = hashlib.sha1(
+                np.ascontiguousarray(custom_polygon).tobytes()
+            ).hexdigest()[:12]
+        else:
+            _polygon_key = None
         # Track the last-displayed config so post-run buttons (Pin, Clear
         # snapshot) keep the GIF visible after their st.rerun(). Without
         # this, run_clicked is False on the rerun and the gate below bails
         # back to the "Ready to run" preview, even though the user just
         # clicked Pin on a successful run.
-        _current_config = (shape_preset, int(reynolds_target), float(aoa_deg), res_display)
+        _current_config = (
+            shape_preset, int(reynolds_target), float(aoa_deg),
+            res_display, _polygon_key,
+        )
         if run_clicked:
             st.session_state["lbm_last_displayed_config"] = _current_config
         _should_display_run = run_clicked or (
@@ -359,6 +454,7 @@ if mode == "Real CFD (LBM)":
     # re-decorated each rerun. The heavy work lives in src/lbm_render.py.
     sim_result = _cached_simulate_and_render(
         shape_preset, int(reynolds_target), float(aoa_deg), res_display,
+        custom_polygon=custom_polygon,
     )
     tau = sim_result["tau"]
     nu = sim_result["nu"]
@@ -394,8 +490,13 @@ if mode == "Real CFD (LBM)":
     snapshot_is_current = snapshot == _current_config
 
     if snapshot is not None and not snapshot_is_current:
-        snap_shape, snap_re, snap_aoa, snap_res = snapshot
-        snap_result = _cached_simulate_and_render(snap_shape, snap_re, snap_aoa, snap_res)
+        # Snapshot tuple shape: (shape, Re, AoA, res, polygon_key). The
+        # polygon_key is always None for snapshots in MVP (Pin is disabled
+        # for Custom), so we can pass custom_polygon=None unconditionally.
+        snap_shape, snap_re, snap_aoa, snap_res, _snap_poly_key = snapshot
+        snap_result = _cached_simulate_and_render(
+            snap_shape, snap_re, snap_aoa, snap_res, custom_polygon=None,
+        )
         st.markdown("---")
         st.markdown("### Side-by-side comparison")
         st.caption(
@@ -415,7 +516,12 @@ if mode == "Real CFD (LBM)":
     # === Display: hero animation, colorbar, plain-English legend ===
     st.markdown("---")
     shape_name = shape_display.split("  (")[0]
-    if shape_preset in ("NACA 0012", "NACA 4412"):
+    if shape_preset == "Custom":
+        _rot_part = (
+            f"  ·  rotated {aoa_deg:+.1f} deg" if abs(aoa_deg) > 0.25 else ""
+        )
+        st.markdown(f"### :material/air: Your shape in {reg}{_rot_part}")
+    elif shape_preset in ("NACA 0012", "NACA 4412"):
         st.markdown(
             f"### :material/air: {shape_name}, {reg}  ·  "
             f"wing tilt {aoa_deg:+.1f} deg"
@@ -447,12 +553,19 @@ if mode == "Real CFD (LBM)":
                 if snapshot_is_current else
                 ":material/push_pin:  Pin for comparison"
             )
+            _pin_disabled = snapshot_is_current or shape_preset == "Custom"
+            _pin_help = (
+                "Pin not yet supported for custom shapes (the uploaded polygon "
+                "can't be restored after a session restart)."
+                if shape_preset == "Custom" else
+                "Save this run as a comparison snapshot. The next run "
+                "with different parameters will display side-by-side "
+                "against this pinned snapshot."
+            )
             if st.button(
                 _pin_label, use_container_width=True,
-                disabled=snapshot_is_current,
-                help="Save this run as a comparison snapshot. The next run "
-                     "with different parameters will display side-by-side "
-                     "against this pinned snapshot.",
+                disabled=_pin_disabled,
+                help=_pin_help,
                 key="pin_for_comparison",
             ):
                 st.session_state["lbm_snapshot"] = _current_config
@@ -478,7 +591,7 @@ if mode == "Real CFD (LBM)":
         # something IS pinned, since pinning before changing params has no
         # other visible effect on the current view.
         if snapshot is not None:
-            snap_shape, snap_re, snap_aoa, snap_res = snapshot
+            snap_shape, snap_re, snap_aoa, snap_res, _snap_poly_key = snapshot
             snap_aoa_str = f", AoA {snap_aoa:+.0f}deg" if abs(snap_aoa) > 0.25 else ""
             snap_res_short = "Standard" if "Standard" in snap_res else "Detailed"
             if snapshot_is_current:
