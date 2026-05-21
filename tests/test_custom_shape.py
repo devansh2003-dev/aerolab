@@ -69,7 +69,10 @@ def test_extracts_square():
 
 
 def test_extracts_light_shape_on_dark_background():
-    """White-on-black: same shape should be detected (auto-invert via corner heuristic)."""
+    """White-on-black: same shape should be detected. Background sampling
+    detects the black border, foreground signal = |arr - 0| = arr peaks
+    inside the shape, so the same Otsu pass extracts it without any
+    explicit inversion logic."""
     png = _make_png_with_shape(
         lambda d, fg: d.ellipse((100, 80, 300, 220), fill=255),
         bg=0,
@@ -80,6 +83,54 @@ def test_extracts_light_shape_on_dark_background():
     x_max, y_max = poly.max(axis=0)
     assert abs(x_min - 100) < 8
     assert abs(x_max - 300) < 8
+
+
+def test_extracts_shape_on_grey_background():
+    """Mid-grey background (128): old corner-Otsu heuristic would mis-
+    threshold or invert wrongly. Border-ring background detection sees
+    bg=128 and the foreground signal correctly peaks inside the shape."""
+    img = Image.new("L", (400, 300), 128)
+    d = ImageDraw.Draw(img)
+    d.ellipse((100, 80, 300, 220), fill=40)  # darker shape on grey
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    result = extract_silhouette_from_image(buf.getvalue())
+    poly = result.polygon_xy
+    x_min = poly[:, 0].min()
+    x_max = poly[:, 0].max()
+    assert abs(x_min - 100) < 8
+    assert abs(x_max - 300) < 8
+
+
+def test_extracts_shape_from_rgba_with_alpha():
+    """A PNG with transparent background and the shape rendered with full
+    opacity. Without alpha compositing, the bytes under alpha=0 are often
+    (0, 0, 0), making the perceived background black -- which would
+    threshold the wrong way for a 'white-bg' subject."""
+    img = Image.new("RGBA", (400, 300), (0, 0, 0, 0))  # transparent everywhere
+    d = ImageDraw.Draw(img)
+    d.ellipse((100, 80, 300, 220), fill=(40, 40, 40, 255))  # opaque dark shape
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    result = extract_silhouette_from_image(buf.getvalue())
+    poly = result.polygon_xy
+    # Should detect the ellipse, not be confused by the alpha-stored zeros.
+    assert abs(poly[:, 0].min() - 100) < 8
+    assert abs(poly[:, 0].max() - 300) < 8
+
+
+def test_morphological_closing_bridges_thin_gaps():
+    """Two ellipses separated by a 2-px gap should merge into ONE component
+    after closing, simulating a character whose arm anti-aliasing breaks
+    the limb into pieces. With iter=max(2, min(w,h)//200)=2 on a 400x300
+    image, gaps up to ~4 px bridge."""
+    def draw(d, fg):
+        d.ellipse((100, 100, 200, 200), fill=fg)
+        d.ellipse((202, 100, 300, 200), fill=fg)  # 2-px horizontal gap
+    png = _make_png_with_shape(draw)
+    result = extract_silhouette_from_image(png)
+    # After closing the two ellipses merge -> one component.
+    assert result.n_components_found == 1
 
 
 def test_rejects_image_too_small():

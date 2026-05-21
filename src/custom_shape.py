@@ -24,7 +24,7 @@ from typing import Optional
 
 import numpy as np
 from PIL import Image, ImageDraw
-from scipy.ndimage import binary_fill_holes, binary_opening
+from scipy.ndimage import binary_closing, binary_fill_holes, binary_opening
 from scipy.ndimage import label as ndimage_label
 from skimage.measure import approximate_polygon, find_contours
 from skimage.filters import threshold_otsu
@@ -59,24 +59,51 @@ class SilhouetteResult:
 def extract_silhouette_from_image(png_bytes: bytes) -> SilhouetteResult:
     """Extract the outer boundary polygon of the dominant shape in an image.
 
-    Pipeline:
-      1. Load + grayscale + resize cap.
-      2. Reject if smaller than MIN_IMAGE_DIM.
-      3. Otsu threshold to a binary mask. Auto-pick foreground = dark or
-         light by checking which side the image corners fall on.
-      4. Find connected components, keep the largest.
-      5. Reject if the largest touches the image edge, or area is < 2 %
+    Robust to any single-colour background (white, black, grey, any tint)
+    and to PNGs with alpha channels. Pipeline:
+      1. Load + alpha-composite onto white (so transparent PNGs work) +
+         grayscale + resize cap.
+      2. Reject if smaller than MIN_IMAGE_DIM or near-constant.
+      3. Sample background colour from a thin border ring. Foreground
+         signal = |pixel - background|. This generalises the old "dark-
+         on-light OR light-on-dark via auto-invert" approach to ANY
+         uniform background colour, including sepia / mid-grey / muted
+         3D-render backgrounds.
+      4. Otsu threshold on the foreground signal -> binary mask.
+      5. Morphological closing to bridge anti-aliased gaps and connect
+         narrow-but-touching limbs (e.g. a character's wrist holding a
+         bat). Closing radius scales with image size.
+      6. Find connected components, keep the largest.
+      7. Reject if the largest touches the image edge, or area is < 2 %
          or > 85 % of frame.
-      6. binary_fill_holes on the kept component.
-      7. find_contours at level 0.5 to get the outer boundary polyline.
-      8. approximate_polygon (Douglas-Peucker, moderate tolerance).
-      9. Reject if simplified polygon has fewer than 8 vertices.
+      8. binary_fill_holes on the kept component.
+      9. find_contours + approximate_polygon (Douglas-Peucker).
+     10. Reject if simplified polygon has fewer than 4 vertices.
 
     Raises ValueError with a user-readable message on extraction failure.
     """
     warnings: list = []
 
-    img = Image.open(io.BytesIO(png_bytes)).convert("L")
+    pil_img = Image.open(io.BytesIO(png_bytes))
+    # Alpha compositing: PNGs from many tools (transparent-background
+    # exports from Photoshop, AI image generators, 3D render pipelines)
+    # store their visible pixels with the subject's RGB and use the alpha
+    # channel for transparency. Plain .convert("L") would read whatever
+    # RGB was stored under alpha=0 -- often (0, 0, 0), which makes the
+    # "white-background" subject look black-background to the extractor.
+    # We composite onto white explicitly so the perceived background
+    # always matches what the user sees in their image viewer.
+    if (
+        pil_img.mode in ("RGBA", "LA")
+        or (pil_img.mode == "P" and "transparency" in pil_img.info)
+    ):
+        rgba = pil_img.convert("RGBA")
+        white_bg = Image.new("RGB", rgba.size, (255, 255, 255))
+        white_bg.paste(rgba, mask=rgba.split()[-1])
+        img = white_bg.convert("L")
+    else:
+        img = pil_img.convert("L")
+
     w, h = img.size
     if min(w, h) < MIN_IMAGE_DIM:
         raise ValueError(
@@ -91,31 +118,59 @@ def extract_silhouette_from_image(png_bytes: bytes) -> SilhouetteResult:
         w, h = new_size
 
     arr = np.asarray(img, dtype=np.float64)
-    # Reject constant or near-constant images up front. skimage's threshold_otsu
-    # does not raise on these in 0.26+; it just returns the constant value and
-    # the resulting binary mask is all-True or all-False, which we'd detect a
-    # few lines down with a much less helpful error.
     if arr.max() - arr.min() < 5:
         raise ValueError(
             "The image has no contrast -- looks blank. Try a clearer "
             "image with a distinct shape on a contrasting background."
         )
-    # Otsu picks an automatic threshold. If foreground happens to be lighter
-    # than background, we invert so the "shape" pixels are always True below.
-    thresh = threshold_otsu(arr)
-    binary = arr < thresh
-    # Heuristic: most of the four corner pixels should be background. If
-    # they're not, the shape is light-on-dark and we flip.
-    corner_vals = np.array([binary[0, 0], binary[-1, 0], binary[0, -1], binary[-1, -1]])
-    if corner_vals.sum() >= 3:
-        binary = ~binary
+
+    # Sample a thin border ring to estimate the background brightness.
+    # Median is robust to small amounts of shape-near-edge contamination
+    # (a 5-10 % overlap doesn't move the median). border_w scales with
+    # image size so we always have a statistically meaningful sample.
+    border_w = max(2, min(w, h) // 40)
+    border_pixels = np.concatenate([
+        arr[:border_w, :].ravel(),
+        arr[-border_w:, :].ravel(),
+        arr[border_w:-border_w, :border_w].ravel(),
+        arr[border_w:-border_w, -border_w:].ravel(),
+    ])
+    bg_value = float(np.median(border_pixels))
+
+    # Foreground signal: distance from the background brightness. Pixels
+    # that differ from the background -- regardless of direction -- are
+    # candidate foreground. Otsu picks the threshold inside this
+    # distance image, which is always non-negative and tends to be
+    # cleanly bimodal even when the source image isn't.
+    fg_signal = np.abs(arr - bg_value)
+    try:
+        fg_thresh = threshold_otsu(fg_signal)
+    except ValueError as e:
+        raise ValueError(
+            "Couldn't separate the shape from the background. Try an "
+            "image with a single solid-colour background."
+        ) from e
+    binary = fg_signal > fg_thresh
+
+    # Morphological closing: bridge AA-edge gaps and reconnect narrow
+    # appendages. iter scales with image size so the bridged-gap width
+    # is roughly constant in fraction-of-image (~0.5 % of shorter dim).
+    # We pad with False before closing so the erosion half of the
+    # operation doesn't shrink shapes that touch the array boundary --
+    # that would let edge-touching uploads silently pass the edge-touch
+    # gate below, defeating its purpose.
+    closing_iters = max(2, min(w, h) // 200)
+    pad = closing_iters + 1
+    padded = np.pad(binary, pad, mode="constant", constant_values=False)
+    padded = binary_closing(padded, iterations=closing_iters)
+    binary = padded[pad:-pad, pad:-pad]
 
     # Connected components, keep the largest by pixel count.
     labels, n_components = ndimage_label(binary)
     if n_components == 0:
         raise ValueError(
-            "Couldn't find any shape in the image. Try a clearer image "
-            "with a dark shape on a light background (or vice versa)."
+            "Couldn't find any shape in the image. Make sure the subject "
+            "stands out clearly against its background."
         )
 
     sizes = np.bincount(labels.ravel())
