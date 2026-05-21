@@ -142,14 +142,19 @@ def test_rejects_image_too_small():
         extract_silhouette_from_image(png)
 
 
-def test_rejects_shape_touching_edge():
-    """Shape that runs to the image border should be rejected with a
-    helpful message about padding."""
+def test_accepts_shape_touching_edge_via_auto_padding():
+    """Shape that runs to the image border used to be rejected. Now the
+    extractor auto-pads with a bg-coloured border so the shape gets the
+    whitespace it needs, and extraction succeeds. The returned polygon
+    is in original-image coordinates (the padding is purely internal)."""
     png = _make_png_with_shape(
         lambda d, fg: d.rectangle((0, 50, 200, 250), fill=fg),  # left edge touches
     )
-    with pytest.raises(ValueError, match="touches the edge"):
-        extract_silhouette_from_image(png)
+    result = extract_silhouette_from_image(png)
+    # Polygon bbox should still anchor at x ~ 0 in original-image coords --
+    # auto-padding shouldn't have shifted the result.
+    assert result.polygon_xy[:, 0].min() < 5
+    assert abs(result.polygon_xy[:, 0].max() - 200) < 6
 
 
 def test_rejects_too_small_shape():

@@ -201,17 +201,17 @@ if mode == "Real CFD (LBM)":
                 accept_multiple_files=False,
                 label_visibility="collapsed",
                 help=(
-                    "Drop in any image with a clear dark shape on a light "
-                    "background (or vice versa). Minimum 100x100 px. Leave "
-                    "some whitespace around the shape -- if it touches the "
-                    "edge we can't trace the outline cleanly. Tip: orient "
-                    "your image so the FRONT of the shape faces left -- "
-                    "wind comes from the left in the simulation, and the "
-                    "shape's source-image orientation is preserved as-is. "
+                    "Drop in any image with a clear subject on a uniform "
+                    "background (white, black, grey, or any solid colour). "
+                    "Transparent PNGs work. Minimum 100x100 px. The "
+                    "extractor auto-pads, so shapes near the edge are "
+                    "fine. Tip: orient your image so the FRONT of the "
+                    "shape faces left -- wind comes from the left in the "
+                    "simulation, and source orientation is preserved. "
                     "The simulation uses halfway bounce-back at the wall "
-                    "(analytic Bouzidi is on the roadmap), so Cd will read "
-                    "a bit high on bluff custom shapes but wake structure "
-                    "is correct."
+                    "(analytic Bouzidi is on the roadmap), so Cd will "
+                    "read a bit high on bluff custom shapes but wake "
+                    "structure is correct."
                 ),
                 key="lbm_custom_upload",
             )

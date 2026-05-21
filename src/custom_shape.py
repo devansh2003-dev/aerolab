@@ -35,9 +35,11 @@ MAX_IMAGE_DIM = 2048  # resize-down cap for extraction speed
 # 0.01 = "aggressive but not too aggressive" smoothing -- removes obvious
 # pixel-staircase noise while preserving sharp corners (~10 px at 1024 px).
 SIMPLIFY_TOLERANCE_FRAC = 0.01
-# Reject shapes outside these area-fraction bounds (relative to image area).
-MIN_AREA_FRAC = 0.02
-MAX_AREA_FRAC = 0.85
+# Reject shapes outside these area-fraction bounds (relative to the
+# ORIGINAL image area, before auto-padding). MIN catches "tiny dot" noise
+# uploads; MAX catches "shape fills entire frame, no bg to sample" cases.
+MIN_AREA_FRAC = 0.01
+MAX_AREA_FRAC = 0.92
 
 
 @dataclass
@@ -117,25 +119,35 @@ def extract_silhouette_from_image(png_bytes: bytes) -> SilhouetteResult:
         img = img.resize(new_size, Image.Resampling.LANCZOS)
         w, h = new_size
 
-    arr = np.asarray(img, dtype=np.float64)
-    if arr.max() - arr.min() < 5:
+    orig_arr = np.asarray(img, dtype=np.float64)
+    if orig_arr.max() - orig_arr.min() < 5:
         raise ValueError(
             "The image has no contrast -- looks blank. Try a clearer "
             "image with a distinct shape on a contrasting background."
         )
 
-    # Sample a thin border ring to estimate the background brightness.
-    # Median is robust to small amounts of shape-near-edge contamination
-    # (a 5-10 % overlap doesn't move the median). border_w scales with
-    # image size so we always have a statistically meaningful sample.
+    # Sample a thin border ring to estimate background brightness BEFORE
+    # auto-padding. Median is robust to up to ~50 % shape-touching-edge
+    # contamination -- a shape that fills half the border can still be
+    # detected.
     border_w = max(2, min(w, h) // 40)
     border_pixels = np.concatenate([
-        arr[:border_w, :].ravel(),
-        arr[-border_w:, :].ravel(),
-        arr[border_w:-border_w, :border_w].ravel(),
-        arr[border_w:-border_w, -border_w:].ravel(),
+        orig_arr[:border_w, :].ravel(),
+        orig_arr[-border_w:, :].ravel(),
+        orig_arr[border_w:-border_w, :border_w].ravel(),
+        orig_arr[border_w:-border_w, -border_w:].ravel(),
     ])
     bg_value = float(np.median(border_pixels))
+
+    # AUTO-PAD: prepend a bg-coloured border around the upload so any
+    # shape that runs to (or near) the edge gets the whitespace the
+    # extractor needs. ~10 % of shorter dim, min 20 px. The padded array
+    # is what we threshold + contour from; we translate the polygon back
+    # into original-image coords at the end so downstream consumers see
+    # the same coordinate frame as the user's source.
+    pad_amt = max(20, min(w, h) // 10)
+    arr = np.pad(orig_arr, pad_amt, mode="constant", constant_values=bg_value)
+    padded_h, padded_w = arr.shape
 
     # Foreground signal: distance from the background brightness. Pixels
     # that differ from the background -- regardless of direction -- are
@@ -155,15 +167,10 @@ def extract_silhouette_from_image(png_bytes: bytes) -> SilhouetteResult:
     # Morphological closing: bridge AA-edge gaps and reconnect narrow
     # appendages. iter scales with image size so the bridged-gap width
     # is roughly constant in fraction-of-image (~0.5 % of shorter dim).
-    # We pad with False before closing so the erosion half of the
-    # operation doesn't shrink shapes that touch the array boundary --
-    # that would let edge-touching uploads silently pass the edge-touch
-    # gate below, defeating its purpose.
+    # Auto-padding already gave us a bg-coloured margin so closing's
+    # erosion can't artificially shrink anything important here.
     closing_iters = max(2, min(w, h) // 200)
-    pad = closing_iters + 1
-    padded = np.pad(binary, pad, mode="constant", constant_values=False)
-    padded = binary_closing(padded, iterations=closing_iters)
-    binary = padded[pad:-pad, pad:-pad]
+    binary = binary_closing(binary, iterations=closing_iters)
 
     # Connected components, keep the largest by pixel count.
     labels, n_components = ndimage_label(binary)
@@ -183,27 +190,38 @@ def extract_silhouette_from_image(png_bytes: bytes) -> SilhouetteResult:
             f"Found {n_components} disconnected pieces -- using the largest."
         )
 
+    # Area check uses ORIGINAL image dims (pre-padding) so the gates
+    # have stable, user-facing meaning -- the padding is purely an
+    # internal trick to give shapes room to breathe at the edges.
     area_frac = float(largest.sum()) / float(w * h)
     if area_frac < MIN_AREA_FRAC:
         raise ValueError(
             f"Detected shape fills only {100 * area_frac:.1f}% of the image -- "
             "too small to simulate. Try a cleaner image where the shape "
-            "fills more of the frame."
+            "is the main subject."
         )
     if area_frac > MAX_AREA_FRAC:
         raise ValueError(
             f"Detected shape fills {100 * area_frac:.1f}% of the image -- "
-            "leave more whitespace around it so we can find the outline."
+            "we couldn't find a clean background to separate it from. Try "
+            "an image where the subject doesn't fill the entire frame."
         )
 
+    # Sanity guard: if the shape STILL touches the padded array edge
+    # (after the auto-padding above gave it bg-coloured space), the
+    # extractor produced something pathological -- usually a thresholding
+    # failure where the "shape" is actually the background and vice
+    # versa. Surface a clear error instead of letting downstream code
+    # rasterize a body that runs off-channel.
     edge_touch = (
         largest[0, :].any() or largest[-1, :].any()
         or largest[:, 0].any() or largest[:, -1].any()
     )
     if edge_touch:
         raise ValueError(
-            "The shape touches the edge of the image. Add some padding "
-            "around it (a white border helps)."
+            "Couldn't separate shape from background -- the detected "
+            "region runs off the padded canvas. Try an image with more "
+            "contrast between the subject and its background."
         )
 
     pixels_before = int(largest.sum())
@@ -219,6 +237,10 @@ def extract_silhouette_from_image(png_bytes: bytes) -> SilhouetteResult:
         raise ValueError("Couldn't trace the outline of the shape.")
     contour = max(contours, key=len)
     polygon = np.flip(contour, axis=1)  # (row, col) -> (x, y)
+    # Translate polygon from padded-array coords back to original-image
+    # coords so the SilhouetteResult coordinate frame matches what the
+    # user uploaded (and matches the existing `image_w`/`image_h` fields).
+    polygon = polygon - np.array([pad_amt, pad_amt])
 
     tolerance = SIMPLIFY_TOLERANCE_FRAC * min(w, h)
     simplified = approximate_polygon(polygon, tolerance=tolerance)
