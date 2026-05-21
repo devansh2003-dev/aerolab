@@ -830,10 +830,15 @@ def collide_mrt(f, tau):
     m = np.einsum("ij,jxy->ixy", _M_MRT, f)
 
     rho = m[0]
+    # Clamp rho to a tiny floor before dividing (mirrors the JIT paths).
+    # Stays a no-op for normal flow where rho ~ 1; protects against
+    # degenerate uploaded-polygon masks that produce zero-density solid
+    # cells.
+    rho_safe = np.where(rho > 1e-12, rho, 1e-12)
     jx = m[3]
     jy = m[5]
-    ux = jx / rho
-    uy = jy / rho
+    ux = jx / rho_safe
+    uy = jy / rho_safe
     u2 = ux * ux + uy * uy
 
     # Equilibrium moments (Lallemand & Luo 2000, eq. 2.13).
@@ -855,7 +860,7 @@ def collide_mrt(f, tau):
     dPxy = m[8] - m_eq[8]
     Q = np.sqrt(dPxx ** 2 + 4.0 * dPxy ** 2)
     c_smag_sq = C_SMAG ** 2
-    tau_eff = 0.5 * (tau + np.sqrt(tau ** 2 + 18.0 * c_smag_sq * Q / rho))
+    tau_eff = 0.5 * (tau + np.sqrt(tau ** 2 + 18.0 * c_smag_sq * Q / rho_safe))
     s_nu_field = 1.0 / tau_eff
 
     # Relax each moment. m7 / m8 get per-cell rates; everything else uses S.
@@ -931,10 +936,15 @@ def step_njit_mrt_with_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs,
             m8 = f5 - f6 + f7 - f8
 
             rho = m0
+            # See step_njit_mrt_no_force for the rho_safe rationale: degenerate
+            # custom-polygon masks can produce solid cells with rho=0, which
+            # would divide-by-zero below. 1e-12 is below any physically
+            # meaningful density and keeps the JIT path branchless.
+            rho_safe = rho if rho > 1e-12 else 1e-12
             jx = m3
             jy = m5
-            ux = jx / rho
-            uy = jy / rho
+            ux = jx / rho_safe
+            uy = jy / rho_safe
             u2 = ux * ux + uy * uy
 
             # Equilibrium moments.
@@ -951,7 +961,7 @@ def step_njit_mrt_with_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs,
             dPxx = m7 - m7_eq
             dPxy = m8 - m8_eq
             Q = np.sqrt(dPxx * dPxx + 4.0 * dPxy * dPxy)
-            tau_eff = 0.5 * (tau + np.sqrt(tau * tau + 18.0 * c_smag_sq * Q / rho))
+            tau_eff = 0.5 * (tau + np.sqrt(tau * tau + 18.0 * c_smag_sq * Q / rho_safe))
             s_nu_eff = 1.0 / tau_eff
 
             # Relax non-conserved moments individually.
@@ -1202,10 +1212,17 @@ def step_njit_mrt_no_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs, o
             m8 = f5 - f6 + f7 - f8
 
             rho = m0
+            # Defensive clamp: degenerate / disconnected polygon masks
+            # (e.g. an uploaded silhouette with a thin tail or tail-string
+            # feature) can produce solid cells whose f-distribution sums
+            # to zero, which would divide-by-zero in the moment-to-velocity
+            # conversion below. 1e-12 keeps the JIT path branchless while
+            # making the math safe.
+            rho_safe = rho if rho > 1e-12 else 1e-12
             jx = m3
             jy = m5
-            ux = jx / rho
-            uy = jy / rho
+            ux = jx / rho_safe
+            uy = jy / rho_safe
             u2 = ux * ux + uy * uy
 
             m1_eq = rho * (-2.0 + 3.0 * u2)
@@ -1218,7 +1235,7 @@ def step_njit_mrt_no_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs, o
             dPxx = m7 - m7_eq
             dPxy = m8 - m8_eq
             Q = np.sqrt(dPxx * dPxx + 4.0 * dPxy * dPxy)
-            tau_eff = 0.5 * (tau + np.sqrt(tau * tau + 18.0 * c_smag_sq * Q / rho))
+            tau_eff = 0.5 * (tau + np.sqrt(tau * tau + 18.0 * c_smag_sq * Q / rho_safe))
             s_nu_eff = 1.0 / tau_eff
 
             m1_p = m1 - s_e * (m1 - m1_eq)

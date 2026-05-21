@@ -90,18 +90,18 @@ OUTFLOW_DIRS = np.array([3, 6, 7], dtype=np.int32)
 # fuller limit-cycle. Both budgets defined explicitly in the dict below.
 RESOLUTION_PRESETS = {
     "Standard (240 x 80)": dict(
-        Nx=240, Ny=80, body_x=52, cy=40,
-        cylinder_D=16, square_side=16,
-        ellipse_a=18, ellipse_b=9, chord=36,
-        custom_extent=30,
+        Nx=240, Ny=80, body_x=70, cy=40,
+        cylinder_D=28, square_side=28,
+        ellipse_a=32, ellipse_b=16, chord=60,
+        custom_extent=60,
         n_frames=150,
         gif_palette=192,
     ),
     "Detailed (720 x 240)": dict(
-        Nx=720, Ny=240, body_x=160, cy=120,
-        cylinder_D=45, square_side=45,
-        ellipse_a=50, ellipse_b=25, chord=100,
-        custom_extent=80,
+        Nx=720, Ny=240, body_x=210, cy=120,
+        cylinder_D=80, square_side=80,
+        ellipse_a=90, ellipse_b=45, chord=170,
+        custom_extent=170,
         n_frames=150,
         gif_palette=96,
     ),

@@ -244,8 +244,8 @@ def test_simulate_and_render_accepts_custom_polygon():
     assert isinstance(out["gif_bytes"], bytes) and len(out["gif_bytes"]) > 0
     assert out["lbm_nx"] == 240 and out["lbm_ny"] == 80
     assert out["label"].startswith("Custom shape")
-    # char_length should equal the preset's custom_extent (Standard = 30).
-    assert out["char_length"] == pytest.approx(30.0)
+    # char_length should equal the preset's custom_extent (Standard = 60).
+    assert out["char_length"] == pytest.approx(60.0)
 
 
 def test_simulate_and_render_rotates_custom_polygon():

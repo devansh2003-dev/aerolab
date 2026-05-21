@@ -242,18 +242,19 @@ if mode == "Real CFD (LBM)":
             # Each click loads the polygon into session state under both
             # the polygon key AND a stable display-name key so we can
             # show "Using sample: Fish" in the post-run GIF filename.
+            # Buttons are stacked vertically (full-width, one per row) --
+            # side-by-side columns made the long sample names ("Building
+            # cross-section") wrap awkwardly on narrow sidebars.
             st.caption(":material/auto_awesome: Or try a sample:")
-            sample_cols = st.columns(3)
             from src.sample_shapes import SAMPLE_SHAPES
-            for col, (sample_name, sample_fn) in zip(sample_cols, SAMPLE_SHAPES.items()):
-                with col:
-                    if st.button(
-                        sample_name, use_container_width=True,
-                        key=f"lbm_sample_{sample_name}",
-                    ):
-                        st.session_state["lbm_custom_polygon"] = sample_fn()
-                        st.session_state["lbm_custom_label"] = sample_name
-                        st.rerun()
+            for sample_name, sample_fn in SAMPLE_SHAPES.items():
+                if st.button(
+                    sample_name, use_container_width=True,
+                    key=f"lbm_sample_{sample_name}",
+                ):
+                    st.session_state["lbm_custom_polygon"] = sample_fn()
+                    st.session_state["lbm_custom_label"] = sample_name
+                    st.rerun()
             custom_polygon = st.session_state.get("lbm_custom_polygon", custom_polygon)
             # Clear sample-label hint if the user uploaded their own
             # image (which already happened above on a successful upload).
