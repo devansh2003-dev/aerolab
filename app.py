@@ -258,7 +258,7 @@ if mode == "Real CFD (LBM)":
             from src.sample_shapes import SAMPLE_SHAPES
             for sample_name, sample_fn in SAMPLE_SHAPES.items():
                 if st.button(
-                    sample_name, use_container_width=True,
+                    sample_name, width="stretch",
                     key=f"lbm_sample_{sample_name}",
                 ):
                     st.session_state["lbm_custom_polygon"] = sample_fn()
@@ -389,7 +389,7 @@ if mode == "Real CFD (LBM)":
             )
             st.markdown("")
             st.caption(":material/preview: Preview on the LBM grid:")
-            st.image(preview_png, use_container_width=True)
+            st.image(preview_png, width="stretch")
 
         # Custom shape requires a polygon -- disable Run if not present, so
         # the user gets a clear "upload first" hint instead of a stack trace.
@@ -397,7 +397,7 @@ if mode == "Real CFD (LBM)":
         st.markdown("---")
         run_clicked = st.button(
             ":material/play_arrow:  **Run simulation**",
-            type="primary", use_container_width=True,
+            type="primary", width="stretch",
             disabled=not _custom_ready,
             help=(
                 "Upload a PNG / JPG first -- the Run button activates once "
@@ -561,11 +561,11 @@ if mode == "Real CFD (LBM)":
         with cmp_cols[0]:
             _snap_aoa_part = f"  ·  {snap_aoa:+.1f}°" if abs(snap_aoa) > 0.25 else ""
             st.markdown(f"**Snapshot:** {snap_shape}  ·  Re {snap_re}{_snap_aoa_part}")
-            st.image(snap_result["gif_bytes"], use_container_width=True)
+            st.image(snap_result["gif_bytes"], width="stretch")
         with cmp_cols[1]:
             _cur_aoa_part = f"  ·  {aoa_deg:+.1f}°" if abs(aoa_deg) > 0.25 else ""
             st.markdown(f"**Current:** {shape_preset}  ·  Re {int(reynolds_target)}{_cur_aoa_part}")
-            st.image(gif_bytes, use_container_width=True)
+            st.image(gif_bytes, width="stretch")
 
     # === Display: hero animation, colorbar, plain-English legend ===
     st.markdown("---")
@@ -584,7 +584,7 @@ if mode == "Real CFD (LBM)":
         st.markdown(f"### :material/air: {shape_name} in {reg}")
 
     with st.container(border=True):
-        st.image(gif_bytes, use_container_width=True)
+        st.image(gif_bytes, width="stretch")
 
         # Action row: download GIF, pin for comparison, clear pin (if set).
         if shape_preset == "Custom":
@@ -607,7 +607,7 @@ if mode == "Real CFD (LBM)":
                 data=gif_bytes,
                 file_name=_gif_name,
                 mime="image/gif",
-                use_container_width=True,
+                width="stretch",
                 help="Save the animation locally. Filename encodes shape, Re, "
                      "and AoA so multiple runs don't collide.",
             )
@@ -618,7 +618,7 @@ if mode == "Real CFD (LBM)":
                 ":material/push_pin:  Pin for comparison"
             )
             if st.button(
-                _pin_label, use_container_width=True,
+                _pin_label, width="stretch",
                 disabled=snapshot_is_current,
                 help=(
                     "Save this run as a comparison snapshot. The next run "
@@ -656,7 +656,7 @@ if mode == "Real CFD (LBM)":
             if snapshot is not None:
                 if st.button(
                     ":material/close:  Clear snapshot",
-                    use_container_width=True,
+                    width="stretch",
                     help="Remove the pinned snapshot and return to single-run view.",
                     key="clear_comparison",
                 ):
@@ -693,7 +693,7 @@ if mode == "Real CFD (LBM)":
             "</div>",
             unsafe_allow_html=True,
         )
-        st.image(vort_cbar_bytes, use_container_width=True)
+        st.image(vort_cbar_bytes, width="stretch")
         st.markdown(
             "<div style='color:#94a3b8;font-size:0.78rem;"
             "letter-spacing:0.05em;text-transform:uppercase;"
@@ -702,7 +702,7 @@ if mode == "Real CFD (LBM)":
             "</div>",
             unsafe_allow_html=True,
         )
-        st.image(speed_cbar_bytes, use_container_width=True)
+        st.image(speed_cbar_bytes, width="stretch")
 
     # Legend uses inline colored swatches (HTML span) instead of :material/
     # icons. Two reasons: (1) Material icons render via Streamlit's frontend
