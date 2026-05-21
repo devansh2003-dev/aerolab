@@ -307,6 +307,21 @@ def body_outline_xy(shape_preset, res_cfg, aoa_deg, custom_polygon=None):
     return gx, gy
 
 
+def render_shape_preview(shape_preset, res_cfg, aoa_deg, custom_polygon=None) -> bytes:
+    """Render a quick PNG preview of where the body sits in the tunnel.
+
+    Works for every shape_preset (Cylinder / Square / Ellipse / NACA / Custom)
+    by going through body_outline_xy + the shared rendering helper. Shown
+    in the sidebar before Run so the user sees scale, position, and AoA
+    rotation BEFORE paying the simulation cost.
+    """
+    from src.custom_shape import render_outline_to_png
+    xs, ys = body_outline_xy(
+        shape_preset, res_cfg, aoa_deg, custom_polygon=custom_polygon,
+    )
+    return render_outline_to_png(xs, ys, res_cfg["Nx"], res_cfg["Ny"])
+
+
 def _bilerp(field, xs, ys):
     """Vectorized bilinear interpolation of a 2D field at FP positions.
 
@@ -550,6 +565,14 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
     u0[0] = U_INFLOW
     f = equilibrium(rho0, u0)
     f_inflow_eq = equilibrium(1.0, np.array([U_INFLOW, 0.0]))
+    # Ghost-cell equilibrium: solid cells are reset to (rho=1, u=0) after
+    # every step. They aren't part of the physical fluid domain, so their
+    # populations are free to be overwritten with a known-finite state.
+    # This makes the solver immune to rho=0 propagation when the user
+    # uploads a thin / spindly silhouette that the morphological cleanup
+    # didn't fully smooth out. Tiny cost: one (9, K)-cell broadcast where
+    # K = mask.sum(), well under one solver step's work.
+    f_eq_solid = equilibrium(1.0, np.array([0.0, 0.0]))  # shape (9,)
     kick_y = CY_CENTER + KICK_Y_OFFSET
 
     progress(0.0, ":material/sync: Phase 1 of 2 -- simulating flow (MRT)...")
@@ -563,6 +586,8 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
             f = step_njit_mrt_no_force(
                 f, tau, mask, q_field, f_inflow_eq, INFLOW_DIRS, OUTFLOW_DIRS,
             )
+            # Defensive solid-cell reset: see f_eq_solid comment above.
+            f[:, mask] = f_eq_solid[:, None]
             if KICK_START <= step_counter < KICK_END:
                 f[2, kick_x, kick_y] += KICK_AMPLITUDE
                 f[4, kick_x, kick_y] -= KICK_AMPLITUDE

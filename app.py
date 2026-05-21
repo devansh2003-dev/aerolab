@@ -212,10 +212,7 @@ if mode == "Real CFD (LBM)":
                 key="lbm_custom_upload",
             )
             if uploaded is not None:
-                from src.custom_shape import (
-                    extract_silhouette_from_image,
-                    render_silhouette_preview,
-                )
+                from src.custom_shape import extract_silhouette_from_image
                 try:
                     result = extract_silhouette_from_image(uploaded.getvalue())
                     custom_polygon = result.polygon_xy
@@ -367,15 +364,16 @@ if mode == "Real CFD (LBM)":
         )
         res_cfg = RESOLUTION_PRESETS[res_display]
 
-        # Custom-shape preview: render the extracted silhouette already
-        # centred, scaled, and rotated onto the selected resolution preset.
-        # Gives instant visual feedback on orientation and scale before Run.
-        if shape_preset == "Custom" and custom_polygon is not None:
-            from src.custom_shape import render_silhouette_preview
-            preview_png = render_silhouette_preview(
-                custom_polygon, res_cfg["Nx"], res_cfg["Ny"],
-                res_cfg["body_x"], res_cfg["cy"],
-                res_cfg.get("custom_extent", 30), aoa_deg,
+        # Shape preview: every shape (built-in or custom) gets a pre-Run
+        # render of where the body sits in the tunnel. Confirms scale,
+        # position, AoA rotation before the user pays for the simulation.
+        # Custom path requires a polygon to be uploaded first; built-ins
+        # render directly from their analytic outline.
+        _preview_ready = shape_preset != "Custom" or custom_polygon is not None
+        if _preview_ready:
+            from src.lbm_render import render_shape_preview
+            preview_png = render_shape_preview(
+                shape_preset, res_cfg, aoa_deg, custom_polygon=custom_polygon,
             )
             st.markdown("")
             st.caption(":material/preview: Preview on the LBM grid:")
@@ -421,12 +419,12 @@ if mode == "Real CFD (LBM)":
             st.session_state.get("lbm_last_displayed_config") == _current_config
         )
         if "Standard" in res_display:
-            st.caption(":material/timer: Local: ~30 s warm, ~55 s first cold "
-                       "click. Streamlit Cloud (1-vCPU shared): ~2.5 min. "
+            st.caption(":material/timer: Local: ~40 s warm, ~65 s first cold "
+                       "click. Streamlit Cloud (1-vCPU shared): ~3.3 min. "
                        "Revisits are instant (cached).")
         else:
-            st.caption(":material/timer: Local: ~75 s warm, ~100 s first cold "
-                       "click. Streamlit Cloud (1-vCPU shared): ~4.5 min. "
+            st.caption(":material/timer: Local: ~100 s warm, ~125 s first cold "
+                       "click. Streamlit Cloud (1-vCPU shared): ~6 min. "
                        "Revisits are instant (cached).")
 
     # === Main page header ===

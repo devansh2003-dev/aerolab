@@ -24,7 +24,7 @@ from typing import Optional
 
 import numpy as np
 from PIL import Image, ImageDraw
-from scipy.ndimage import binary_fill_holes
+from scipy.ndimage import binary_fill_holes, binary_opening
 from scipy.ndimage import label as ndimage_label
 from skimage.measure import approximate_polygon, find_contours
 from skimage.filters import threshold_otsu
@@ -251,40 +251,42 @@ def polygon_to_lbm_mask(
     draw.polygon([(float(p[0]), float(p[1])) for p in final], fill=1)
     mask = np.asarray(pil_img, dtype=bool).T
 
-    # Drop isolated solid-cell islands -- a thin appendage on the input
-    # silhouette (kite tail-string, hair-thin fish whiskers) can rasterize
-    # to a single 1-cell-wide chain that pinches off from the main body
-    # and causes solver instability. Keep only the largest connected
-    # component so the LBM sees a single closed body.
+    # Morphological opening: erode by 1 cell then dilate by 1 cell. Removes
+    # 1-cell-wide protrusions (kite tail-string, hair-thin whiskers) AND
+    # isolated single-cell islands AND tight pinch-points. These features
+    # are unphysical in a discrete-grid solver -- bounce-back on a 1-cell
+    # appendage can't sustain mass, density collapses to ~0, and the next
+    # step's MRT moment loop divides by zero. We remove them at the source
+    # rather than band-aiding the solver.
+    mask = binary_opening(mask, iterations=1)
+
+    # Then keep only the largest connected component (opening may still
+    # leave smaller closed regions, e.g. a wing tip that detached from the
+    # main body after erosion). Single closed body -> single contiguous
+    # solid region -> clean solver state.
     labels, n_labels = ndimage_label(mask)
     if n_labels > 1:
         sizes = np.bincount(labels.ravel())
         sizes[0] = 0
         mask = labels == int(np.argmax(sizes))
+    elif n_labels == 0:
+        raise ValueError(
+            "Shape vanished during morphological cleanup -- the silhouette "
+            "is too thin / spindly for the LBM grid. Try a chunkier shape."
+        )
     return mask
 
 
-def render_silhouette_preview(
-    polygon_xy: np.ndarray,
-    Nx: int,
-    Ny: int,
-    cx: float,
-    cy: float,
-    target_extent_cells: float,
-    aoa_deg: float = 0.0,
-) -> bytes:
-    """Render a quick PNG preview of how the polygon will sit on the LBM grid.
+def render_outline_to_png(xs: np.ndarray, ys: np.ndarray, Nx: int, Ny: int) -> bytes:
+    """Render a closed (xs, ys) outline on a dark tunnel background.
 
-    Same transform pipeline as polygon_to_lbm_mask -- the user sees the
-    extracted polygon already centred, scaled, and rotated, with a flow
-    arrow on the left so they can confirm orientation before clicking Run.
-    Returns PNG bytes suitable for st.image().
+    Used by both render_silhouette_preview (uploads / samples) and by
+    lbm_render.render_shape_preview (built-in cylinder / ellipse / NACA /
+    square). Same look-and-feel so the user gets the same orientation
+    cue regardless of which shape they pick. Returns PNG bytes suitable
+    for st.image().
     """
     import matplotlib.pyplot as plt
-
-    xs, ys = polygon_outline_xy(
-        polygon_xy, Nx, Ny, cx, cy, target_extent_cells, aoa_deg,
-    )
 
     aspect = max(2.0, 8.0 * Ny / Nx)
     fig, ax = plt.subplots(figsize=(8.0, aspect), dpi=80)
@@ -314,6 +316,26 @@ def render_silhouette_preview(
     )
     plt.close(fig)
     return buf.getvalue()
+
+
+def render_silhouette_preview(
+    polygon_xy: np.ndarray,
+    Nx: int,
+    Ny: int,
+    cx: float,
+    cy: float,
+    target_extent_cells: float,
+    aoa_deg: float = 0.0,
+) -> bytes:
+    """Preview an uploaded / drawn polygon already placed on the LBM grid.
+
+    Thin wrapper: transforms polygon_xy via polygon_outline_xy and hands
+    the result to render_outline_to_png for the shared rendering pass.
+    """
+    xs, ys = polygon_outline_xy(
+        polygon_xy, Nx, Ny, cx, cy, target_extent_cells, aoa_deg,
+    )
+    return render_outline_to_png(xs, ys, Nx, Ny)
 
 
 def polygon_outline_xy(
