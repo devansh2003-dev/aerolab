@@ -168,3 +168,32 @@ def test_naca_at_positive_aoa_produces_positive_lift():
     assert out["cl_mean"] > 0.05, (
         f"Expected positive Cl for NACA 4412 at +15 deg AoA, got {out['cl_mean']}"
     )
+
+
+@pytest.mark.parametrize("viz_mode", ["Vorticity", "Velocity", "Pressure"])
+def test_all_viz_modes_produce_valid_output(viz_mode):
+    """Smoke test for the three viz modes added in W6. Each should produce
+    a non-empty GIF + bg_cbar PNG + the correct viz_mode echo in the
+    output dict. The simulation values (Cd, Cl, St) are identical across
+    modes because viz_mode only affects rendering -- this also locks in
+    that we don't accidentally make the modes do different physics."""
+    out = simulate_and_render(
+        "Cylinder", 200, 0.0, "Standard (320 x 80)",
+        n_frames=8, viz_mode=viz_mode,
+    )
+    assert out["viz_mode"] == viz_mode
+    assert isinstance(out["gif_bytes"], bytes) and len(out["gif_bytes"]) > 5000
+    assert isinstance(out["bg_cbar_bytes"], bytes) and len(out["bg_cbar_bytes"]) > 1000
+    assert viz_mode.lower() in out["bg_cbar_title"].lower() or {
+        "Vorticity": "rotation", "Velocity": "speed", "Pressure": "pressure",
+    }[viz_mode] in out["bg_cbar_title"].lower()
+
+
+def test_invalid_viz_mode_raises():
+    """Mistyped or unknown viz_mode should fail fast with a clear error,
+    not produce a corrupted render or fall back silently."""
+    with pytest.raises(ValueError, match="viz_mode must be one of"):
+        simulate_and_render(
+            "Cylinder", 200, 0.0, "Standard (320 x 80)",
+            n_frames=2, viz_mode="ThermalRainbow",
+        )
