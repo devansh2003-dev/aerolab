@@ -163,8 +163,9 @@ if mode == "Real CFD (LBM)":
                 "vortices shed off it. You'll see the same physics that "
                 "makes a flag flutter, a car drag, or a wing lift.\n\n"
                 "- **Shape:** what the wind flows past.\n"
-                "- **Flow speed:** Reynolds number -- low is honey-like, "
-                "high is windy.\n"
+                "- **Flow speed:** wind speed in m/s -- low is laminar and "
+                "gentle, high stirs up vortex shedding. The displayed Reynolds "
+                "number is what the solver actually uses.\n"
                 "- **Tilt / rotation:** angle of the body into the wind.\n"
                 "- **Resolution:** Standard is fast, Detailed is prettier."
             )
@@ -184,30 +185,40 @@ if mode == "Real CFD (LBM)":
         shape_preset = SHAPE_PRESETS[shape_display]
 
         st.markdown("")
-        st.markdown(":material/speed: **Flow speed** &nbsp; :gray[(Reynolds number)]")
-        # Default Re depends on shape: airfoils need higher Re for visible
-        # lift/downwash (at Re=200 viscous damping is so strong the wing
-        # behaves more like an inclined plate than an airfoil), shapes look
-        # interesting at lower Re where vortex shedding is the show.
+        st.markdown(":material/speed: **Flow speed** &nbsp; :gray[(m/s)]")
+        # Velocity (m/s) -> Re via Re = U * L / nu, assuming a 1 cm
+        # characteristic length in standard air (nu_air = 1.5e-5 m^2/s).
+        # The mapping is U * 666.67 = Re, so the 0.10-2.25 m/s range
+        # maps cleanly to the 67-1500 Re envelope the solver supports.
+        # Defaults are chosen to land on the previous Re defaults (200
+        # for bluff bodies, 500 for airfoils) -- 0.30 m/s and 0.75 m/s.
+        # Real wind-tunnel speeds (5-30 m/s) past real wings (30 cm+)
+        # are Re=10^6+, way past this 2D laminar/transition solver.
+        NU_AIR = 1.5e-5     # m^2/s, standard conditions
+        L_REAL_M = 0.01     # 1 cm assumed characteristic length
         _is_airfoil_default = shape_preset in ("NACA 0012", "NACA 4412")
-        _default_re = 500 if _is_airfoil_default else 200
-        reynolds_target = st.slider(
-            "Reynolds number",
-            min_value=50, max_value=1500, value=_default_re, step=50,
+        _default_velocity = 0.75 if _is_airfoil_default else 0.30
+        velocity_mps = st.slider(
+            "Flow speed (m/s)",
+            min_value=0.10, max_value=2.50, value=_default_velocity, step=0.05,
             label_visibility="collapsed",
             help=(
-                "How fast the air moves *relative to the object size*. "
-                "Low Re = thick, syrupy flow (everything is gentle). "
-                "High Re = thin, fast flow (chaotic swirls, turbulent wakes). "
-                "Real airplane wings: 10-100 million. Our simulation: 50-1500, "
-                "so lift/downwash on the airfoils is much weaker than the "
-                "textbook picture you see in aero classes -- viscous effects "
-                "dominate. Solver: MRT collision + Smagorinsky LES throughout, "
-                "stable from Re=50 to Re=1500 on every shape."
+                "Wind speed past the object. We assume a 1 cm characteristic "
+                "length in standard air (nu = 1.5e-5 m^2/s), so the solver "
+                "runs at Re = velocity x 666.67, clamped to [50, 1500] for "
+                "stability. Low velocity = syrupy laminar flow; high velocity "
+                "= chaotic vortex shedding. Real airplane wings cruise at "
+                "Re=10^6+, way past this 2D solver's envelope -- bump up "
+                "Reynolds (via velocity) to *see* turbulence, but don't read "
+                "the wake as quantitatively realistic at the upper end."
             ),
         )
+        reynolds_target = int(round(np.clip(velocity_mps * L_REAL_M / NU_AIR, 50, 1500)))
         reg, reg_feel = regime_label(reynolds_target)
-        st.caption(f"Now showing **{reg}** -- air feels {reg_feel}")
+        st.caption(
+            f"{velocity_mps:.2f} m/s &nbsp;·&nbsp; Re &asymp; {reynolds_target} "
+            f"&nbsp;·&nbsp; **{reg}** &mdash; air feels {reg_feel}"
+        )
 
         if shape_preset == "Cylinder":
             # A circle is rotationally invariant -- no point exposing a slider.
@@ -557,7 +568,11 @@ if mode == "Real CFD (LBM)":
     st.markdown("")
     metric_cols = st.columns(4)
     with metric_cols[0]:
-        st.metric(":material/speed: Flow speed", f"Re {reynolds_target}", reg)
+        st.metric(
+            ":material/speed: Flow speed",
+            f"{velocity_mps:.2f} m/s",
+            f"Re {reynolds_target} · {reg}",
+        )
     with metric_cols[1]:
         st.metric(":material/footprint: Simulation steps", f"{actual_n_steps:,}")
     with metric_cols[2]:
