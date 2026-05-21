@@ -235,40 +235,66 @@ if mode == "Real CFD (LBM)":
                 # No new upload this run -- keep the previously-extracted
                 # polygon if the user is just adjusting other sliders.
                 custom_polygon = st.session_state.get("lbm_custom_polygon")
-                if custom_polygon is None:
-                    st.caption(
-                        ":material/info: Upload an image to continue. "
-                        "Try a hand-drawn silhouette in any drawing app."
-                    )
+
+            # "Try a sample" buttons: bundled silhouettes from
+            # src.sample_shapes so a first-time visitor can verify the
+            # whole upload pipeline works without sourcing their own image.
+            # Each click loads the polygon into session state under both
+            # the polygon key AND a stable display-name key so we can
+            # show "Using sample: Fish" in the post-run GIF filename.
+            st.caption(":material/auto_awesome: Or try a sample:")
+            sample_cols = st.columns(3)
+            from src.sample_shapes import SAMPLE_SHAPES
+            for col, (sample_name, sample_fn) in zip(sample_cols, SAMPLE_SHAPES.items()):
+                with col:
+                    if st.button(
+                        sample_name, use_container_width=True,
+                        key=f"lbm_sample_{sample_name}",
+                    ):
+                        st.session_state["lbm_custom_polygon"] = sample_fn()
+                        st.session_state["lbm_custom_label"] = sample_name
+                        st.rerun()
+            custom_polygon = st.session_state.get("lbm_custom_polygon", custom_polygon)
+            # Clear sample-label hint if the user uploaded their own
+            # image (which already happened above on a successful upload).
+            if uploaded is not None:
+                st.session_state.pop("lbm_custom_label", None)
+            if custom_polygon is None:
+                st.caption(
+                    ":material/info: Upload an image, or click a sample "
+                    "above to load a built-in silhouette."
+                )
 
 
         st.markdown("")
         st.markdown(":material/speed: **Flow speed** &nbsp; :gray[(m/s)]")
-        # Velocity (m/s) -> Re via Re = U * L / nu, assuming a 1 cm
+        # Velocity (m/s) -> Re via Re = U * L / nu, assuming a 5 mm
         # characteristic length in standard air (nu_air = 1.5e-5 m^2/s).
-        # The mapping is U * 666.67 = Re, so the 0.10-2.25 m/s range
-        # maps cleanly to the 67-1500 Re envelope the solver supports.
-        # Defaults are chosen to land on the previous Re defaults (200
-        # for bluff bodies, 500 for airfoils) -- 0.30 m/s and 0.75 m/s.
-        # Real wind-tunnel speeds (5-30 m/s) past real wings (30 cm+)
-        # are Re=10^6+, way past this 2D laminar/transition solver.
+        # The mapping is U * 333.33 = Re, so the 0.15-4.5 m/s range maps
+        # cleanly to Re 50-1500. 5 mm is "fountain pen / small drone
+        # blade" scale -- a real object you can hold, with velocities
+        # that look like real wind (gentle breeze to brisk gust). 1 cm
+        # was the previous choice but the resulting <1 m/s slider felt
+        # like indoor air rather than aerodynamic flow. Defaults land
+        # on the previous Re defaults: 0.60 m/s -> Re 200 (bluff body),
+        # 1.5 m/s -> Re 500 (airfoils).
         NU_AIR = 1.5e-5     # m^2/s, standard conditions
-        L_REAL_M = 0.01     # 1 cm assumed characteristic length
+        L_REAL_M = 0.005    # 5 mm assumed characteristic length
         _is_airfoil_default = shape_preset in ("NACA 0012", "NACA 4412")
-        _default_velocity = 0.75 if _is_airfoil_default else 0.30
+        _default_velocity = 1.5 if _is_airfoil_default else 0.6
         velocity_mps = st.slider(
             "Flow speed (m/s)",
-            min_value=0.10, max_value=2.50, value=_default_velocity, step=0.05,
+            min_value=0.15, max_value=4.50, value=_default_velocity, step=0.1,
             label_visibility="collapsed",
             help=(
-                "Wind speed past the object. We assume a 1 cm characteristic "
+                "Wind speed past the object. We assume a 5 mm characteristic "
                 "length in standard air (nu = 1.5e-5 m^2/s), so the solver "
-                "runs at Re = velocity x 666.67, clamped to [50, 1500] for "
+                "runs at Re = velocity x 333.33, clamped to [50, 1500] for "
                 "stability. Low velocity = syrupy laminar flow; high velocity "
                 "= chaotic vortex shedding. Real airplane wings cruise at "
-                "Re=10^6+, way past this 2D solver's envelope -- bump up "
-                "Reynolds (via velocity) to *see* turbulence, but don't read "
-                "the wake as quantitatively realistic at the upper end."
+                "Re=10^7+ past a 30 cm chord, way past this 2D solver's "
+                "envelope -- bump up Reynolds to *see* turbulence, but don't "
+                "read the wake as quantitatively realistic at the upper end."
             ),
         )
         reynolds_target = int(round(np.clip(velocity_mps * L_REAL_M / NU_AIR, 50, 1500)))
@@ -478,6 +504,20 @@ if mode == "Real CFD (LBM)":
             "down for cleaner physics."
         )
 
+    # Halfway-BB caveat for custom shapes. Preset shapes ship analytic
+    # Bouzidi q-fields, custom shapes don't (yet) -- so Cd reads ~30-50%
+    # high but the wake structure is correct. Surface this where the user
+    # actually sees it (rather than buried in the upload tooltip).
+    if shape_preset == "Custom":
+        st.info(
+            ":material/info: **Custom-shape note:** Uploaded and drawn shapes "
+            "currently use halfway bounce-back at the wall (cylinder, square, "
+            "ellipse, and NACA use the more accurate Bouzidi interpolated BC). "
+            "**Wake structure is physically correct**, but reported drag "
+            "would read ~30-50 % higher than a Bouzidi run on the same shape. "
+            "Analytic q-field for arbitrary polygons is on the roadmap."
+        )
+
     # === Comparison snapshot (matches Fast-mode side-by-side affordance) ===
     # User can "pin" any run; the next run displays side-by-side with the
     # pinned one. Pinned config is a (shape, Re, AoA, res) tuple stored in
@@ -490,12 +530,15 @@ if mode == "Real CFD (LBM)":
     snapshot_is_current = snapshot == _current_config
 
     if snapshot is not None and not snapshot_is_current:
-        # Snapshot tuple shape: (shape, Re, AoA, res, polygon_key). The
-        # polygon_key is always None for snapshots in MVP (Pin is disabled
-        # for Custom), so we can pass custom_polygon=None unconditionally.
+        # Snapshot tuple: (shape, Re, AoA, res, polygon_key). For Custom
+        # shapes we also stash the polygon array in session state under
+        # "lbm_snapshot_polygon" so the cache lookup hits and the solver
+        # has something to run on. For preset shapes the polygon slot is
+        # absent / None.
         snap_shape, snap_re, snap_aoa, snap_res, _snap_poly_key = snapshot
+        snap_polygon = st.session_state.get("lbm_snapshot_polygon")
         snap_result = _cached_simulate_and_render(
-            snap_shape, snap_re, snap_aoa, snap_res, custom_polygon=None,
+            snap_shape, snap_re, snap_aoa, snap_res, custom_polygon=snap_polygon,
         )
         st.markdown("---")
         st.markdown("### Side-by-side comparison")
@@ -533,7 +576,17 @@ if mode == "Real CFD (LBM)":
         st.image(gif_bytes, use_container_width=True)
 
         # Action row: download GIF, pin for comparison, clear pin (if set).
-        _shape_slug = shape_preset.lower().replace(" ", "_")
+        if shape_preset == "Custom":
+            # For custom shapes, differentiate by sample name (when loaded
+            # from "Try a sample") or polygon hash prefix (when uploaded),
+            # so multiple custom-shape downloads don't collide.
+            _sample_label = st.session_state.get("lbm_custom_label")
+            if _sample_label:
+                _shape_slug = "custom_" + _sample_label.lower().replace(" ", "_")
+            else:
+                _shape_slug = f"custom_{(_polygon_key or 'shape')[:8]}"
+        else:
+            _shape_slug = shape_preset.lower().replace(" ", "_")
         _aoa_part = f"_aoa{aoa_deg:+.0f}" if abs(aoa_deg) > 0.25 else ""
         _gif_name = f"aerolab_{_shape_slug}_re{reynolds_target}{_aoa_part}.gif"
         action_cols = st.columns([1, 1, 1, 3])
@@ -553,25 +606,37 @@ if mode == "Real CFD (LBM)":
                 if snapshot_is_current else
                 ":material/push_pin:  Pin for comparison"
             )
-            _pin_disabled = snapshot_is_current or shape_preset == "Custom"
-            _pin_help = (
-                "Pin not yet supported for custom shapes (the uploaded polygon "
-                "can't be restored after a session restart)."
-                if shape_preset == "Custom" else
-                "Save this run as a comparison snapshot. The next run "
-                "with different parameters will display side-by-side "
-                "against this pinned snapshot."
-            )
             if st.button(
                 _pin_label, use_container_width=True,
-                disabled=_pin_disabled,
-                help=_pin_help,
+                disabled=snapshot_is_current,
+                help=(
+                    "Save this run as a comparison snapshot. The next run "
+                    "with different parameters will display side-by-side "
+                    "against this pinned snapshot."
+                ),
                 key="pin_for_comparison",
             ):
                 st.session_state["lbm_snapshot"] = _current_config
+                # For Custom shapes, stash the polygon + label so the
+                # side-by-side comparison can rebuild the snapshot run
+                # (cache key includes the polygon hash; without the array
+                # we'd hit a cache miss and have nothing to feed the
+                # solver). Cleared together with the snapshot below.
+                if shape_preset == "Custom" and custom_polygon is not None:
+                    st.session_state["lbm_snapshot_polygon"] = custom_polygon
+                    st.session_state["lbm_snapshot_label"] = (
+                        st.session_state.get("lbm_custom_label")
+                    )
+                else:
+                    st.session_state.pop("lbm_snapshot_polygon", None)
+                    st.session_state.pop("lbm_snapshot_label", None)
                 _snap_aoa_part = f" AoA {aoa_deg:+.0f}deg" if abs(aoa_deg) > 0.25 else ""
+                _snap_shape_label = (
+                    st.session_state.get("lbm_custom_label", "Custom shape")
+                    if shape_preset == "Custom" else shape_preset
+                )
                 st.toast(
-                    f":material/push_pin: Pinned: {shape_preset} Re={int(reynolds_target)}{_snap_aoa_part}. "
+                    f":material/push_pin: Pinned: {_snap_shape_label} Re={int(reynolds_target)}{_snap_aoa_part}. "
                     f"Change a parameter and click Run to see side-by-side.",
                     icon=":material/push_pin:",
                 )
@@ -585,6 +650,8 @@ if mode == "Real CFD (LBM)":
                     key="clear_comparison",
                 ):
                     del st.session_state["lbm_snapshot"]
+                    st.session_state.pop("lbm_snapshot_polygon", None)
+                    st.session_state.pop("lbm_snapshot_label", None)
                     st.rerun()
 
         # Persistent pinned-state caption -- gives the user feedback that

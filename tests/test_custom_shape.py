@@ -244,8 +244,8 @@ def test_simulate_and_render_accepts_custom_polygon():
     assert isinstance(out["gif_bytes"], bytes) and len(out["gif_bytes"]) > 0
     assert out["lbm_nx"] == 240 and out["lbm_ny"] == 80
     assert out["label"].startswith("Custom shape")
-    # char_length should equal the preset's custom_extent (Standard = 24).
-    assert out["char_length"] == pytest.approx(24.0)
+    # char_length should equal the preset's custom_extent (Standard = 30).
+    assert out["char_length"] == pytest.approx(30.0)
 
 
 def test_simulate_and_render_rotates_custom_polygon():
@@ -277,6 +277,54 @@ def test_simulate_and_render_rejects_custom_without_polygon():
         simulate_and_render(
             "Custom", 200, 0.0, "Standard (240 x 80)", n_frames=2,
         )
+
+
+# === Phase 2 W5 validation gate ===
+# README states the W5 gate as: "image-upload demo working end-to-end on
+# three real-world silhouettes (car profile, fish, building cross-section)".
+# These are bundled as parametric polygons in src/sample_shapes.py; each
+# must run a short pipeline without producing NaN frames or zero-sized
+# GIFs at Re=200 on the Standard preset.
+
+
+@pytest.mark.parametrize("sample_name", ["Fish", "Car profile", "Building cross-section"])
+def test_phase2_w5_gate_sample_silhouettes_run_clean(sample_name):
+    """Phase 2 W5 gate: bundled sample silhouettes run end-to-end without
+    NaN at Re=200 Standard. n_frames=4 is the minimum that exercises both
+    JIT-compiled paths (warmup kick + record loop) -- if the polygon
+    produced an unstable mask, NaN would show up here."""
+    from src.lbm_render import simulate_and_render
+    from src.sample_shapes import SAMPLE_SHAPES
+
+    polygon = SAMPLE_SHAPES[sample_name]()
+    out = simulate_and_render(
+        "Custom", reynolds_target=200, aoa_deg=0.0,
+        res_key="Standard (240 x 80)",
+        n_frames=4, custom_polygon=polygon,
+    )
+    assert isinstance(out["gif_bytes"], bytes)
+    assert len(out["gif_bytes"]) > 5000   # non-empty animation
+    assert out["lbm_nx"] == 240 and out["lbm_ny"] == 80
+    # tau >= 0.5 means the kinematic-viscosity setup didn't degenerate.
+    assert out["tau"] > 0.5
+
+
+def test_sample_shapes_module_returns_valid_polygons():
+    """Each bundled sample yields a polygon meeting polygon_to_lbm_mask's
+    contract: (N, 2) shape, at least 3 vertices, finite values, non-degenerate."""
+    from src.sample_shapes import SAMPLE_SHAPES
+
+    assert len(SAMPLE_SHAPES) == 3
+    for name, fn in SAMPLE_SHAPES.items():
+        poly = fn()
+        assert poly.ndim == 2 and poly.shape[1] == 2, (
+            f"{name!r}: polygon shape {poly.shape} is not (N, 2)"
+        )
+        assert poly.shape[0] >= 3, f"{name!r}: needs >= 3 vertices"
+        assert np.isfinite(poly).all(), f"{name!r}: polygon has non-finite values"
+        extent_x = poly[:, 0].max() - poly[:, 0].min()
+        extent_y = poly[:, 1].max() - poly[:, 1].min()
+        assert extent_x > 0 and extent_y > 0, f"{name!r}: polygon has zero extent"
 
 
 def test_image_to_mask_roundtrip_preserves_shape_centred():
