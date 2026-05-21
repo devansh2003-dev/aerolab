@@ -17,3 +17,11 @@ scipy==1.17.1
 pandas==3.0.2
 # Pillow used to assemble the LBM-mode animated GIF (quantize + save_all).
 Pillow>=10.0.0
+# scikit-image: silhouette extraction from uploaded PNG/JPG (Otsu threshold,
+# find_contours, Douglas-Peucker polygon approximation). Pulled in with
+# imageio/tifffile/networkx/lazy-loader -- adds ~30 MB to the Cloud cold-start
+# but it's cached after the first deploy.
+scikit-image==0.26.0
+# streamlit-drawable-canvas: in-browser polygon drawing for the "draw your
+# own shape" custom-shape path.
+streamlit-drawable-canvas==0.9.3

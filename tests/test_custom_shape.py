@@ -1,0 +1,244 @@
+"""Unit tests for src/custom_shape.py.
+
+Strategy: generate synthetic PNGs in-memory with known geometry (filled
+ellipse, square, triangle), run them through the extractor, assert the
+result matches the input geometry to within polygon-simplification slack.
+"""
+import io
+
+import numpy as np
+import pytest
+from PIL import Image, ImageDraw
+
+from src.custom_shape import (
+    MAX_AREA_FRAC,
+    MAX_IMAGE_DIM,
+    MIN_AREA_FRAC,
+    MIN_IMAGE_DIM,
+    SilhouetteResult,
+    extract_silhouette_from_image,
+    polygon_outline_xy,
+    polygon_to_lbm_mask,
+)
+
+
+def _make_png_with_shape(draw_fn, size=(400, 300), bg=255, fg=0) -> bytes:
+    """Render a shape to a PNG and return its bytes. draw_fn(ImageDraw) is the
+    caller-supplied lambda that adds the shape to the image."""
+    img = Image.new("L", size, bg)
+    d = ImageDraw.Draw(img)
+    draw_fn(d, fg)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+# === extract_silhouette_from_image ===
+
+
+def test_extracts_filled_ellipse():
+    """A clean black ellipse on white background should give a polygon with
+    bbox matching the input ellipse's bbox to within a few pixels."""
+    bbox = (80, 80, 320, 220)  # x0, y0, x1, y1
+    png = _make_png_with_shape(lambda d, fg: d.ellipse(bbox, fill=fg))
+
+    result = extract_silhouette_from_image(png)
+    assert isinstance(result, SilhouetteResult)
+    assert result.image_w == 400 and result.image_h == 300
+    assert result.n_components_found == 1
+
+    poly = result.polygon_xy
+    assert poly.ndim == 2 and poly.shape[1] == 2
+    assert len(poly) >= 8
+
+    x_min, y_min = poly.min(axis=0)
+    x_max, y_max = poly.max(axis=0)
+    # Allow ~5 px slack for Douglas-Peucker.
+    assert abs(x_min - bbox[0]) < 6
+    assert abs(y_min - bbox[1]) < 6
+    assert abs(x_max - bbox[2]) < 6
+    assert abs(y_max - bbox[3]) < 6
+
+
+def test_extracts_square():
+    """A black square gives a polygon with ~4 corners after DP simplification."""
+    png = _make_png_with_shape(lambda d, fg: d.rectangle((100, 100, 300, 250), fill=fg))
+    result = extract_silhouette_from_image(png)
+    # A square should simplify to a polygon with ~4-6 vertices (slack for DP).
+    assert 4 <= len(result.polygon_xy) <= 16
+
+
+def test_extracts_light_shape_on_dark_background():
+    """White-on-black: same shape should be detected (auto-invert via corner heuristic)."""
+    png = _make_png_with_shape(
+        lambda d, fg: d.ellipse((100, 80, 300, 220), fill=255),
+        bg=0,
+    )
+    result = extract_silhouette_from_image(png)
+    poly = result.polygon_xy
+    x_min, y_min = poly.min(axis=0)
+    x_max, y_max = poly.max(axis=0)
+    assert abs(x_min - 100) < 8
+    assert abs(x_max - 300) < 8
+
+
+def test_rejects_image_too_small():
+    png = _make_png_with_shape(
+        lambda d, fg: d.ellipse((10, 10, 50, 50), fill=fg),
+        size=(60, 60),
+    )
+    with pytest.raises(ValueError, match="at least"):
+        extract_silhouette_from_image(png)
+
+
+def test_rejects_shape_touching_edge():
+    """Shape that runs to the image border should be rejected with a
+    helpful message about padding."""
+    png = _make_png_with_shape(
+        lambda d, fg: d.rectangle((0, 50, 200, 250), fill=fg),  # left edge touches
+    )
+    with pytest.raises(ValueError, match="touches the edge"):
+        extract_silhouette_from_image(png)
+
+
+def test_rejects_too_small_shape():
+    """A 1 % area shape is below the MIN_AREA_FRAC=2 % gate."""
+    png = _make_png_with_shape(
+        lambda d, fg: d.ellipse((195, 145, 205, 155), fill=fg),  # tiny dot
+    )
+    with pytest.raises(ValueError, match="too small to simulate|fills"):
+        extract_silhouette_from_image(png)
+
+
+def test_rejects_blank_image():
+    """Constant-colour image has no contrast; threshold_otsu raises and we
+    translate that to a user-readable error."""
+    img = Image.new("L", (400, 300), 128)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    with pytest.raises(ValueError, match="no contrast|blank"):
+        extract_silhouette_from_image(buf.getvalue())
+
+
+def test_keeps_largest_component_with_warning():
+    """Multiple disconnected shapes: extractor keeps the largest and
+    surfaces a warning about the discarded pieces."""
+    def draw(d, fg):
+        d.ellipse((40, 40, 360, 260), fill=fg)   # big shape
+        d.ellipse((10, 10, 30, 30), fill=fg)     # small distractor
+    png = _make_png_with_shape(draw)
+    result = extract_silhouette_from_image(png)
+    assert result.n_components_found == 2
+    assert any("disconnected" in w for w in result.warnings)
+    # Bbox should be the BIG ellipse, not the small one.
+    poly = result.polygon_xy
+    assert poly[:, 0].max() > 300
+
+
+def test_fills_internal_hole():
+    """Donut: outer outline traced cleanly, hole filled before contouring."""
+    def draw(d, fg):
+        d.ellipse((80, 60, 320, 240), fill=fg)
+        d.ellipse((170, 130, 230, 170), fill=255)  # hole
+    png = _make_png_with_shape(draw)
+    result = extract_silhouette_from_image(png)
+    assert result.n_holes_filled == 1
+    # Polygon should follow the OUTER boundary, not also outline the hole.
+    poly = result.polygon_xy
+    assert len(poly) < 80  # if the hole was traced too, we'd get many more vertices
+
+
+def test_oversize_image_resized_to_max():
+    """A 4000-px-wide image gets downscaled to MAX_IMAGE_DIM."""
+    png = _make_png_with_shape(
+        lambda d, fg: d.ellipse((800, 800, 3200, 2200), fill=fg),
+        size=(4000, 3000),
+    )
+    result = extract_silhouette_from_image(png)
+    assert max(result.image_w, result.image_h) <= MAX_IMAGE_DIM
+
+
+# === polygon_to_lbm_mask ===
+
+
+def test_rasterize_square_polygon_to_mask():
+    """A unit-square polygon scaled to target_extent=20 centred at (50, 40)
+    in an (Nx=120, Ny=80) grid should produce a 20x20 mask block around (50, 40)."""
+    square = np.array([
+        [0, 0], [1, 0], [1, 1], [0, 1],
+    ], dtype=np.float64)
+    mask = polygon_to_lbm_mask(square, Nx=120, Ny=80, cx=50.0, cy=40.0, target_extent_cells=20.0)
+
+    assert mask.shape == (120, 80)
+    assert mask.dtype == bool
+    # Most pixels in the 20x20 box around (50, 40) should be True.
+    inside = mask[40:60, 30:50]
+    assert inside.sum() > 350  # 20x20 = 400 cells, allow rasterization slack
+
+
+def test_rasterize_respects_rotation():
+    """A square rotated 45 deg should have a smaller axis-aligned bbox in the
+    grid (the diamond fits inside a wider/taller box, but the cells on the
+    far edges are sparser)."""
+    square = np.array([
+        [0, 0], [1, 0], [1, 1], [0, 1],
+    ], dtype=np.float64)
+    mask_0 = polygon_to_lbm_mask(square, 120, 80, 60.0, 40.0, 20.0, aoa_deg=0.0)
+    mask_45 = polygon_to_lbm_mask(square, 120, 80, 60.0, 40.0, 20.0, aoa_deg=45.0)
+
+    # Both produce filled regions of the same total area (within rasterization).
+    assert abs(int(mask_0.sum()) - int(mask_45.sum())) < 50
+    # The rotated version has a wider y-extent (diamond is taller than the
+    # axis-aligned square at the same target_extent_cells).
+    ys_0 = np.where(mask_0.any(axis=0))[0]
+    ys_45 = np.where(mask_45.any(axis=0))[0]
+    assert (ys_45.max() - ys_45.min()) > (ys_0.max() - ys_0.min())
+
+
+def test_rasterize_rejects_degenerate():
+    """A polygon with all-coincident vertices has zero extent."""
+    degenerate = np.array([[5.0, 5.0]] * 5)
+    with pytest.raises(ValueError, match="zero extent"):
+        polygon_to_lbm_mask(degenerate, 100, 60, 50.0, 30.0, 20.0)
+
+
+def test_rasterize_rejects_too_few_vertices():
+    with pytest.raises(ValueError, match="N >= 3"):
+        polygon_to_lbm_mask(np.array([[0.0, 0.0], [1.0, 0.0]]), 100, 60, 50, 30, 20)
+
+
+# === polygon_outline_xy ===
+
+
+def test_polygon_outline_is_closed():
+    """outline_xy returns the polygon vertices closed for matplotlib drawing."""
+    triangle = np.array([[0, 0], [1, 0], [0.5, 1]], dtype=np.float64)
+    xs, ys = polygon_outline_xy(triangle, Nx=100, Ny=60, cx=50.0, cy=30.0, target_extent_cells=20.0)
+    # First and last vertices should coincide (closed loop).
+    assert xs[0] == pytest.approx(xs[-1])
+    assert ys[0] == pytest.approx(ys[-1])
+    assert len(xs) == 4   # original 3 + closing vertex
+
+
+# === End-to-end ===
+
+
+def test_image_to_mask_roundtrip_preserves_shape_centred():
+    """Upload a 200x150 ellipse PNG, extract polygon, rasterize back to a
+    100x60 LBM grid. The mask should be centred and roughly elliptical."""
+    bbox = (40, 30, 160, 120)  # ellipse in PNG coords
+    png = _make_png_with_shape(
+        lambda d, fg: d.ellipse(bbox, fill=fg),
+        size=(200, 150),
+    )
+    result = extract_silhouette_from_image(png)
+    mask = polygon_to_lbm_mask(
+        result.polygon_xy, Nx=100, Ny=60, cx=50.0, cy=30.0, target_extent_cells=30.0,
+    )
+    # Roughly half the cells in a 30x22 ellipse box should be set.
+    # Area of a 30x22 ellipse = pi * 15 * 11 = 518. Allow generous slack.
+    assert 200 < int(mask.sum()) < 800
+    # Centre of mass should be near (50, 30).
+    ys_x, ys_y = np.where(mask)
+    assert abs(np.mean(ys_x) - 50) < 3
+    assert abs(np.mean(ys_y) - 30) < 3
