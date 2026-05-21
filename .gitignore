@@ -15,6 +15,11 @@ venv/
 .idea/
 *.code-workspace
 
+# Attached images saved by tools (e.g. Claude Code dropping screenshots into
+# the repo root). Local scratch only, never tracked.
+Images/
+images/
+
 # OS
 Thumbs.db
 .DS_Store
