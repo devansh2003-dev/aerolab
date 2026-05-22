@@ -359,6 +359,67 @@ def extract_silhouette_from_image(png_bytes: bytes) -> SilhouetteResult:
     )
 
 
+def canvas_image_to_polygon(canvas_image: np.ndarray) -> SilhouetteResult:
+    """Convert a streamlit-drawable-canvas image into a body silhouette polygon.
+
+    The canvas ships H x W x 4 RGBA uint8 with a dark background and the
+    user's strokes drawn in white. Freehand strokes are typically *open*
+    curves (a sketched circle is a line, not a disk), so we
+      1. binarise on alpha (drawn vs not-drawn),
+      2. dilate the strokes a few pixels so they overlap enough to enclose
+         a region (handles the user not quite meeting the ends of a curve),
+      3. binary_fill_holes to make the enclosed region a solid silhouette,
+      4. re-encode as a white-on-black PNG,
+      5. defer to the existing image silhouette extractor for contour +
+         polygon simplification.
+
+    Raises ValueError if the canvas is blank or the strokes don't enclose
+    a usable region (extractor's own rejection rules apply).
+    """
+    import io
+
+    from PIL import Image
+    from scipy.ndimage import binary_dilation, binary_fill_holes
+
+    if canvas_image is None:
+        raise ValueError("Canvas is empty -- sketch something first.")
+    arr = np.asarray(canvas_image)
+    if arr.ndim != 3 or arr.shape[2] < 4:
+        raise ValueError(
+            f"Unexpected canvas image shape {arr.shape}; expected H x W x 4 RGBA."
+        )
+
+    # Alpha channel = "user drew here" -- threshold to bool.
+    drawn = arr[..., 3] > 32
+    if not drawn.any():
+        raise ValueError("No drawing detected -- sketch a shape first.")
+
+    # Dilate strokes by ~stroke_width / 4 so nearly-touching ends connect.
+    # The canvas uses stroke_width=10; iterations=2 gives ~4 px reach which
+    # closes typical free-hand gaps without ballooning small features.
+    dilated = binary_dilation(drawn, iterations=2)
+    # Fill the enclosed region -- a sketched circle becomes a disk.
+    filled = binary_fill_holes(dilated)
+
+    # Sanity: filled area must exceed the dilated stroke area, otherwise
+    # the user drew an open curve that didn't enclose anything (so
+    # binary_fill_holes returned the stroke unchanged).
+    if int(filled.sum()) <= int(dilated.sum()) * 1.1:
+        raise ValueError(
+            "Your sketch doesn't enclose a region. Draw a closed shape "
+            "(loop or scribble that closes on itself), or use the toolbar "
+            "to undo and try again."
+        )
+
+    # Re-encode as a white-on-black PNG and run the existing extractor.
+    h, w = filled.shape
+    img_rgb = np.zeros((h, w, 3), dtype=np.uint8)
+    img_rgb[filled] = 255
+    buf = io.BytesIO()
+    Image.fromarray(img_rgb).save(buf, format="PNG")
+    return extract_silhouette_from_image(buf.getvalue())
+
+
 def _transform_polygon_to_lattice(
     polygon_xy: np.ndarray,
     cx: float,

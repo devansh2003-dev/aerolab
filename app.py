@@ -264,12 +264,71 @@ if mode == "Real CFD (LBM)":
         simulate_and_render,
     )
 
+    # Shape param mappings for share-link query params (?shape=cylinder...).
+    # Defined at module-conditional scope so both the share button and the
+    # boot-time URL-param reader can use them.
+    _SHAPE_DISPLAY_TO_QP = {
+        "Cylinder": "cylinder",
+        "Square": "square",
+        "Ellipse": "ellipse",
+        "NACA 0012": "naca0012",
+        "NACA 4412": "naca4412",
+    }
+    _SHAPE_QP_TO_DISPLAY = {
+        "cylinder": "Cylinder  (round pipe)",
+        "square": "Square  (boxy)",
+        "ellipse": "Ellipse  (stretched oval)",
+        "naca0012": "NACA 0012  (symmetric wing)",
+        "naca4412": "NACA 4412  (curved wing)",
+    }
+
+    # Share-link query params: when a user opens a URL like
+    #   ?shape=naca4412&vel=1.8&aoa=4&res=standard&viz=Pressure
+    # apply the encoded config as pending keys (which the loop below then
+    # promotes to the actual widgets) and trigger the gallery-style
+    # auto-run gate so the shared run shows up immediately. We do this
+    # ONCE per browser session via a flag, so subsequent reruns inside the
+    # same session don't keep overriding user slider changes.
+    _qp = st.query_params
+    if _qp and not st.session_state.get("lbm_share_applied", False):
+        _shape_qp = _qp.get("shape", "").lower() if "shape" in _qp else ""
+        _shape_disp = _SHAPE_QP_TO_DISPLAY.get(_shape_qp)
+        if _shape_disp is not None:
+            st.session_state["lbm_pending_shape"] = _shape_disp
+            try:
+                _v = float(_qp.get("vel", "0.6"))
+                if 0.15 <= _v <= 4.5:
+                    # Slider step is 0.1; round to land on a tick.
+                    st.session_state["lbm_pending_velocity"] = round(_v, 1)
+            except (TypeError, ValueError):
+                pass
+            try:
+                _a = float(_qp.get("aoa", "0"))
+                if -45.0 <= _a <= 45.0:
+                    # AoA slider step is 0.5; round.
+                    st.session_state["lbm_pending_aoa"] = round(_a * 2) / 2
+            except (TypeError, ValueError):
+                pass
+            _res_qp = _qp.get("res", "standard").lower()
+            st.session_state["lbm_pending_res"] = (
+                "Detailed (960 x 240)" if "detail" in _res_qp
+                else "Standard (320 x 80)"
+            )
+            _viz_qp = _qp.get("viz", "Vorticity")
+            if _viz_qp in ("Vorticity", "Velocity", "Pressure"):
+                st.session_state["lbm_pending_viz"] = _viz_qp
+            # Trigger auto-run on the rerun the promotion loop below
+            # produces, so the shared link lands directly on the result.
+            st.session_state["lbm_gallery_pending"] = True
+        st.session_state["lbm_share_applied"] = True
+
     # Gallery card pre-fill: copy any "pending" values into their widget
     # session_state keys BEFORE the widgets render below. Done here because
     # Streamlit forbids writes to a widget's session_state key after the
     # widget has been instantiated -- so a gallery card button (which runs
     # AFTER the sidebar widgets) writes to lbm_pending_* and we promote
-    # them here on the next rerun.
+    # them here on the next rerun. Share-link query params (handled above)
+    # write to the same pending keys and use the same promotion path.
     for _src, _dst in (
         ("lbm_pending_shape", "lbm_shape_select"),
         ("lbm_pending_velocity", "lbm_velocity_slider"),
@@ -351,97 +410,145 @@ if mode == "Real CFD (LBM)":
         )
         shape_preset = SHAPE_PRESETS[shape_display]
 
-        # --- Custom shape upload (only when 'Upload your own' is selected) ---
-        # Polygon lives in session state so it survives Streamlit reruns from
-        # the Pin / Clear / slider widgets. The uploader writes only on
-        # successful extraction; errors render inline without touching state.
+        # --- Custom shape: Upload / Draw / Sample, in three sibling tabs ---
+        # All three paths write the same session_state key
+        # ("lbm_custom_polygon"); the rest of the pipeline (preview, flip,
+        # cache key, run, pin) is source-agnostic. Polygon lives in session
+        # state so it survives Streamlit reruns from Pin / Clear / slider
+        # widgets. Each tab writes only on successful extraction; errors
+        # render inline without touching state.
         custom_polygon = None
         if shape_preset == "Custom":
             st.markdown("")
-            st.markdown(":material/upload_file: **Your shape**")
-            uploaded = st.file_uploader(
-                "Upload an image",
-                type=[
-                    "png", "jpg", "jpeg", "gif", "bmp", "tiff", "tif",
-                    "webp", "ico", "ppm", "tga",
-                ],
-                accept_multiple_files=False,
-                label_visibility="collapsed",
-                help=(
-                    "Drop in any image with a clear subject on a uniform "
-                    "background (white, black, grey, or any solid colour). "
-                    "All common raster formats supported: PNG, JPG, GIF, "
-                    "BMP, TIFF, WEBP, plus ICO / PPM / TGA. Transparent "
-                    "PNGs and EXIF-rotated phone photos are auto-handled. "
-                    "Minimum 100x100 px. The extractor auto-pads, so "
-                    "shapes near the edge are fine. (For HEIC iPhone "
-                    "photos, convert to PNG in your phone's share sheet "
-                    "first.) Tip: orient your image so the FRONT of the "
-                    "shape faces left -- wind comes from the left in the "
-                    "simulation, and source orientation is preserved. "
-                    "The simulation uses halfway bounce-back at the wall "
-                    "(analytic Bouzidi is on the roadmap), so Cd will "
-                    "read a bit high on bluff custom shapes but wake "
-                    "structure is correct."
-                ),
-                key="lbm_custom_upload",
+            st.markdown(":material/draw: **Your shape**")
+            _upload_tab, _draw_tab, _sample_tab = st.tabs(
+                ["Upload", "Draw", "Sample"]
             )
-            if uploaded is not None:
-                from src.custom_shape import extract_silhouette_from_image
-                import hashlib as _hl
-                # Detect new-file events: hash the upload bytes and
-                # compare to the last hash we saw. On a fresh file the
-                # flip toggle should reset so a user uploading a
-                # right-facing shape doesn't get it pre-flipped from a
-                # previous left-facing upload.
-                _upload_hash = _hl.sha1(uploaded.getvalue()).hexdigest()[:12]
-                if _upload_hash != st.session_state.get("lbm_last_upload_hash"):
-                    st.session_state["lbm_last_upload_hash"] = _upload_hash
-                    st.session_state["lbm_custom_flipped"] = False
-                try:
-                    result = extract_silhouette_from_image(uploaded.getvalue())
-                    custom_polygon = result.polygon_xy
-                    st.session_state["lbm_custom_polygon"] = custom_polygon
-                    for w in result.warnings:
-                        st.warning(f":material/info: {w}")
-                    st.caption(
-                        f":material/check_circle: Extracted a "
-                        f"{len(custom_polygon)}-corner outline from a "
-                        f"{result.image_w}x{result.image_h} px image."
-                    )
-                except ValueError as e:
-                    st.error(f":material/error: {e}")
-                    st.session_state.pop("lbm_custom_polygon", None)
-                    custom_polygon = None
-            else:
-                # No new upload this run -- keep the previously-extracted
-                # polygon if the user is just adjusting other sliders.
-                custom_polygon = st.session_state.get("lbm_custom_polygon")
 
-            # "Try a sample" buttons: bundled silhouettes from
-            # src.sample_shapes so a first-time visitor can verify the
-            # whole upload pipeline works without sourcing their own image.
-            # Each click loads the polygon into session state under both
-            # the polygon key AND a stable display-name key so we can
-            # show "Using sample: Fish" in the post-run GIF filename.
-            # Buttons are stacked vertically (full-width, one per row) --
-            # side-by-side columns made the long sample names ("Building
-            # cross-section") wrap awkwardly on narrow sidebars.
-            st.caption(":material/auto_awesome: Or try a sample:")
-            from src.sample_shapes import SAMPLE_SHAPES
-            for sample_name, sample_fn in SAMPLE_SHAPES.items():
+            # --- Upload tab ---
+            with _upload_tab:
+                uploaded = st.file_uploader(
+                    "Upload an image",
+                    type=[
+                        "png", "jpg", "jpeg", "gif", "bmp", "tiff", "tif",
+                        "webp", "ico", "ppm", "tga",
+                    ],
+                    accept_multiple_files=False,
+                    label_visibility="collapsed",
+                    help=(
+                        "Drop in any image with a clear subject on a uniform "
+                        "background (white, black, grey, or any solid colour). "
+                        "All common raster formats supported: PNG, JPG, GIF, "
+                        "BMP, TIFF, WEBP, plus ICO / PPM / TGA. Transparent "
+                        "PNGs and EXIF-rotated phone photos are auto-handled. "
+                        "Minimum 100x100 px. (For HEIC iPhone photos, convert "
+                        "to PNG in your phone's share sheet first.) Tip: "
+                        "orient your image so the FRONT of the shape faces "
+                        "left -- wind comes from the left in the simulation."
+                    ),
+                    key="lbm_custom_upload",
+                )
+                if uploaded is not None:
+                    from src.custom_shape import extract_silhouette_from_image
+                    import hashlib as _hl
+                    # Detect new-file events: hash the upload bytes and
+                    # compare to the last hash we saw. On a fresh file the
+                    # flip toggle should reset so a user uploading a
+                    # right-facing shape doesn't get it pre-flipped from a
+                    # previous left-facing upload.
+                    _upload_hash = _hl.sha1(uploaded.getvalue()).hexdigest()[:12]
+                    if _upload_hash != st.session_state.get("lbm_last_upload_hash"):
+                        st.session_state["lbm_last_upload_hash"] = _upload_hash
+                        st.session_state["lbm_custom_flipped"] = False
+                    try:
+                        result = extract_silhouette_from_image(uploaded.getvalue())
+                        custom_polygon = result.polygon_xy
+                        st.session_state["lbm_custom_polygon"] = custom_polygon
+                        # Clear any "Draw" or "Sample" label so the
+                        # downstream filename / caption reflects the upload.
+                        st.session_state.pop("lbm_custom_label", None)
+                        for w in result.warnings:
+                            st.warning(f":material/info: {w}")
+                        st.caption(
+                            f":material/check_circle: Extracted a "
+                            f"{len(custom_polygon)}-corner outline from a "
+                            f"{result.image_w}x{result.image_h} px image."
+                        )
+                    except ValueError as e:
+                        st.error(f":material/error: {e}")
+                        st.session_state.pop("lbm_custom_polygon", None)
+                        custom_polygon = None
+
+            # --- Draw tab ---
+            with _draw_tab:
+                st.caption(
+                    "Draw a closed shape -- the enclosed region becomes "
+                    "your body. Wind flows left to right. Use the toolbar "
+                    "(:material/undo: Undo, :material/delete: Clear) to "
+                    "fix mistakes."
+                )
+                from streamlit_drawable_canvas import st_canvas
+                # Aspect roughly matches the LBM channel (4:1 on Standard).
+                # update_streamlit=False keeps the canvas state out of
+                # the main rerun loop -- the explicit "Use this drawing"
+                # button below is the commit boundary.
+                canvas_result = st_canvas(
+                    fill_color="rgba(255, 255, 255, 0)",  # no fill (we use freedraw)
+                    stroke_width=10,
+                    stroke_color="#ffffff",
+                    background_color="#0a0a0a",
+                    update_streamlit=True,
+                    height=160,
+                    width=320,
+                    drawing_mode="freedraw",
+                    display_toolbar=True,
+                    key="lbm_canvas",
+                )
                 if st.button(
-                    sample_name, width="stretch",
-                    key=f"lbm_sample_{sample_name}",
+                    ":material/check: Use this drawing",
+                    width="stretch", key="lbm_canvas_use",
+                    help=(
+                        "Convert your sketch into a body silhouette. "
+                        "Open curves are auto-closed; the enclosed region "
+                        "is filled."
+                    ),
                 ):
-                    st.session_state["lbm_custom_polygon"] = sample_fn()
-                    st.session_state["lbm_custom_label"] = sample_name
-                    # Reset flip on sample swap -- the bundled samples
-                    # all face the inflow already, so the user should
-                    # start unflipped.
-                    st.session_state["lbm_custom_flipped"] = False
-                    st.session_state.pop("lbm_last_upload_hash", None)
-                    st.rerun()
+                    from src.custom_shape import canvas_image_to_polygon
+                    if canvas_result is None or canvas_result.image_data is None:
+                        st.error(":material/error: Sketch something first.")
+                    else:
+                        try:
+                            result = canvas_image_to_polygon(canvas_result.image_data)
+                            st.session_state["lbm_custom_polygon"] = result.polygon_xy
+                            st.session_state["lbm_custom_label"] = "Your drawing"
+                            st.session_state["lbm_custom_flipped"] = False
+                            st.session_state.pop("lbm_last_upload_hash", None)
+                            st.rerun()
+                        except ValueError as e:
+                            st.error(f":material/error: {e}")
+
+            # --- Sample tab ---
+            with _sample_tab:
+                st.caption(
+                    "Built-in silhouettes so you can verify the pipeline "
+                    "without sourcing your own image."
+                )
+                from src.sample_shapes import SAMPLE_SHAPES
+                for sample_name, sample_fn in SAMPLE_SHAPES.items():
+                    if st.button(
+                        sample_name, width="stretch",
+                        key=f"lbm_sample_{sample_name}",
+                    ):
+                        st.session_state["lbm_custom_polygon"] = sample_fn()
+                        st.session_state["lbm_custom_label"] = sample_name
+                        # Reset flip on sample swap -- the bundled samples
+                        # all face the inflow already, so the user should
+                        # start unflipped.
+                        st.session_state["lbm_custom_flipped"] = False
+                        st.session_state.pop("lbm_last_upload_hash", None)
+                        st.rerun()
+
+            # All three tabs converge on the same session_state key.
             custom_polygon = st.session_state.get("lbm_custom_polygon", custom_polygon)
             # Apply the "Flip horizontally" toggle (state lives in
             # lbm_custom_flipped). We flip the polygon in image-coord
@@ -699,6 +806,36 @@ if mode == "Real CFD (LBM)":
             st.caption(":material/timer: Local: ~100 s warm, ~125 s first cold "
                        "click. Streamlit Cloud (1-vCPU shared): ~6 min. "
                        "Revisits are instant (cached).")
+
+        # === Reset to defaults ===
+        # Wipes all Real-CFD-related session_state (widget values, pinned
+        # snapshot, custom polygon, share-link state) so the user can start
+        # clean without reloading the page. Caches are NOT cleared --
+        # repeated runs hit cache as before, this is purely a UI reset.
+        st.markdown("")
+        if st.button(
+            ":material/refresh:  Reset to defaults",
+            width="stretch", key="lbm_reset_btn",
+            help=(
+                "Clear sliders, custom shape, snapshot, and shared-link "
+                "state. Useful after exploring a lot of configurations. "
+                "Does not clear the simulation cache, so re-running an "
+                "earlier config is still instant."
+            ),
+        ):
+            # Pop every lbm_*-prefixed key. Streamlit will rebuild widgets
+            # with their default values on the next rerun.
+            for _k in list(st.session_state.keys()):
+                if _k.startswith("lbm_"):
+                    st.session_state.pop(_k, None)
+            # Also clear share-link query params so a future "Share link"
+            # click writes a fresh set rather than appending to stale ones.
+            st.query_params.clear()
+            st.toast(
+                ":material/refresh: Reset to defaults.",
+                icon=":material/refresh:",
+            )
+            st.rerun()
 
     # === Main page header ===
     st.title("Real CFD")
@@ -986,7 +1123,7 @@ if mode == "Real CFD (LBM)":
             _shape_slug = shape_preset.lower().replace(" ", "_")
         _aoa_part = f"_aoa{aoa_deg:+.0f}" if abs(aoa_deg) > 0.25 else ""
         _gif_name = f"aerolab_{_shape_slug}_re{reynolds_target}{_aoa_part}.gif"
-        action_cols = st.columns([1, 1, 1, 3])
+        action_cols = st.columns([1, 1, 1, 1, 2])
         with action_cols[0]:
             st.download_button(
                 ":material/download:  Download GIF",
@@ -1050,6 +1187,40 @@ if mode == "Real CFD (LBM)":
                     st.session_state.pop("lbm_snapshot_polygon", None)
                     st.session_state.pop("lbm_snapshot_label", None)
                     st.rerun()
+        with action_cols[3]:
+            # Share button: encode the current config in URL query params
+            # so the user can copy the URL from their address bar and
+            # share a deep link that reopens this exact run. Custom shapes
+            # are disabled because the polygon doesn't fit in a URL --
+            # those users share the GIF download instead.
+            _share_disabled = shape_preset == "Custom"
+            _share_help = (
+                "Custom (uploaded / drawn) shapes can't be encoded in a "
+                "URL -- download the GIF to share instead."
+                if _share_disabled else
+                "Write this run's config to the URL bar. Then copy your "
+                "browser's address from the address bar -- anyone opening "
+                "that link lands directly on this exact run."
+            )
+            if st.button(
+                ":material/share:  Share link",
+                width="stretch",
+                disabled=_share_disabled,
+                help=_share_help,
+                key="share_link_btn",
+            ):
+                st.query_params["shape"] = _SHAPE_DISPLAY_TO_QP[shape_preset]
+                st.query_params["vel"] = f"{velocity_mps:.2f}"
+                st.query_params["aoa"] = f"{aoa_deg:.1f}"
+                st.query_params["res"] = (
+                    "standard" if "Standard" in res_display else "detailed"
+                )
+                st.query_params["viz"] = viz_mode
+                st.toast(
+                    ":material/share: Link ready -- copy from your "
+                    "browser's address bar.",
+                    icon=":material/share:",
+                )
 
         # Persistent pinned-state caption -- gives the user feedback that
         # something IS pinned, since pinning before changing params has no

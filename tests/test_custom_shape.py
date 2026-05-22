@@ -18,6 +18,7 @@ from src.custom_shape import (
     MIN_IMAGE_DIM,
     SilhouetteResult,
     _transform_polygon_to_lattice,
+    canvas_image_to_polygon,
     extract_silhouette_from_image,
     polygon_outline_xy,
     polygon_to_lbm_mask,
@@ -665,3 +666,74 @@ def test_transform_helper_unifies_mask_and_outline_geometry():
     assert abs(xs.max() - mask_xs.max()) < 2.5
     assert abs(ys.min() - mask_ys.min()) < 2.5
     assert abs(ys.max() - mask_ys.max()) < 2.5
+
+
+# === Canvas (drawable canvas) helper ===
+
+
+def _synth_drawn_stroke(h, w, build_stroke_fn):
+    """Build a streamlit-drawable-canvas style RGBA array with the user's
+    stroke painted in white on a dark background. build_stroke_fn writes a
+    boolean mask of stroke pixels."""
+    rgba = np.zeros((h, w, 4), dtype=np.uint8)
+    stroke_mask = np.zeros((h, w), dtype=bool)
+    build_stroke_fn(stroke_mask)
+    rgba[stroke_mask, :3] = 255
+    rgba[stroke_mask, 3] = 255
+    return rgba
+
+
+def test_canvas_to_polygon_freehand_circle_becomes_disk():
+    """A user sketching a freehand circle should end up with a filled
+    polygon, not just the stroke outline. canvas_image_to_polygon
+    binary-fills the enclosed region before contour extraction."""
+    h, w, r = 160, 320, 35
+    def stroke(mask):
+        yy, xx = np.mgrid[:h, :w]
+        dist = np.hypot(xx - w // 2, yy - h // 2)
+        mask[(dist > r - 5) & (dist < r + 5)] = True
+    rgba = _synth_drawn_stroke(h, w, stroke)
+    result = canvas_image_to_polygon(rgba)
+    assert result.polygon_xy.ndim == 2 and result.polygon_xy.shape[1] == 2
+    assert result.polygon_xy.shape[0] >= 6, (
+        f"Polygon too sparse: {result.polygon_xy.shape[0]} verts"
+    )
+    # Bbox should roughly span the original stroke's extent.
+    poly = result.polygon_xy
+    assert np.ptp(poly[:, 0]) > 2 * r - 10
+    assert np.ptp(poly[:, 1]) > 2 * r - 10
+
+
+def test_canvas_to_polygon_rejects_blank():
+    """Empty canvas should raise a user-readable error."""
+    rgba = np.zeros((160, 320, 4), dtype=np.uint8)
+    with pytest.raises(ValueError, match="sketch"):
+        canvas_image_to_polygon(rgba)
+
+
+def test_canvas_to_polygon_rejects_open_line():
+    """A straight line doesn't enclose anything -- the post-dilation +
+    fill_holes step should leave it unchanged, which our 1.1x ratio guard
+    catches."""
+    h, w = 160, 320
+    def stroke(mask):
+        mask[h // 2 - 3 : h // 2 + 3, 50:270] = True
+    rgba = _synth_drawn_stroke(h, w, stroke)
+    with pytest.raises(ValueError, match="enclose"):
+        canvas_image_to_polygon(rgba)
+
+
+def test_canvas_to_polygon_wrong_shape_raises():
+    """Caller error: passing a 2D grayscale or 3-channel RGB array should
+    fail fast with a clear message, not silently corrupt the pipeline."""
+    with pytest.raises(ValueError, match="RGBA"):
+        canvas_image_to_polygon(np.zeros((100, 200), dtype=np.uint8))
+    with pytest.raises(ValueError, match="RGBA"):
+        canvas_image_to_polygon(np.zeros((100, 200, 3), dtype=np.uint8))
+
+
+def test_canvas_to_polygon_none_raises():
+    """st_canvas returns None.image_data on a blank canvas; we should
+    fail with a polite message rather than an AttributeError."""
+    with pytest.raises(ValueError, match="empty"):
+        canvas_image_to_polygon(None)
