@@ -487,24 +487,40 @@ if mode == "Real CFD (LBM)":
                     "(:material/undo: Undo, :material/delete: Clear) to "
                     "fix mistakes."
                 )
-                from streamlit_drawable_canvas import st_canvas
-                # Aspect roughly matches the LBM channel (4:1 on Standard).
-                # update_streamlit=False keeps the canvas state out of
-                # the main rerun loop -- the explicit "Use this drawing"
-                # button below is the commit boundary.
-                canvas_result = st_canvas(
-                    fill_color="rgba(255, 255, 255, 0)",  # no fill (we use freedraw)
-                    stroke_width=10,
-                    stroke_color="#ffffff",
-                    background_color="#0a0a0a",
-                    update_streamlit=True,
-                    height=160,
-                    width=320,
-                    drawing_mode="freedraw",
-                    display_toolbar=True,
-                    key="lbm_canvas",
-                )
-                if st.button(
+                # Defensive import: if streamlit-drawable-canvas fails to
+                # install on Cloud (it's pinned but the wheel can break
+                # against minor Streamlit version bumps), the rest of the
+                # app should still work -- show a polite "draw is offline
+                # right now" message and let the user fall back to Upload /
+                # Sample tabs instead of crashing the whole script.
+                _canvas_available = True
+                try:
+                    from streamlit_drawable_canvas import st_canvas
+                except Exception as _canvas_imp_err:
+                    _canvas_available = False
+                    st.warning(
+                        f":material/warning: The drawing canvas component "
+                        f"isn't available in this environment "
+                        f"(`{type(_canvas_imp_err).__name__}: "
+                        f"{_canvas_imp_err}`). Use the **Upload** or "
+                        f"**Sample** tabs to provide a custom shape."
+                    )
+                    canvas_result = None
+                if _canvas_available:
+                    # Aspect roughly matches the LBM channel (4:1 on Standard).
+                    canvas_result = st_canvas(
+                        fill_color="rgba(255, 255, 255, 0)",  # no fill (we use freedraw)
+                        stroke_width=10,
+                        stroke_color="#ffffff",
+                        background_color="#0a0a0a",
+                        update_streamlit=True,
+                        height=160,
+                        width=320,
+                        drawing_mode="freedraw",
+                        display_toolbar=True,
+                        key="lbm_canvas",
+                    )
+                if _canvas_available and st.button(
                     ":material/check: Use this drawing",
                     width="stretch", key="lbm_canvas_use",
                     help=(

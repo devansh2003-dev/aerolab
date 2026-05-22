@@ -55,6 +55,12 @@ Issues     = "https://github.com/devansh2003-dev/AeroLab/issues"
 minversion = "7.0"
 # tests/ is the canonical test directory; src/ is library code only.
 testpaths = ["tests"]
+# Put the project root on sys.path so `from src.foo import ...` works
+# regardless of how pytest is invoked. Locally, `python -m pytest` does
+# this implicitly via the -m flag; CI's bare `pytest -q` does NOT, which
+# has been silently breaking every CI run since the project was set up.
+# Adding pythonpath makes both invocations work the same way.
+pythonpath = ["."]
 # Short, quiet output by default. Override at the CLI with -v.
 addopts = "-q --strict-markers"
 filterwarnings = [
