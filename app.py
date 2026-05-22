@@ -82,11 +82,12 @@ with st.sidebar:
     st.divider()
 
 # --- Cached LBM simulate+render wrapper (module level) ---
-# Textbook 2D cylinder Cd / Strouhal vs Reynolds. Williamson (1996),
-# Norberg (1994), and the standard fluid-dynamics references agree on
-# these to within ~5 %. Used for the "your sim vs textbook" badge below
-# the Cd time-series plot -- gives a student an instant calibration on
-# whether the simulation is in the right ballpark for the validated case.
+# Textbook 2D bluff-body Cd / Strouhal vs Reynolds. Standard fluid-dynamics
+# references for the cylinder (Williamson 1996, Norberg 1994) and the
+# square cylinder (Okajima 1982, Sohankar et al 1998) agree to within ~5 %.
+# Used for the "your sim vs textbook" badge -- gives a student an instant
+# calibration on whether the simulation is in the right ballpark for the
+# canonical validated cases.
 _CYLINDER_REFERENCE_CD = {
     40: 1.55, 80: 1.40, 100: 1.40, 150: 1.32, 200: 1.30,
     300: 1.35, 500: 1.40, 800: 1.41, 1000: 1.40, 1500: 1.42,
@@ -96,26 +97,59 @@ _CYLINDER_REFERENCE_ST = {
     500: 0.215, 800: 0.215, 1000: 0.21, 1500: 0.21,
 }
 
+# Square cylinder (sharp-edged, broadside to flow): Cd is much flatter
+# than the round cylinder because separation is geometry-locked at the
+# corners regardless of Re. Strouhal hovers around 0.13 across the laminar
+# / transitional shedding range. References: Okajima JFM 1982 (Re 70-500),
+# Sohankar/Norberg/Davidson IJNMF 1998 (Re 45-200), Saha/Biswas/Muralidhar
+# IJHFF 2003. We cover Re 80-1500 to match our slider's reachable band.
+_SQUARE_REFERENCE_CD = {
+    80: 1.55, 100: 1.50, 150: 1.50, 200: 1.50, 300: 1.65,
+    500: 1.95, 800: 2.05, 1000: 2.10, 1500: 2.15,
+}
+_SQUARE_REFERENCE_ST = {
+    80: 0.130, 100: 0.135, 150: 0.140, 200: 0.143, 300: 0.140,
+    500: 0.135, 800: 0.130, 1000: 0.128, 1500: 0.125,
+}
 
-def _cylinder_reference(re_value: int):
-    """Linear-interpolated textbook (Cd, St) for a 2-D cylinder at Re=re_value.
 
-    Returns (None, None) if Re falls outside the validated range (below
-    Re=40 the wake hasn't started shedding; above Re=1500 our slider
-    can't even go).
+def _interp_or_none(re_value: float, table: dict):
+    """Linear-interpolated table lookup, returns None if out of range."""
+    if not table:
+        return None
+    lo, hi = min(table), max(table)
+    if re_value < lo or re_value > hi:
+        return None
+    keys = sorted(table)
+    vals = [table[k] for k in keys]
+    return float(np.interp(re_value, keys, vals))
+
+
+def _textbook_reference(shape_preset: str, re_value: int):
+    """Linear-interpolated textbook (Cd, St) for a canonical 2-D bluff body.
+
+    Supports Cylinder (round) and Square (broadside). Returns (None, None)
+    for shapes we don't ship a reference for, or for Re outside the
+    validated band. The Square table is for broadside flow only -- at
+    aoa=45 (diamond orientation) Cd drops to ~1.5 and St rises, but we
+    don't ship a separate diamond table, so the caller is responsible for
+    only invoking this when the body presents a flat face (aoa ~ 0).
     """
-    if re_value < min(_CYLINDER_REFERENCE_CD) or re_value > max(_CYLINDER_REFERENCE_CD):
-        return None, None
-    cd_keys = sorted(_CYLINDER_REFERENCE_CD)
-    cd_vals = [_CYLINDER_REFERENCE_CD[k] for k in cd_keys]
-    cd_ref = float(np.interp(re_value, cd_keys, cd_vals))
-    if re_value < min(_CYLINDER_REFERENCE_ST):
-        st_ref = None
+    if shape_preset == "Cylinder":
+        cd_ref = _interp_or_none(re_value, _CYLINDER_REFERENCE_CD)
+        st_ref = _interp_or_none(re_value, _CYLINDER_REFERENCE_ST)
+    elif shape_preset == "Square":
+        cd_ref = _interp_or_none(re_value, _SQUARE_REFERENCE_CD)
+        st_ref = _interp_or_none(re_value, _SQUARE_REFERENCE_ST)
     else:
-        st_keys = sorted(_CYLINDER_REFERENCE_ST)
-        st_vals = [_CYLINDER_REFERENCE_ST[k] for k in st_keys]
-        st_ref = float(np.interp(re_value, st_keys, st_vals))
+        cd_ref, st_ref = None, None
     return cd_ref, st_ref
+
+
+# Backward-compat alias: some older callers / tests still imported the
+# cylinder-only entry point. Forward to the generalized lookup.
+def _cylinder_reference(re_value: int):
+    return _textbook_reference("Cylinder", re_value)
 
 
 # Lives outside the conditional so @st.cache_data isn't re-decorated on every
@@ -598,13 +632,18 @@ if mode == "Real CFD (LBM)":
         # of the result without the user needing to click Run.
         #
         # Card schema: (shape_display, velocity_mps, aoa_deg, res_display,
-        #               title, description, button_label).
+        #               viz_mode, title, description, button_label).
         # velocity_mps maps to Re via *333.33: Re=50 -> 0.15, Re=200 ->
         # 0.60, Re=600 -> 1.80, Re=800 -> 2.40. All values are slider-tick
-        # multiples of 0.1.
+        # multiples of 0.1. viz_mode picks the heatmap that best showcases
+        # what the card is teaching -- airfoils default to Pressure so the
+        # lift mechanism (red underside / blue suction) is visible from
+        # frame 1; bluff bodies stay on Vorticity (cleanest wake-structure
+        # picture).
         _gallery_cards = [
             (
                 "Cylinder  (round pipe)", 0.60, 0.0, "Standard (320 x 80)",
+                "Vorticity",
                 "Swirls behind a pole",
                 "The textbook von Karman vortex street. Watch swirls peel "
                 "off alternately from the top and bottom of the cylinder, "
@@ -613,22 +652,25 @@ if mode == "Real CFD (LBM)":
             ),
             (
                 "NACA 4412  (curved wing)", 1.80, 4.0, "Standard (320 x 80)",
-                "Wing in clean flight",
-                "A cambered wing tilted a few degrees into the wind. Smooth "
-                "attached flow with a thin downwash trailing the wing -- "
-                "what airplane wings look like during cruise.",
-                ":material/play_arrow:  Watch the wing fly",
+                "Pressure",
+                "How a wing lifts (clean)",
+                "Cambered wing tilted a few degrees. **Red underside, "
+                "dark/blue topside** -- that pressure asymmetry IS the "
+                "lift force. The thin wake shows the flow stays attached.",
+                ":material/play_arrow:  See lift in action",
             ),
             (
                 "NACA 4412  (curved wing)", 1.80, 20.0, "Standard (320 x 80)",
-                "Wing in stall",
-                "Same wing, but tilted way too steep. The air can't stay "
-                "attached to the top surface and detaches into a chaotic "
-                "wake -- this is what stall actually looks like.",
-                ":material/play_arrow:  Watch the wing stall",
+                "Pressure",
+                "How a wing stalls",
+                "Same wing, tilted too steep. The clean red/blue lift "
+                "asymmetry collapses as the flow detaches from the top "
+                "surface -- this is why aircraft fall out of the sky.",
+                ":material/play_arrow:  See lift collapse",
             ),
             (
                 "Square  (boxy)", 2.40, 0.0, "Standard (320 x 80)",
+                "Vorticity",
                 "Brick in a hurricane",
                 "A flat face slammed into the wind. A wide, violent wake "
                 "with rapid shedding -- the kind of drag that city "
@@ -637,6 +679,7 @@ if mode == "Real CFD (LBM)":
             ),
             (
                 "Square  (boxy)", 2.40, 45.0, "Standard (320 x 80)",
+                "Vorticity",
                 "Diamond cuts the wind",
                 "Same square, rotated 45 deg. Sharper leading edge, "
                 "narrower wake. Tiny rotation, huge aerodynamic change -- "
@@ -645,6 +688,7 @@ if mode == "Real CFD (LBM)":
             ),
             (
                 "Cylinder  (round pipe)", 0.15, 0.0, "Standard (320 x 80)",
+                "Vorticity",
                 "Almost stopped (honey)",
                 "Extremely slow flow. The cylinder's wake is just two "
                 "stationary bubbles -- no shedding at all. This is how "
@@ -660,15 +704,12 @@ if mode == "Real CFD (LBM)":
             # the writes. Instead we stash the values under "pending" keys;
             # the top of the Real CFD block copies pending -> widget on the
             # NEXT rerun, BEFORE the widgets instantiate.
-            shape_disp, vel_mps, aoa, res, *_ = card
+            shape_disp, vel_mps, aoa, res, viz, *_ = card
             st.session_state["lbm_pending_shape"] = shape_disp
             st.session_state["lbm_pending_velocity"] = float(vel_mps)
             st.session_state["lbm_pending_aoa"] = float(aoa)
             st.session_state["lbm_pending_res"] = res
-            # Always reset viz mode to Vorticity for gallery cards -- they're
-            # the first-time-visitor entry point, and Vorticity is the cleanest
-            # "see air" mode.
-            st.session_state["lbm_pending_viz"] = "Vorticity"
+            st.session_state["lbm_pending_viz"] = viz
             st.session_state["lbm_gallery_pending"] = True
             # Clear any pinned snapshot -- a fresh gallery click should
             # present a clean single-run view, not side-by-side against
@@ -690,7 +731,7 @@ if mode == "Real CFD (LBM)":
         _row1, _row2 = st.columns(3), st.columns(3)
         _gal_cells = list(_row1) + list(_row2)
         for _i, _card in enumerate(_gallery_cards):
-            _, _, _, _, _title, _desc, _btn = _card
+            _, _, _, _, _viz, _title, _desc, _btn = _card
             with _gal_cells[_i]:
                 with st.container(border=True):
                     st.markdown(f"**{_title}**")
@@ -1072,11 +1113,40 @@ if mode == "Real CFD (LBM)":
             ":material/insights: **Forces measured during this run** "
             "(drag, lift, vortex-shedding frequency)"):
         _st_val = sim_result.get("strouhal", float("nan"))
+        # Textbook reference: ship comparison data for the canonical
+        # validated cases. Cylinder always shows; Square shows only when
+        # the body presents a flat face (aoa ~ 0) since the table is for
+        # broadside flow only. Used both as inline deltas under the
+        # metric tiles and as a single honest summary below the plot.
+        _show_textbook = (
+            shape_preset == "Cylinder"
+            or (shape_preset == "Square" and abs(aoa_deg) < 5.0)
+        )
+        _cd_ref, _st_ref = (
+            _textbook_reference(shape_preset, int(reynolds_target))
+            if _show_textbook else (None, None)
+        )
+        # Inline deltas on the Cd / Strouhal metric tiles -- compact "vs
+        # textbook" indicator without burying it in a paragraph.
+        # delta_color="off" keeps the chip gray because our Cd reads high
+        # for structural reasons (confinement + bounce-back), not because
+        # of user error -- red/green would mislead.
+        _cd_delta = (
+            f"{sim_result['cd_mean'] - _cd_ref:+.2f} vs textbook {_cd_ref:.2f}"
+            if _cd_ref is not None else None
+        )
+        _st_delta = (
+            f"{_st_val - _st_ref:+.3f} vs textbook {_st_ref:.3f}"
+            if (_st_ref is not None and np.isfinite(_st_val)) else None
+        )
+
         _force_cols = st.columns(3)
         with _force_cols[0]:
             st.metric(
                 "Drag coefficient (Cd)",
                 f"{sim_result['cd_mean']:.2f}",
+                delta=_cd_delta,
+                delta_color="off",
                 help=(
                     "Mean drag coefficient, averaged over the last third "
                     "of the simulation to skip the start-up transient."
@@ -1096,6 +1166,8 @@ if mode == "Real CFD (LBM)":
                 st.metric(
                     "Strouhal (St)",
                     f"{_st_val:.3f}",
+                    delta=_st_delta,
+                    delta_color="off",
                     help=(
                         "Dimensionless vortex-shedding frequency, "
                         "St = f * L / U. From an FFT of the Cl history."
@@ -1114,45 +1186,45 @@ if mode == "Real CFD (LBM)":
             "unreliable -- try a longer / Detailed run."
         )
 
-        # Textbook comparison for the cylinder (the canonical validated case).
-        # Honest framing: show both numbers but call out that Strouhal is the
-        # cleaner physics check -- our Cd reads 50-100 % high due to channel
-        # confinement (D/Ny = 35 %) + halfway bounce-back, while St is far
-        # less sensitive to grid and blockage.
-        if shape_preset == "Cylinder":
-            _cd_ref, _st_ref = _cylinder_reference(int(reynolds_target))
-            if _cd_ref is not None:
-                _badge_parts = [
-                    f"Textbook Cd ≈ **{_cd_ref:.2f}**, your sim: "
-                    f"**{sim_result['cd_mean']:.2f}**"
-                ]
-                _st_match = False
-                if _st_ref is not None and np.isfinite(_st_val):
-                    _st_err_pct = abs(_st_val - _st_ref) / _st_ref * 100
-                    _badge_parts.append(
-                        f"Textbook St ≈ **{_st_ref:.3f}**, your sim: "
-                        f"**{_st_val:.3f}** ({_st_err_pct:.0f}% off)"
+        # Compact textbook-comparison verdict. Green if Strouhal matched
+        # within 25 % (the cleaner physics check, less sensitive to grid
+        # bias than Cd), blue if it didn't (or wasn't computed). Cd-vs-
+        # textbook framing is in the delta chip above, not repeated here.
+        if _show_textbook and _cd_ref is not None:
+            _st_err_pct = (
+                abs(_st_val - _st_ref) / _st_ref * 100
+                if (_st_ref is not None and np.isfinite(_st_val)) else None
+            )
+            _bias_text = {
+                "Cylinder": (
+                    "Cd is biased ~50-100 % high (channel confinement "
+                    "+ grid resolution); Strouhal is the cleaner cross-check."
+                ),
+                "Square": (
+                    "Square Cd is geometry-locked at the corners, so it's "
+                    "flatter than the cylinder's. Ours still reads high "
+                    "(confinement + halfway bounce-back); Strouhal is the "
+                    "cleaner cross-check."
+                ),
+            }[shape_preset]
+            if _st_err_pct is not None and _st_err_pct < 25:
+                st.success(
+                    f":material/check_circle: **Shedding physics match** "
+                    f"-- Strouhal within {_st_err_pct:.0f} % of textbook "
+                    f"at Re={int(reynolds_target)}.  {_bias_text}"
+                )
+            else:
+                st.info(
+                    f":material/info: **Textbook reference active** "
+                    f"({shape_preset}, Re={int(reynolds_target)}). "
+                    + (
+                        f"Strouhal is {_st_err_pct:.0f} % off -- try a "
+                        f"longer / Detailed run so the FFT has more "
+                        f"cycles to lock onto. "
+                        if _st_err_pct is not None else ""
                     )
-                    _st_match = _st_err_pct < 25
-                if _st_match:
-                    st.success(
-                        ":material/check_circle: **Shedding physics match** "
-                        "(Strouhal within 25 % of textbook). "
-                        + "  ·  ".join(_badge_parts) +
-                        ".  Cd is biased high by ~ 50-100 % because of channel "
-                        "confinement (D/Ny = 35 %) and limited grid resolution -- "
-                        "that's expected on a CPU-only browser solver."
-                    )
-                else:
-                    st.info(
-                        ":material/info: **Textbook reference at Re="
-                        f"{int(reynolds_target)}:**  "
-                        + "  ·  ".join(_badge_parts) +
-                        ".  Cd is biased high by ~ 50-100 % (channel confinement "
-                        "+ grid resolution). Strouhal is the cleaner physics "
-                        "check; if it's far off, try a longer / Detailed run "
-                        "so the FFT has more cycles to lock onto."
-                    )
+                    + _bias_text
+                )
 
         # Custom shapes use halfway BB everywhere -- the Cd reads ~30-50 % high.
         if shape_preset == "Custom":
