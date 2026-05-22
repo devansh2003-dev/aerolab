@@ -159,6 +159,21 @@ if mode == "Real CFD (LBM)":
         simulate_and_render,
     )
 
+    # Gallery card pre-fill: copy any "pending" values into their widget
+    # session_state keys BEFORE the widgets render below. Done here because
+    # Streamlit forbids writes to a widget's session_state key after the
+    # widget has been instantiated -- so a gallery card button (which runs
+    # AFTER the sidebar widgets) writes to lbm_pending_* and we promote
+    # them here on the next rerun.
+    for _src, _dst in (
+        ("lbm_pending_shape", "lbm_shape_select"),
+        ("lbm_pending_velocity", "lbm_velocity_slider"),
+        ("lbm_pending_aoa", "lbm_aoa_slider"),
+        ("lbm_pending_res", "lbm_res_radio"),
+    ):
+        if _src in st.session_state:
+            st.session_state[_dst] = st.session_state.pop(_src)
+
     # Friendly display name -> internal preset key
     SHAPE_PRESETS = {
         "Cylinder  (round pipe)": "Cylinder",
@@ -211,16 +226,22 @@ if mode == "Real CFD (LBM)":
             )
 
         st.markdown(":material/category: **Shape**")
+        # Seed session_state once so the widget can be keyed without the
+        # "value= conflicts with session_state" warning. Cylinder is the
+        # canonical first-time-visitor pick (validated case, clean wake).
+        st.session_state.setdefault(
+            "lbm_shape_select", list(SHAPE_PRESETS.keys())[0],
+        )
         shape_display = st.selectbox(
             "Shape preset",
             list(SHAPE_PRESETS.keys()),
-            index=0,
             label_visibility="collapsed",
             help=(
                 "What the wind flows past. Round and boxy shapes shed swirly "
                 "wakes (think behind a bridge column). Wing shapes glide more "
                 "smoothly. Try them and see the difference."
             ),
+            key="lbm_shape_select",
         )
         shape_preset = SHAPE_PRESETS[shape_display]
 
@@ -354,9 +375,10 @@ if mode == "Real CFD (LBM)":
         L_REAL_M = 0.005    # 5 mm assumed characteristic length
         _is_airfoil_default = shape_preset in ("NACA 0012", "NACA 4412")
         _default_velocity = 1.5 if _is_airfoil_default else 0.6
+        st.session_state.setdefault("lbm_velocity_slider", _default_velocity)
         velocity_mps = st.slider(
             "Flow speed (m/s)",
-            min_value=0.15, max_value=4.50, value=_default_velocity, step=0.1,
+            min_value=0.15, max_value=4.50, step=0.1,
             label_visibility="collapsed",
             help=(
                 "Wind speed past the object. We assume a 5 mm characteristic "
@@ -368,6 +390,7 @@ if mode == "Real CFD (LBM)":
                 "envelope -- bump up Reynolds to *see* turbulence, but don't "
                 "read the wake as quantitatively realistic at the upper end."
             ),
+            key="lbm_velocity_slider",
         )
         reynolds_target = int(round(np.clip(velocity_mps * L_REAL_M / NU_AIR, 50, 1500)))
         reg, reg_feel = regime_label(reynolds_target)
@@ -404,12 +427,14 @@ if mode == "Real CFD (LBM)":
                     "An ellipse rotated end-on slips through the air; rotated "
                     "broadside it slams into it. Try the extremes."
                 )
+            st.session_state.setdefault("lbm_aoa_slider", slider_default)
             aoa_deg = st.slider(
                 "Body angle",
                 min_value=slider_min, max_value=slider_max,
-                value=slider_default, step=0.5,
+                step=0.5,
                 label_visibility="collapsed",
                 help=slider_help,
+                key="lbm_aoa_slider",
             )
             if is_airfoil:
                 st.caption(f"Wing {tilt_label(aoa_deg)}")
@@ -420,10 +445,12 @@ if mode == "Real CFD (LBM)":
 
         st.markdown("")
         st.markdown(":material/grid_view: **Resolution**")
+        st.session_state.setdefault(
+            "lbm_res_radio", list(RESOLUTION_PRESETS.keys())[0],
+        )
         res_display = st.radio(
             "Resolution",
             list(RESOLUTION_PRESETS.keys()),
-            index=0,
             label_visibility="collapsed",
             help=(
                 "**Standard** (320x80, D=28 body, 5250 sim steps) -- "
@@ -435,6 +462,7 @@ if mode == "Real CFD (LBM)":
                 "airfoil downwash is much more visible. ~100 s local / "
                 "~6 min Cloud."
             ),
+            key="lbm_res_radio",
         )
         res_cfg = RESOLUTION_PRESETS[res_display]
 
@@ -511,6 +539,11 @@ if mode == "Real CFD (LBM)":
         )
         if run_clicked:
             st.session_state["lbm_last_displayed_config"] = _current_config
+        # If a gallery card was just clicked, the widget values have been
+        # rewritten via session_state and we want the run to display
+        # immediately (without the user clicking Run again).
+        if st.session_state.pop("lbm_gallery_pending", False):
+            st.session_state["lbm_last_displayed_config"] = _current_config
         _should_display_run = run_clicked or (
             st.session_state.get("lbm_last_displayed_config") == _current_config
         )
@@ -532,10 +565,119 @@ if mode == "Real CFD (LBM)":
     )
 
     if not _should_display_run:
+        # === Curated demo gallery ===
+        # Six preconfigured runs so a first-time visitor doesn't have to
+        # guess which Re / AoA produces something worth watching. Each
+        # card writes its config into the sidebar widget keys + sets a
+        # "pending" flag, then reruns; the flag triggers an auto-display
+        # of the result without the user needing to click Run.
+        #
+        # Card schema: (shape_display, velocity_mps, aoa_deg, res_display,
+        #               title, description, button_label).
+        # velocity_mps maps to Re via *333.33: Re=50 -> 0.15, Re=200 ->
+        # 0.60, Re=600 -> 1.80, Re=800 -> 2.40. All values are slider-tick
+        # multiples of 0.1.
+        _gallery_cards = [
+            (
+                "Cylinder  (round pipe)", 0.60, 0.0, "Standard (320 x 80)",
+                "Swirls behind a pole",
+                "The textbook von Karman vortex street. Watch swirls peel "
+                "off alternately from the top and bottom of the cylinder, "
+                "carried downstream by the flow.",
+                ":material/play_arrow:  Watch swirls form",
+            ),
+            (
+                "NACA 4412  (curved wing)", 1.80, 4.0, "Standard (320 x 80)",
+                "Wing in clean flight",
+                "A cambered wing tilted a few degrees into the wind. Smooth "
+                "attached flow with a thin downwash trailing the wing -- "
+                "what airplane wings look like during cruise.",
+                ":material/play_arrow:  Watch the wing fly",
+            ),
+            (
+                "NACA 4412  (curved wing)", 1.80, 20.0, "Standard (320 x 80)",
+                "Wing in stall",
+                "Same wing, but tilted way too steep. The air can't stay "
+                "attached to the top surface and detaches into a chaotic "
+                "wake -- this is what stall actually looks like.",
+                ":material/play_arrow:  Watch the wing stall",
+            ),
+            (
+                "Square  (boxy)", 2.40, 0.0, "Standard (320 x 80)",
+                "Brick in a hurricane",
+                "A flat face slammed into the wind. A wide, violent wake "
+                "with rapid shedding -- the kind of drag that city "
+                "skylines, trucks, and shipping containers all create.",
+                ":material/play_arrow:  Watch the chaos",
+            ),
+            (
+                "Square  (boxy)", 2.40, 45.0, "Standard (320 x 80)",
+                "Diamond cuts the wind",
+                "Same square, rotated 45 deg. Sharper leading edge, "
+                "narrower wake. Tiny rotation, huge aerodynamic change -- "
+                "the same trick a knife uses to slice through air.",
+                ":material/play_arrow:  Watch the slice",
+            ),
+            (
+                "Cylinder  (round pipe)", 0.15, 0.0, "Standard (320 x 80)",
+                "Almost stopped (honey)",
+                "Extremely slow flow. The cylinder's wake is just two "
+                "stationary bubbles -- no shedding at all. This is how "
+                "honey flows around a spoon, and how plankton swim.",
+                ":material/play_arrow:  Watch the calm",
+            ),
+        ]
+
+        def _apply_gallery_card(card):
+            # We can't write directly to lbm_shape_select / lbm_velocity_slider
+            # etc. here -- those widget keys are already instantiated by the
+            # sidebar (which renders BEFORE the gallery), so Streamlit refuses
+            # the writes. Instead we stash the values under "pending" keys;
+            # the top of the Real CFD block copies pending -> widget on the
+            # NEXT rerun, BEFORE the widgets instantiate.
+            shape_disp, vel_mps, aoa, res, *_ = card
+            st.session_state["lbm_pending_shape"] = shape_disp
+            st.session_state["lbm_pending_velocity"] = float(vel_mps)
+            st.session_state["lbm_pending_aoa"] = float(aoa)
+            st.session_state["lbm_pending_res"] = res
+            st.session_state["lbm_gallery_pending"] = True
+            # Clear any pinned snapshot -- a fresh gallery click should
+            # present a clean single-run view, not side-by-side against
+            # whatever the user previously pinned.
+            st.session_state.pop("lbm_snapshot", None)
+            st.session_state.pop("lbm_snapshot_polygon", None)
+            st.session_state.pop("lbm_snapshot_label", None)
+
+        st.markdown(
+            "### :material/auto_awesome: Try one of these"
+        )
+        st.caption(
+            "Each card runs a pre-tuned setup so you can see a specific "
+            "aerodynamic phenomenon without fiddling with sliders. "
+            "Standard resolution, ~40 s local / ~3.3 min on Cloud."
+        )
+
+        # 3-col x 2-row grid of gallery cards.
+        _row1, _row2 = st.columns(3), st.columns(3)
+        _gal_cells = list(_row1) + list(_row2)
+        for _i, _card in enumerate(_gallery_cards):
+            _, _, _, _, _title, _desc, _btn = _card
+            with _gal_cells[_i]:
+                with st.container(border=True):
+                    st.markdown(f"**{_title}**")
+                    st.caption(_desc)
+                    if st.button(
+                        _btn, key=f"lbm_gallery_card_{_i}",
+                        width="stretch", type="primary",
+                    ):
+                        _apply_gallery_card(_card)
+                        st.rerun()
+
+        st.markdown("")
         _preview_n_steps = res_cfg["n_frames"] * STEPS_PER_FRAME
         with st.container(border=True):
             st.markdown(
-                f"### :material/play_circle: Ready to run\n\n"
+                f"### :material/play_circle: Or build your own\n\n"
                 f":material/arrow_back: **Set the inputs in the sidebar** "
                 f"and press **Run simulation**.\n\n"
                 f"A {res_cfg['Nx']} x {res_cfg['Ny']} Lattice Boltzmann "
@@ -593,12 +735,10 @@ if mode == "Real CFD (LBM)":
 
     if sim_result["near_stable"]:
         st.warning(
-            ":material/warning: At this Reynolds number the MRT solver is "
-            "right at the edge of its stable range (tau approaching 0.5). "
-            "The wake structure stays qualitatively correct but small-scale "
-            "turbulence is under-resolved on this grid. Try **Detailed** "
-            "resolution for sharper structure, or step the Reynolds slider "
-            "down for cleaner physics."
+            ":material/warning: At this flow speed the solver gets noisy -- "
+            "the wake direction is right but small-scale turbulence is "
+            "under-resolved. Try **Detailed** resolution for sharper "
+            "structure, or step the Flow speed slider down."
         )
 
     # Custom-shape Cd caveat is hoisted into the new metrics block below
@@ -769,119 +909,6 @@ if mode == "Real CFD (LBM)":
                 )
             st.caption(_pin_msg)
 
-        # === Measured aerodynamics: Cd / Cl / Strouhal ===
-        # The solver runs a momentum-exchange force calculation on the
-        # body every step. Mean values are taken over the last third of
-        # the run so the initial transient doesn't bias the number. The
-        # Strouhal estimate comes from the dominant FFT peak of the
-        # lift-coefficient history (vortex shedding modulates lift at
-        # the shedding frequency for symmetric bodies).
-        st.markdown(
-            "<div style='color:#94a3b8;font-size:0.78rem;"
-            "letter-spacing:0.05em;text-transform:uppercase;"
-            "margin:1.2rem 0 0.3rem 0;'>"
-            "Measured forces"
-            "</div>",
-            unsafe_allow_html=True,
-        )
-        _metric_cols = st.columns(3)
-        with _metric_cols[0]:
-            st.metric(
-                "Drag coefficient (Cd)",
-                f"{sim_result['cd_mean']:.2f}",
-                help=(
-                    "Mean drag coefficient, averaged over the last third "
-                    "of the simulation to skip the start-up transient."
-                ),
-            )
-        with _metric_cols[1]:
-            st.metric(
-                "Lift coefficient (Cl)",
-                f"{sim_result['cl_mean']:+.2f}",
-                help=(
-                    "Mean lift coefficient. Near zero for symmetric "
-                    "shapes at AoA=0; rises sharply with AoA on airfoils."
-                ),
-            )
-        with _metric_cols[2]:
-            _st_val = sim_result.get("strouhal", float("nan"))
-            if np.isfinite(_st_val):
-                st.metric(
-                    "Strouhal (St)",
-                    f"{_st_val:.3f}",
-                    help=(
-                        "Dimensionless vortex-shedding frequency, "
-                        "St = f * L / U. From an FFT of the Cl history."
-                    ),
-                )
-            else:
-                st.metric(
-                    "Strouhal (St)", "—",
-                    help="Not enough samples in the run for a stable FFT.",
-                )
-        st.image(sim_result["force_plot_bytes"], width="stretch")
-        st.caption(
-            ":material/info: The shaded band is the window used for the "
-            "mean Cd / Cl values above. Look at it: if Cd hasn't settled "
-            "yet at the right edge, the run is still transient and the "
-            "mean is unreliable -- try a longer / Detailed run."
-        )
-
-        # Textbook comparison for cylinder (the canonical validated case).
-        # We DON'T score this pass/fail because our 320x80 channel runs
-        # at ~35 % blockage (D=28, Ny=80) -- textbook Cd is for an
-        # essentially-infinite domain (~5 % blockage), so confinement
-        # alone inflates Cd by ~50-100 %. Plus low body-cell resolution
-        # adds another ~20 % on top. Honest framing: show both numbers
-        # so the student calibrates expectations, and call out that St
-        # is the cleaner cross-check (it's far less sensitive to grid
-        # and blockage than Cd).
-        if shape_preset == "Cylinder":
-            _cd_ref, _st_ref = _cylinder_reference(int(reynolds_target))
-            if _cd_ref is not None:
-                _badge_parts = [
-                    f"Textbook Cd ≈ **{_cd_ref:.2f}**, your sim: "
-                    f"**{sim_result['cd_mean']:.2f}**"
-                ]
-                _st_match = False
-                if _st_ref is not None and np.isfinite(_st_val):
-                    _st_err_pct = abs(_st_val - _st_ref) / _st_ref * 100
-                    _badge_parts.append(
-                        f"Textbook St ≈ **{_st_ref:.3f}**, your sim: "
-                        f"**{_st_val:.3f}** ({_st_err_pct:.0f}% off)"
-                    )
-                    _st_match = _st_err_pct < 25
-                if _st_match:
-                    st.success(
-                        ":material/check_circle: **Shedding physics match** "
-                        "(Strouhal within 25 % of textbook). "
-                        + "  ·  ".join(_badge_parts) +
-                        ".  Cd is biased high by ~ 50-100 % because of channel "
-                        "confinement (D/Ny = 35 %) and limited grid resolution -- "
-                        "that's expected on a CPU-only browser solver."
-                    )
-                else:
-                    st.info(
-                        ":material/info: **Textbook reference at Re="
-                        f"{int(reynolds_target)}:**  "
-                        + "  ·  ".join(_badge_parts) +
-                        ".  Cd is biased high by ~ 50-100 % (channel confinement "
-                        "+ grid resolution). Strouhal is the cleaner physics "
-                        "check; if it's far off, try a longer / Detailed run "
-                        "so the FFT has more cycles to lock onto."
-                    )
-
-        # Custom shapes use halfway BB everywhere -- the Cd reads ~30-50 %
-        # high. Hoisted out of the generic caveat block above so it sits
-        # right next to the Cd number, where the user is looking.
-        if shape_preset == "Custom":
-            st.caption(
-                ":material/info: **Cd note for custom shapes:** halfway "
-                "bounce-back is less accurate than the analytic Bouzidi "
-                "scheme used for built-in shapes, so this Cd reads ~30-50 % "
-                "high. Wake structure and Strouhal are fine."
-            )
-
         # Background (vorticity) colorbar + caption. Strings come from
         # sim_result so the renderer is the single source of truth.
         st.markdown(
@@ -961,8 +988,11 @@ if mode == "Real CFD (LBM)":
         )
 
     # === Metric strip ===
+    # CFD-internal numbers (tau, lattice viscosity, etc.) live in the
+    # "Under the hood" expander below. This strip stays in plain-language
+    # territory: what the wind is doing + how the animation was made.
     st.markdown("")
-    metric_cols = st.columns(4)
+    metric_cols = st.columns(3)
     with metric_cols[0]:
         st.metric(
             ":material/speed: Flow speed",
@@ -974,9 +1004,106 @@ if mode == "Real CFD (LBM)":
     with metric_cols[2]:
         st.metric(":material/movie: Playback",
                    f"{actual_n_frames} frames @ {round(1000 / GIF_FRAME_MS)} fps")
-    with metric_cols[3]:
-        st.metric(":material/calculate: Solver tau", f"{tau:.3f}",
-                   help="LBM relaxation time; >0.5 for stability. Lower = faster flow.")
+
+    # === Measured forces (collapsed by default — for the curious / portfolio
+    # reviewers, not focal for a "see air" viewer) ===
+    # The solver runs a momentum-exchange force calculation on the body every
+    # step. Cd/Cl are means over the last third of the run; Strouhal is the
+    # dominant FFT peak of the Cl history. Cylinder runs get a textbook badge.
+    with st.expander(
+            ":material/insights: **Forces measured during this run** "
+            "(drag, lift, vortex-shedding frequency)"):
+        _st_val = sim_result.get("strouhal", float("nan"))
+        _force_cols = st.columns(3)
+        with _force_cols[0]:
+            st.metric(
+                "Drag coefficient (Cd)",
+                f"{sim_result['cd_mean']:.2f}",
+                help=(
+                    "Mean drag coefficient, averaged over the last third "
+                    "of the simulation to skip the start-up transient."
+                ),
+            )
+        with _force_cols[1]:
+            st.metric(
+                "Lift coefficient (Cl)",
+                f"{sim_result['cl_mean']:+.2f}",
+                help=(
+                    "Mean lift coefficient. Near zero for symmetric "
+                    "shapes at AoA=0; rises sharply with AoA on airfoils."
+                ),
+            )
+        with _force_cols[2]:
+            if np.isfinite(_st_val):
+                st.metric(
+                    "Strouhal (St)",
+                    f"{_st_val:.3f}",
+                    help=(
+                        "Dimensionless vortex-shedding frequency, "
+                        "St = f * L / U. From an FFT of the Cl history."
+                    ),
+                )
+            else:
+                st.metric(
+                    "Strouhal (St)", "—",
+                    help="Not enough samples in the run for a stable FFT.",
+                )
+        st.image(sim_result["force_plot_bytes"], width="stretch")
+        st.caption(
+            ":material/info: The shaded band is the window used for the "
+            "mean Cd / Cl values above. If Cd hasn't settled yet at the "
+            "right edge, the run is still transient and the mean is "
+            "unreliable -- try a longer / Detailed run."
+        )
+
+        # Textbook comparison for the cylinder (the canonical validated case).
+        # Honest framing: show both numbers but call out that Strouhal is the
+        # cleaner physics check -- our Cd reads 50-100 % high due to channel
+        # confinement (D/Ny = 35 %) + halfway bounce-back, while St is far
+        # less sensitive to grid and blockage.
+        if shape_preset == "Cylinder":
+            _cd_ref, _st_ref = _cylinder_reference(int(reynolds_target))
+            if _cd_ref is not None:
+                _badge_parts = [
+                    f"Textbook Cd ≈ **{_cd_ref:.2f}**, your sim: "
+                    f"**{sim_result['cd_mean']:.2f}**"
+                ]
+                _st_match = False
+                if _st_ref is not None and np.isfinite(_st_val):
+                    _st_err_pct = abs(_st_val - _st_ref) / _st_ref * 100
+                    _badge_parts.append(
+                        f"Textbook St ≈ **{_st_ref:.3f}**, your sim: "
+                        f"**{_st_val:.3f}** ({_st_err_pct:.0f}% off)"
+                    )
+                    _st_match = _st_err_pct < 25
+                if _st_match:
+                    st.success(
+                        ":material/check_circle: **Shedding physics match** "
+                        "(Strouhal within 25 % of textbook). "
+                        + "  ·  ".join(_badge_parts) +
+                        ".  Cd is biased high by ~ 50-100 % because of channel "
+                        "confinement (D/Ny = 35 %) and limited grid resolution -- "
+                        "that's expected on a CPU-only browser solver."
+                    )
+                else:
+                    st.info(
+                        ":material/info: **Textbook reference at Re="
+                        f"{int(reynolds_target)}:**  "
+                        + "  ·  ".join(_badge_parts) +
+                        ".  Cd is biased high by ~ 50-100 % (channel confinement "
+                        "+ grid resolution). Strouhal is the cleaner physics "
+                        "check; if it's far off, try a longer / Detailed run "
+                        "so the FFT has more cycles to lock onto."
+                    )
+
+        # Custom shapes use halfway BB everywhere -- the Cd reads ~30-50 % high.
+        if shape_preset == "Custom":
+            st.caption(
+                ":material/info: **Cd note for custom shapes:** halfway "
+                "bounce-back is less accurate than the analytic Bouzidi "
+                "scheme used for built-in shapes, so this Cd reads ~30-50 % "
+                "high. Wake structure and Strouhal are fine."
+            )
 
     # === Why this matters ===
     with st.expander(
