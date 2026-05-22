@@ -367,12 +367,9 @@ def _noop_progress(frac, text):
     pass
 
 
-VIZ_MODES = ("Vorticity", "Velocity", "Pressure")
-
-
 def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
                          *, progress_callback=None, n_frames=None,
-                         custom_polygon=None, viz_mode="Vorticity"):
+                         custom_polygon=None):
     """Run LBM and render to GIF + colorbars.
 
     Pure function with no Streamlit dependency. The caller owns all I/O.
@@ -402,13 +399,6 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
         Overrides the per-preset frame count. Used by end-to-end tests to
         run a 5-frame pipeline in ~5 s instead of 60/100. Production
         callers leave it None.
-    viz_mode : str
-        Background heatmap selection. One of VIZ_MODES:
-          * "Vorticity" -- bipolar red/blue, fluid rotation magnitude.
-          * "Velocity"  -- plasma single-hue, speed magnitude.
-          * "Pressure"  -- bipolar red/blue, gauge pressure (rho - 1).
-        Particles + scale bars + body outline are unchanged across modes.
-
     Returns
     -------
     dict
@@ -504,29 +494,12 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
     nu = U_INFLOW * char_length / reynolds_target
     tau = nu / CS2 + 0.5
 
-    if viz_mode not in VIZ_MODES:
-        raise ValueError(
-            f"viz_mode must be one of {VIZ_MODES}; got {viz_mode!r}"
-        )
-
-    # Alpha-modulated RdBu_r cmap (used for bipolar fields -- vorticity
-    # and pressure). Built fresh per call so the ListedColormap isn't
-    # shared across cache entries.
+    # Alpha-modulated RdBu_r cmap for the vorticity heatmap. Built fresh
+    # per call so the ListedColormap isn't shared across cache entries.
     _rdbu = plt.get_cmap("RdBu_r")(np.linspace(0.0, 1.0, 256))
     _alpha_t = np.abs(np.linspace(-1.0, 1.0, 256))
     _rdbu[:, 3] = VORT_ALPHA_MAX * _alpha_t ** 1.4
-    bipolar_cmap = ListedColormap(_rdbu, name="rdbu_alpha70")
-    # Alpha-modulated plasma cmap (used for velocity magnitude). Faded at
-    # zero so the inflow doesn't paint the whole frame; saturates toward
-    # fast cells. Reuses the same alpha shape so the visual weight of the
-    # heatmap stays consistent across modes.
-    _plasma = plt.get_cmap("plasma")(np.linspace(0.05, 1.0, 256))
-    _alpha_p = np.linspace(0.0, 1.0, 256)
-    _plasma[:, 3] = VORT_ALPHA_MAX * _alpha_p ** 0.6
-    unipolar_cmap = ListedColormap(_plasma, name="plasma_alpha")
-    # Backwards-compat alias -- some downstream variable names still refer
-    # to "vorticity_cmap"; alias to keep the diff small.
-    vorticity_cmap = bipolar_cmap
+    vorticity_cmap = ListedColormap(_rdbu, name="rdbu_alpha70")
     vorticity_cmap.set_bad((0.0, 0.0, 0.0, 0.0))
 
     body_xs, body_ys = body_outline_xy(
@@ -643,7 +616,6 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
             "vorticity": vorticity.astype(np.float32),
             "u_x": u[0].astype(np.float32),
             "u_y": u[1].astype(np.float32),
-            "rho": rho_field.astype(np.float32),
             "step": step_counter,
         })
         progress(
@@ -652,86 +624,28 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
             f"simulating frame {frame + 1} / {n_frames_local} (MRT+LES)",
         )
 
-    # Per-viz-mode display calibration. v_clip sets the colorbar's saturation
-    # point; vmin/vmax set the imshow window. For bipolar fields (vorticity,
-    # pressure) we use [-v_clip, +v_clip]; for unipolar (velocity) we use
-    # [0, v_clip]. cbar_ticks + cbar_labels feed the legend strip rendered
-    # below the GIF.
+    # Vorticity heatmap calibration. v_clip is the colorbar's saturation
+    # point: blended from the 92nd percentile of |omega| in fluid cells and
+    # a U/L-scaled floor so low-Re wakes stay visible.
     blur_sigma = VORT_BLUR_SIGMA_BASE + VORT_BLUR_SIGMA_RE_SCALE * np.log10(
         max(reynolds_target / 100.0, 1.0)
     )
-    if viz_mode == "Vorticity":
-        # Blended v_clip: 92nd percentile of |omega| with a U/L-scaled floor.
-        last_vort_fluid = np.where(mask, np.nan, snapshots[-1]["vorticity"])
-        v_clip = max(
-            float(np.nanpercentile(np.abs(last_vort_fluid), VORT_CLIP_PERCENTILE)),
-            VORT_CLIP_FACTOR * U_INFLOW / max(char_length, 1.0),
-        )
-        bg_cmap = bipolar_cmap
-        bg_vmin, bg_vmax = -v_clip, v_clip
-        bg_cbar_ticks = [-v_clip, 0.0, v_clip]
-        bg_cbar_labels = [
-            "Clockwise spin", "No rotation", "Anti-clockwise spin",
-        ]
-        bg_cbar_title = "Background heatmap — air's rotation"
-        bg_cbar_blurb = (
-            "Red = anti-clockwise vortex, blue = clockwise. White = no spin. "
-            "The two-coloured 'beads on a string' downstream of bluff bodies "
-            "are the von Kármán vortex street -- shed alternately off each "
-            "side and carried downstream by the flow."
-        )
-    elif viz_mode == "Velocity":
-        # 92nd-percentile |u| of fluid cells, with the 2*U_INFLOW floor we
-        # already use for the particle-speed colormap.
-        last_speed = np.sqrt(
-            snapshots[-1]["u_x"] ** 2 + snapshots[-1]["u_y"] ** 2
-        )
-        last_speed_fluid = np.where(mask, np.nan, last_speed)
-        v_clip = max(
-            float(np.nanpercentile(last_speed_fluid, VORT_CLIP_PERCENTILE)),
-            SPEED_CLIP_FACTOR * U_INFLOW,
-        )
-        bg_cmap = unipolar_cmap
-        bg_vmin, bg_vmax = 0.0, v_clip
-        bg_cbar_ticks = [0.0, U_INFLOW, v_clip]
-        bg_cbar_labels = [
-            "Stalled (slow)", "Inflow speed", "Accelerated (fast)",
-        ]
-        bg_cbar_title = "Background heatmap — air's speed"
-        bg_cbar_blurb = (
-            "Dark = stalled air (behind bluff bodies, in the wake). "
-            "Yellow/white = fast air (the squeeze around a bump or the "
-            "suction side of an airfoil at AoA). The 'pinching' you see "
-            "above and below the body is the streamtube being narrowed."
-        )
-    elif viz_mode == "Pressure":
-        # Pressure = (rho - 1) * cs^2 in lattice units, with cs^2 = 1/3.
-        # Gauge form (subtract the bulk rho=1) so the colorbar centres on
-        # 0 and high/low regions read as red/blue.
-        last_p_fluid = np.where(
-            mask, np.nan, (snapshots[-1]["rho"] - 1.0) / 3.0,
-        )
-        v_clip = max(
-            float(np.nanpercentile(np.abs(last_p_fluid), VORT_CLIP_PERCENTILE)),
-            # U^2/2 floor (Bernoulli scale): half of the dynamic pressure.
-            0.5 * U_INFLOW ** 2,
-        )
-        bg_cmap = bipolar_cmap
-        bg_vmin, bg_vmax = -v_clip, v_clip
-        bg_cbar_ticks = [-v_clip, 0.0, v_clip]
-        bg_cbar_labels = [
-            "Low pressure (suction)", "Static", "High pressure (stagnation)",
-        ]
-        bg_cbar_title = "Background heatmap — air's pressure"
-        bg_cbar_blurb = (
-            "Red = high pressure (where air piles up against the front of "
-            "the body). Blue = low pressure (suction on the upper surface "
-            "of a wing at AoA, or in the cores of shed vortices). The "
-            "asymmetry top-vs-bottom on a tilted airfoil is what generates "
-            "lift."
-        )
-    else:  # already validated above, but be defensive
-        raise ValueError(f"Unknown viz_mode {viz_mode!r}")
+    last_vort_fluid = np.where(mask, np.nan, snapshots[-1]["vorticity"])
+    v_clip = max(
+        float(np.nanpercentile(np.abs(last_vort_fluid), VORT_CLIP_PERCENTILE)),
+        VORT_CLIP_FACTOR * U_INFLOW / max(char_length, 1.0),
+    )
+    bg_cmap = vorticity_cmap
+    bg_vmin, bg_vmax = -v_clip, v_clip
+    bg_cbar_ticks = [-v_clip, 0.0, v_clip]
+    bg_cbar_labels = ["Clockwise spin", "No rotation", "Anti-clockwise spin"]
+    bg_cbar_title = "Background heatmap — air's rotation"
+    bg_cbar_blurb = (
+        "Red = anti-clockwise vortex, blue = clockwise. White = no spin. "
+        "The two-coloured 'beads on a string' downstream of bluff bodies "
+        "are the von Kármán vortex street -- shed alternately off each "
+        "side and carried downstream by the flow."
+    )
 
     # Wall-fade smoothstep weight (broadcasts across x).
     fade_hires = WALL_FADE_CELLS * VORT_UPSAMPLE
@@ -850,23 +764,8 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
     gif_frames = []
     master_palette_img = None
     for i, snap in enumerate(snapshots):
-        # Per-viz-mode background field. Branches share the smoothing /
-        # wall-fade pipeline so the visual character is consistent --
-        # heatmap blur level, edge attenuation, clip-to-3-times-v_clip
-        # before display.
-        if viz_mode == "Vorticity":
-            raw_field = snap["vorticity"]
-            clipped = np.clip(raw_field, -3.0 * v_clip, 3.0 * v_clip)
-            bg_field = gaussian_filter(clipped, sigma=blur_sigma) * wall_fade
-        elif viz_mode == "Velocity":
-            raw_field = np.sqrt(snap["u_x"] ** 2 + snap["u_y"] ** 2)
-            # No clip for unipolar; cap above 3*v_clip just to bound display.
-            clipped = np.clip(raw_field, 0.0, 3.0 * v_clip)
-            bg_field = gaussian_filter(clipped, sigma=blur_sigma) * wall_fade
-        else:  # "Pressure"
-            raw_field = (snap["rho"] - 1.0) / 3.0  # gauge pressure
-            clipped = np.clip(raw_field, -3.0 * v_clip, 3.0 * v_clip)
-            bg_field = gaussian_filter(clipped, sigma=blur_sigma) * wall_fade
+        clipped = np.clip(snap["vorticity"], -3.0 * v_clip, 3.0 * v_clip)
+        bg_field = gaussian_filter(clipped, sigma=blur_sigma) * wall_fade
 
         # Lightly smooth the velocity for particle advection -- enough
         # to suppress sub-grid LBM oscillations that would jitter the
@@ -1103,16 +1002,10 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
 
     return {
         "gif_bytes": gif_buf_local.getvalue(),
-        # bg_cbar_bytes is the new name for what used to be vort_cbar_bytes;
-        # vort_cbar_bytes is preserved as an alias for backward compat with
-        # any older external script that grabs it by name. Both point at the
-        # SAME bytes object (the colorbar for whichever viz_mode this run
-        # was rendered in).
         "bg_cbar_bytes": bg_cbar_b,
-        "vort_cbar_bytes": bg_cbar_b,
+        "vort_cbar_bytes": bg_cbar_b,  # alias kept for old tests / external scripts
         "bg_cbar_title": bg_cbar_title,
         "bg_cbar_blurb": bg_cbar_blurb,
-        "viz_mode": viz_mode,
         "speed_cbar_bytes": speed_cbar_b,
         "force_plot_bytes": force_plot_bytes,
         "cd_history": cd_history.astype(np.float32),
