@@ -542,8 +542,12 @@ def step_njit_with_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs, out
                 rho += fi
                 mx += fi * cx_arr[i]
                 my += fi * cy_arr[i]
-            ux = mx / rho
-            uy = my / rho
+            # Same rho clamp as the MRT path: degenerate custom polygons
+            # can drive rho -> 0 on transient cells; without the clamp,
+            # Numba's default error_model='python' raises ZeroDivisionError.
+            rho_safe = rho if rho > 1e-12 else 1e-12
+            ux = mx / rho_safe
+            uy = my / rho_safe
             u2 = ux * ux + uy * uy
             for i in range(9):
                 cu = cx_arr[i] * ux + cy_arr[i] * uy
@@ -668,9 +672,17 @@ def step_njit_with_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs, out
             rho_int = (f_new[0, Nx - 2, y] + f_new[1, Nx - 2, y] + f_new[2, Nx - 2, y]
                        + f_new[3, Nx - 2, y] + f_new[4, Nx - 2, y] + f_new[5, Nx - 2, y]
                        + f_new[6, Nx - 2, y] + f_new[7, Nx - 2, y] + f_new[8, Nx - 2, y])
+            # Same rho clamp rationale as in the collision step: a
+            # degenerate custom polygon (thin gap to the wall, thread-like
+            # branch) can drive an interior cell's density toward zero on
+            # the first few unstable steps. Without the clamp, Numba's
+            # default error_model='python' raises ZeroDivisionError and
+            # the whole simulate call dies; with the clamp, uy_w just
+            # caps at jy/1e-12 and the outflow ramp absorbs the transient.
+            rho_int_safe = rho_int if rho_int > 1e-12 else 1e-12
             uy_w = (f_new[2, Nx - 2, y] - f_new[4, Nx - 2, y]
                     + f_new[5, Nx - 2, y] + f_new[6, Nx - 2, y]
-                    - f_new[7, Nx - 2, y] - f_new[8, Nx - 2, y]) / rho_int
+                    - f_new[7, Nx - 2, y] - f_new[8, Nx - 2, y]) / rho_int_safe
             f_new[3, Nx - 1, y] = f1_w - (2.0 / 3.0) * ux_w
             f_new[6, Nx - 1, y] = f8_w - 0.5 * (f2_w - f4_w) - (1.0 / 6.0) * ux_w - 0.5 * uy_w
             f_new[7, Nx - 1, y] = f5_w + 0.5 * (f2_w - f4_w) - (1.0 / 6.0) * ux_w + 0.5 * uy_w
@@ -1116,9 +1128,17 @@ def step_njit_mrt_with_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs,
             rho_int = (f_new[0, Nx - 2, y] + f_new[1, Nx - 2, y] + f_new[2, Nx - 2, y]
                        + f_new[3, Nx - 2, y] + f_new[4, Nx - 2, y] + f_new[5, Nx - 2, y]
                        + f_new[6, Nx - 2, y] + f_new[7, Nx - 2, y] + f_new[8, Nx - 2, y])
+            # Same rho clamp rationale as in the collision step: a
+            # degenerate custom polygon (thin gap to the wall, thread-like
+            # branch) can drive an interior cell's density toward zero on
+            # the first few unstable steps. Without the clamp, Numba's
+            # default error_model='python' raises ZeroDivisionError and
+            # the whole simulate call dies; with the clamp, uy_w just
+            # caps at jy/1e-12 and the outflow ramp absorbs the transient.
+            rho_int_safe = rho_int if rho_int > 1e-12 else 1e-12
             uy_w = (f_new[2, Nx - 2, y] - f_new[4, Nx - 2, y]
                     + f_new[5, Nx - 2, y] + f_new[6, Nx - 2, y]
-                    - f_new[7, Nx - 2, y] - f_new[8, Nx - 2, y]) / rho_int
+                    - f_new[7, Nx - 2, y] - f_new[8, Nx - 2, y]) / rho_int_safe
             f_new[3, Nx - 1, y] = f1_w - (2.0 / 3.0) * ux_w
             f_new[6, Nx - 1, y] = f8_w - 0.5 * (f2_w - f4_w) - (1.0 / 6.0) * ux_w - 0.5 * uy_w
             f_new[7, Nx - 1, y] = f5_w + 0.5 * (f2_w - f4_w) - (1.0 / 6.0) * ux_w + 0.5 * uy_w
@@ -1331,9 +1351,17 @@ def step_njit_mrt_no_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs, o
             rho_int = (f_new[0, Nx - 2, y] + f_new[1, Nx - 2, y] + f_new[2, Nx - 2, y]
                        + f_new[3, Nx - 2, y] + f_new[4, Nx - 2, y] + f_new[5, Nx - 2, y]
                        + f_new[6, Nx - 2, y] + f_new[7, Nx - 2, y] + f_new[8, Nx - 2, y])
+            # Same rho clamp rationale as in the collision step: a
+            # degenerate custom polygon (thin gap to the wall, thread-like
+            # branch) can drive an interior cell's density toward zero on
+            # the first few unstable steps. Without the clamp, Numba's
+            # default error_model='python' raises ZeroDivisionError and
+            # the whole simulate call dies; with the clamp, uy_w just
+            # caps at jy/1e-12 and the outflow ramp absorbs the transient.
+            rho_int_safe = rho_int if rho_int > 1e-12 else 1e-12
             uy_w = (f_new[2, Nx - 2, y] - f_new[4, Nx - 2, y]
                     + f_new[5, Nx - 2, y] + f_new[6, Nx - 2, y]
-                    - f_new[7, Nx - 2, y] - f_new[8, Nx - 2, y]) / rho_int
+                    - f_new[7, Nx - 2, y] - f_new[8, Nx - 2, y]) / rho_int_safe
             f_new[3, Nx - 1, y] = f1_w - (2.0 / 3.0) * ux_w
             f_new[6, Nx - 1, y] = f8_w - 0.5 * (f2_w - f4_w) - (1.0 / 6.0) * ux_w - 0.5 * uy_w
             f_new[7, Nx - 1, y] = f5_w + 0.5 * (f2_w - f4_w) - (1.0 / 6.0) * ux_w + 0.5 * uy_w

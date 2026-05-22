@@ -1007,10 +1007,40 @@ if mode == "Real CFD (LBM)":
     # full 20-150 s pipeline; subsequent calls return in <50 ms. The cached
     # wrapper itself is defined at module top so @st.cache_data isn't
     # re-decorated each rerun. The heavy work lives in src/lbm_render.py.
-    sim_result = _cached_simulate_and_render(
-        shape_preset, int(reynolds_target), float(aoa_deg), res_display,
-        custom_polygon=custom_polygon, viz_mode=viz_mode,
-    )
+    # Wrap the cached simulate+render in a defensive handler. The LBM
+    # solver has rho-safe clamps on every macroscopic division, so a
+    # well-formed shape can't trigger ZeroDivisionError in practice -- but
+    # malformed custom polygons (e.g. a thread-like silhouette only one
+    # cell wide, or a shape that touches the inflow wall) can drive the
+    # outflow boundary's rho to zero on the first few unstable steps. We
+    # don't want that to dump a Python traceback on a user who just drew
+    # a wonky shape; surface a polite "try something less degenerate" hint
+    # instead.
+    try:
+        sim_result = _cached_simulate_and_render(
+            shape_preset, int(reynolds_target), float(aoa_deg), res_display,
+            custom_polygon=custom_polygon, viz_mode=viz_mode,
+        )
+    except (ZeroDivisionError, FloatingPointError) as _sim_err:
+        st.error(
+            f":material/error: The simulation went numerically unstable "
+            f"(`{type(_sim_err).__name__}: {_sim_err}`). This usually "
+            f"happens with very thin / degenerate shapes -- try one of "
+            f"the built-in presets, the **Sample** tab, or simplify your "
+            f"drawing (fatter strokes, single closed loop, no thread-like "
+            f"branches)."
+        )
+        st.stop()
+    except Exception as _sim_err:
+        # Any other unexpected error: still surface a polite message and
+        # log the type so a future debugging pass can find it.
+        st.error(
+            f":material/error: Something went wrong running the "
+            f"simulation: `{type(_sim_err).__name__}: {_sim_err}`. If "
+            f"this is reproducible with one of the gallery cards, please "
+            f"flag it on the repo's Issues tab so we can fix it."
+        )
+        st.stop()
     tau = sim_result["tau"]
     nu = sim_result["nu"]
     char_length = sim_result["char_length"]
