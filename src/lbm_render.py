@@ -5,6 +5,15 @@ the D2Q9 LBM with MRT collision + Smagorinsky LES, then renders to a GIF
 with RK4-advected particle streaklines on an alpha-modulated vorticity
 heatmap. It returns a dict of bytes + metadata for the Streamlit caller.
 
+Internally the pipeline is split into two public functions so the heavy
+LBM solve can be cached independently of the viz-mode-dependent render:
+
+  * solve_lbm(...)  -> dict of simulation snapshots + force history.
+  * render_lbm(solve, viz_mode=...) -> dict of GIF + colorbar bytes.
+
+simulate_and_render() is the legacy convenience wrapper that calls both
+and merges their outputs into the public-API shape callers expect.
+
 The function takes an optional `progress_callback(frac, text)` so the
 Streamlit UI can show progress without this module depending on Streamlit.
 
@@ -382,63 +391,44 @@ VIZ_MODES = ("Vorticity", "Velocity", "Pressure")
 PRESSURE_AVG_FRAMES = 5
 
 
-def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
-                         *, progress_callback=None, n_frames=None,
-                         custom_polygon=None, viz_mode="Vorticity"):
-    """Run LBM and render to GIF + colorbars.
+def solve_lbm(shape_preset, reynolds_target, aoa_deg, res_key,
+              *, n_frames=None, custom_polygon=None, progress_callback=None):
+    """Run the LBM solve (Phase 1) and return the per-frame snapshots.
 
     Pure function with no Streamlit dependency. The caller owns all I/O.
+
+    This is the heavy half of simulate_and_render(): all D2Q9 MRT+LES
+    timestepping, force history accumulation, and the matplotlib force
+    time-series plot. It is mode-independent -- viz_mode does NOT enter
+    here, so a single solve can feed any number of render passes.
 
     Parameters
     ----------
     shape_preset : str
         One of "Cylinder", "Square", "Ellipse", "NACA 0012", "NACA 4412",
         or "Custom" (requires ``custom_polygon`` to be supplied).
-    custom_polygon : np.ndarray or None
-        Shape (N, 2) polygon in image-pixel coords (PIL convention, y down).
-        Required when shape_preset == "Custom"; ignored otherwise. The
-        rasterizer centres, scales, flips, and rotates it onto the LBM grid
-        using res_cfg["custom_extent"] cells as the longest-axis size.
     reynolds_target : float
-        Reynolds number based on the body's characteristic length (diameter
-        for cylinder/ellipse, side for square, chord for airfoil).
+        Reynolds number based on the body's characteristic length.
     aoa_deg : float
         Body rotation / wing tilt in degrees. Ignored for Cylinder.
     res_key : str
-        One of the keys in RESOLUTION_PRESETS ("Standard (320 x 80)" or
-        "Detailed (960 x 240)").
+        One of the keys in RESOLUTION_PRESETS.
+    n_frames : int or None
+        Overrides the per-preset frame count. Used by tests.
+    custom_polygon : np.ndarray or None
+        Required when shape_preset == "Custom"; ignored otherwise.
     progress_callback : callable or None
         Signature ``(fraction: float in [0, 1], text: str) -> None``.
-        Defaults to a no-op for headless use.
-    n_frames : int or None
-        Overrides the per-preset frame count. Used by end-to-end tests to
-        run a 5-frame pipeline in ~5 s instead of 60/100. Production
-        callers leave it None.
-    viz_mode : str
-        Background heatmap selection. One of VIZ_MODES:
-          * "Vorticity" -- bipolar red/blue, fluid rotation (curl of u).
-          * "Velocity"  -- bipolar speed-minus-inflow: blue = slower than
-            freestream (wake), white = matching, red = faster (squeeze).
-          * "Pressure"  -- bipolar gauge pressure, temporal-averaged over
-            ~5 frames to suppress the LBM acoustic waves a single
-            snapshot would otherwise show.
-        Particles + scale bars + body outline are unchanged across modes.
+        This function reports progress in the 0.0 -> 0.5 range (Phase 1
+        of the legacy 2-phase pipeline).
 
     Returns
     -------
     dict
-        gif_bytes, vort_cbar_bytes, speed_cbar_bytes : bytes for st.image
-        force_plot_bytes                             : PNG of Cd/Cl vs time
-        cd_history, cl_history                       : float32 arrays
-                                                       (length = n_steps)
-        cd_mean, cl_mean                             : floats, mean over the
-                                                       last third of the run
-        strouhal                                     : float (NaN if too few
-                                                       samples for FFT)
-        label                                        : short title string
-        tau, nu, char_length                         : physics scalars
-        lbm_nx, lbm_ny, n_frames, n_steps            : grid + sim sizes
-        near_stable                                  : bool (tau < 0.51)
+        snapshots, mask, body_xs, body_ys, char_length, label, tau, nu,
+        cd_history, cl_history, cd_mean, cl_mean, strouhal,
+        force_plot_bytes, n_frames, n_steps, near_stable,
+        lbm_nx, lbm_ny, reynolds_target, res_key.
     """
     progress = progress_callback or _noop_progress
 
@@ -519,23 +509,8 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
     nu = U_INFLOW * char_length / reynolds_target
     tau = nu / CS2 + 0.5
 
-    if viz_mode not in VIZ_MODES:
-        raise ValueError(
-            f"viz_mode must be one of {VIZ_MODES}; got {viz_mode!r}"
-        )
-
-    # Alpha-modulated RdBu_r cmap. All three viz modes are bipolar (vorticity
-    # = curl of u, velocity = speed-minus-inflow, pressure = gauge pressure),
-    # so they share the same cmap; only v_clip / cbar labels differ. Built
-    # fresh per call so the ListedColormap isn't shared across cache entries.
-    _rdbu = plt.get_cmap("RdBu_r")(np.linspace(0.0, 1.0, 256))
-    _alpha_t = np.abs(np.linspace(-1.0, 1.0, 256))
-    _rdbu[:, 3] = VORT_ALPHA_MAX * _alpha_t ** 1.4
-    bipolar_cmap = ListedColormap(_rdbu, name="rdbu_alpha70")
-    bipolar_cmap.set_bad((0.0, 0.0, 0.0, 0.0))
-    # Alias kept for downstream variable names that still say "vorticity_cmap".
-    vorticity_cmap = bipolar_cmap
-
+    # Body outline (mode-independent -- the render path uses these to draw
+    # the body patch on top of whichever background field it picked).
     body_xs, body_ys = body_outline_xy(
         shape_preset, res_cfg, aoa_deg, custom_polygon=custom_polygon,
     )
@@ -548,56 +523,6 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
     # The n_frames kwarg overrides for tests.
     n_frames_local = int(n_frames) if n_frames is not None else res_cfg["n_frames"]
     n_steps_local = n_frames_local * STEPS_PER_FRAME
-    # GIF palette size from preset; .get() fallback keeps older preset
-    # dicts (without gif_palette) working at the historical 256-colour
-    # default.
-    gif_palette_colors = res_cfg.get("gif_palette", 256)
-
-    # Inflow seed y-positions. Number of rows scales with channel height so
-    # Detailed (Ny=240) gets ~20 rows instead of being sampled at the same
-    # 8 rows as Standard (which left big gaps).
-    n_seed_rows = max(SEED_ROW_MIN, LBM_NY // SEED_ROW_CELL_SPACING)
-    inflow_y = np.linspace(4.0, LBM_NY - 5.0, n_seed_rows)
-
-    # Wake-region spawn box. Particles spawn at random (x, y) inside this
-    # box every frame so vortices that shed off the body have fresh
-    # streakline tracers passing through them.
-    # * wake_x_min was BODY_X + char_length (one full body length past
-    #   center). On Detailed NACA (chord=100) that left ~50 cells of
-    #   empty channel between the trailing edge and the spawn box --
-    #   visible as "streams trail off past the leading edge". We now use
-    #   char_length/2 + 6: that's just past the body's trailing edge at
-    #   AoA=0 and still past it at AoA=45 (since x-extent shrinks with
-    #   cos(AoA)). Spawns that land INSIDE the rotated body footprint
-    #   are still rejected by the mask check below.
-    # * wake_x_max = LBM_NX * (1 - WAKE_OUTFLOW_FRAC). Last 15 % of the
-    #   channel is the trail-off zone: no fresh spawns, but aged wake
-    #   particles drift through it and fade out. On Detailed (Nx=960)
-    #   that's a 144-cell trail-off vs the old 0.22*Nx (=158-cell) one
-    #   the user described as "trails off after the leading edge" --
-    #   the channel-end emptiness was from wake_x_max being too far
-    #   back, leaving the body-to-mid-channel region under-spawned.
-    wake_x_min = BODY_X + char_length / 2 + 6
-    wake_x_max = LBM_NX * (1.0 - WAKE_OUTFLOW_FRAC)
-    wake_y_min = LBM_NY * 0.08
-    wake_y_max = LBM_NY * 0.92
-    n_wake_spawn = max(WAKE_SPAWN_MIN, int(LBM_NX * WAKE_SPAWN_PER_NX))
-
-    # Wake-spawn ramp-up: holds at 0 until inflow particles have nearly
-    # reached wake_x_min, then quadratically ramps to full strength.
-    # Earlier linear ramp still spawned a visible 2-3 wake particles by
-    # frame ~5 -- physically wrong because flow hadn't yet propagated
-    # into the wake region. Quadratic ease-in keeps n_wake near zero
-    # until well into the ramp window. WAKE_HOLD_FRAC = 0.8 means we
-    # don't begin ramping until inflow particles have travelled 80% of
-    # the distance from x=3 to wake_x_min; the ramp completes ~10 frames
-    # after they fully arrive. Net effect: wake region appears to fill
-    # naturally from the flow that reaches it, not from random spawns.
-    wake_arrival_frames = max(
-        1.0, (wake_x_min - 3.0) / (U_INFLOW * STEPS_PER_FRAME)
-    )
-    wake_hold_frames = wake_arrival_frames * 0.8
-    wake_ramp_window = max(8.0, wake_arrival_frames * 0.2 + 10.0)
 
     # === Phase 1: simulate, store snapshots ===
     rho0 = np.ones((LBM_NX, LBM_NY))
@@ -658,6 +583,161 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
             f":material/sync: Phase 1 of 2 -- "
             f"simulating frame {frame + 1} / {n_frames_local} (MRT+LES)",
         )
+
+    # Post-process forces -> Cd / Cl / Strouhal -----------------------------
+    # In 2D lattice units with rho ~ 1, the drag/lift coefficients are
+    # Cd = 2 * F_x / (rho * U^2 * L), Cl = 2 * F_y / (rho * U^2 * L),
+    # where L = char_length and U = U_INFLOW (set above). step_njit_mrt_with_force
+    # returns F_x / F_y per step; we keep the full history for the time-series
+    # plot and compute summary stats over the last third of the run (to skip
+    # the initial transient before vortex shedding locks in).
+    cd_history = 2.0 * fx_history / (U_INFLOW ** 2 * char_length)
+    cl_history = 2.0 * fy_history / (U_INFLOW ** 2 * char_length)
+    _stable_tail_start = max(1, n_steps_local // 3 * 2)  # last third
+    cd_mean = float(np.mean(cd_history[_stable_tail_start:]))
+    cl_mean = float(np.mean(cl_history[_stable_tail_start:]))
+
+    # Strouhal: dominant frequency of Cl oscillation (vortex shedding sheds
+    # at the lift's oscillation rate, ~half the drag's rate for symmetric
+    # bodies). FFT on the last-half of the run, in lattice-step units.
+    # St = f * L / U where f is in cycles per lattice step.
+    cl_tail = cl_history[len(cl_history) // 2:]
+    cl_tail_centered = cl_tail - cl_tail.mean()
+    if len(cl_tail_centered) >= 16:
+        fft_mag = np.abs(np.fft.rfft(cl_tail_centered))
+        freqs_per_step = np.fft.rfftfreq(len(cl_tail_centered), d=1.0)
+        # Skip DC bin (index 0); pick the loudest non-DC frequency.
+        peak_idx = int(np.argmax(fft_mag[1:])) + 1
+        peak_freq = float(freqs_per_step[peak_idx])
+        strouhal = peak_freq * char_length / U_INFLOW
+    else:
+        strouhal = float("nan")
+
+    # Time-series plot of Cd + Cl on the same axis. Dark-theme to match the
+    # vorticity GIF; fixed size that reads nicely under the GIF.
+    fig_ts, ax_ts = plt.subplots(figsize=(8.0, 2.4), dpi=80)
+    t_axis = np.arange(n_steps_local)
+    ax_ts.plot(t_axis, cd_history, color="#94a3b8", linewidth=1.0, label="Cd (drag)")
+    ax_ts.plot(t_axis, cl_history, color="#fbbf24", linewidth=1.0, label="Cl (lift)")
+    ax_ts.axhline(0.0, color="#475569", linewidth=0.5)
+    # Shade the "stable tail" so the user can see where the mean was taken.
+    ax_ts.axvspan(
+        _stable_tail_start, n_steps_local,
+        color="#fbbf24", alpha=0.07, zorder=0,
+    )
+    ax_ts.set_xlabel("Lattice timestep", color="#94a3b8", fontsize=9)
+    ax_ts.set_ylabel("Force coefficient", color="#94a3b8", fontsize=9)
+    ax_ts.legend(
+        loc="upper right", facecolor="#0b1220", edgecolor="#334155",
+        labelcolor="#cbd5e1", fontsize=8,
+    )
+    ax_ts.set_facecolor("#0b1220")
+    fig_ts.patch.set_facecolor("#0b1220")
+    for spine in ax_ts.spines.values():
+        spine.set_color("#334155")
+    ax_ts.tick_params(axis="both", colors="#64748b", labelsize=8)
+    ax_ts.grid(True, color="#1e293b", linestyle="--", linewidth=0.5)
+    force_plot_buf = io.BytesIO()
+    fig_ts.savefig(
+        force_plot_buf, format="png", facecolor="#0b1220",
+        bbox_inches="tight", pad_inches=0.1,
+    )
+    plt.close(fig_ts)
+    force_plot_bytes = force_plot_buf.getvalue()
+
+    return {
+        "snapshots": snapshots,
+        "mask": mask,
+        "body_xs": body_xs,
+        "body_ys": body_ys,
+        "char_length": float(char_length),
+        "label": label,
+        "tau": float(tau),
+        "nu": float(nu),
+        "cd_history": cd_history.astype(np.float32),
+        "cl_history": cl_history.astype(np.float32),
+        "cd_mean": cd_mean,
+        "cl_mean": cl_mean,
+        "strouhal": float(strouhal),
+        "force_plot_bytes": force_plot_bytes,
+        "n_frames": int(n_frames_local),
+        "n_steps": int(n_steps_local),
+        "near_stable": bool(tau < 0.51),
+        "lbm_nx": int(LBM_NX),
+        "lbm_ny": int(LBM_NY),
+        "reynolds_target": reynolds_target,
+        "res_key": res_key,
+    }
+
+
+def render_lbm(solve, *, viz_mode="Vorticity", progress_callback=None):
+    """Render the snapshots produced by solve_lbm() to a GIF + colorbars.
+
+    Pure function with no Streamlit dependency. The caller owns all I/O.
+
+    This is the light half of simulate_and_render(): per-frame matplotlib
+    draw + GIF encode + per-mode colorbar PNGs. Switching viz_mode only
+    re-pays this cost (~2 s for Standard), not the full LBM solve.
+
+    Parameters
+    ----------
+    solve : dict
+        The dict returned by solve_lbm(). Required keys:
+        snapshots, mask, body_xs, body_ys, char_length, label,
+        n_frames, reynolds_target, res_key.
+    viz_mode : str
+        Background heatmap selection. One of VIZ_MODES:
+          * "Vorticity" -- bipolar red/blue, fluid rotation (curl of u).
+          * "Velocity"  -- bipolar speed-minus-inflow.
+          * "Pressure"  -- bipolar gauge pressure, temporal-averaged.
+    progress_callback : callable or None
+        Signature ``(fraction: float in [0, 1], text: str) -> None``.
+        This function reports progress in the 0.5 -> 1.0 range (Phase 2
+        of the legacy 2-phase pipeline); see module docstring.
+
+    Returns
+    -------
+    dict
+        gif_bytes, bg_cbar_bytes, vort_cbar_bytes (alias of bg_cbar_bytes
+        for back-compat), bg_cbar_title, bg_cbar_blurb, viz_mode,
+        speed_cbar_bytes.
+    """
+    progress = progress_callback or _noop_progress
+
+    if viz_mode not in VIZ_MODES:
+        raise ValueError(
+            f"viz_mode must be one of {VIZ_MODES}; got {viz_mode!r}"
+        )
+
+    snapshots = solve["snapshots"]
+    mask = solve["mask"]
+    body_xs = solve["body_xs"]
+    body_ys = solve["body_ys"]
+    char_length = solve["char_length"]
+    label = solve["label"]
+    n_frames_local = solve["n_frames"]
+    reynolds_target = solve["reynolds_target"]
+    res_key = solve["res_key"]
+
+    res_cfg = RESOLUTION_PRESETS[res_key]
+    LBM_NX = res_cfg["Nx"]
+    LBM_NY = res_cfg["Ny"]
+    # GIF palette size from preset; .get() fallback keeps older preset
+    # dicts (without gif_palette) working at the historical 256-colour
+    # default.
+    gif_palette_colors = res_cfg.get("gif_palette", 256)
+
+    # Alpha-modulated RdBu_r cmap. All three viz modes are bipolar (vorticity
+    # = curl of u, velocity = speed-minus-inflow, pressure = gauge pressure),
+    # so they share the same cmap; only v_clip / cbar labels differ. Built
+    # fresh per call so the ListedColormap isn't shared across cache entries.
+    _rdbu = plt.get_cmap("RdBu_r")(np.linspace(0.0, 1.0, 256))
+    _alpha_t = np.abs(np.linspace(-1.0, 1.0, 256))
+    _rdbu[:, 3] = VORT_ALPHA_MAX * _alpha_t ** 1.4
+    bipolar_cmap = ListedColormap(_rdbu, name="rdbu_alpha70")
+    bipolar_cmap.set_bad((0.0, 0.0, 0.0, 0.0))
+    # Alias kept for downstream variable names that still say "vorticity_cmap".
+    vorticity_cmap = bipolar_cmap
 
     # Per-viz-mode calibration. v_clip = colorbar saturation point, vmin/vmax
     # = imshow window. All three modes use the bipolar cmap; only v_clip and
@@ -743,6 +823,53 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
     u_clip = SPEED_CLIP_FACTOR * U_INFLOW
     speed_cmap = SPEED_CMAP
     speed_norm = Normalize(vmin=0.0, vmax=u_clip)
+
+    # Inflow seed y-positions. Number of rows scales with channel height so
+    # Detailed (Ny=240) gets ~20 rows instead of being sampled at the same
+    # 8 rows as Standard (which left big gaps).
+    n_seed_rows = max(SEED_ROW_MIN, LBM_NY // SEED_ROW_CELL_SPACING)
+    inflow_y = np.linspace(4.0, LBM_NY - 5.0, n_seed_rows)
+
+    # Wake-region spawn box. Particles spawn at random (x, y) inside this
+    # box every frame so vortices that shed off the body have fresh
+    # streakline tracers passing through them.
+    # * wake_x_min was BODY_X + char_length (one full body length past
+    #   center). On Detailed NACA (chord=100) that left ~50 cells of
+    #   empty channel between the trailing edge and the spawn box --
+    #   visible as "streams trail off past the leading edge". We now use
+    #   char_length/2 + 6: that's just past the body's trailing edge at
+    #   AoA=0 and still past it at AoA=45 (since x-extent shrinks with
+    #   cos(AoA)). Spawns that land INSIDE the rotated body footprint
+    #   are still rejected by the mask check below.
+    # * wake_x_max = LBM_NX * (1 - WAKE_OUTFLOW_FRAC). Last 15 % of the
+    #   channel is the trail-off zone: no fresh spawns, but aged wake
+    #   particles drift through it and fade out. On Detailed (Nx=960)
+    #   that's a 144-cell trail-off vs the old 0.22*Nx (=158-cell) one
+    #   the user described as "trails off after the leading edge" --
+    #   the channel-end emptiness was from wake_x_max being too far
+    #   back, leaving the body-to-mid-channel region under-spawned.
+    BODY_X = res_cfg["body_x"]
+    wake_x_min = BODY_X + char_length / 2 + 6
+    wake_x_max = LBM_NX * (1.0 - WAKE_OUTFLOW_FRAC)
+    wake_y_min = LBM_NY * 0.08
+    wake_y_max = LBM_NY * 0.92
+    n_wake_spawn = max(WAKE_SPAWN_MIN, int(LBM_NX * WAKE_SPAWN_PER_NX))
+
+    # Wake-spawn ramp-up: holds at 0 until inflow particles have nearly
+    # reached wake_x_min, then quadratically ramps to full strength.
+    # Earlier linear ramp still spawned a visible 2-3 wake particles by
+    # frame ~5 -- physically wrong because flow hadn't yet propagated
+    # into the wake region. Quadratic ease-in keeps n_wake near zero
+    # until well into the ramp window. WAKE_HOLD_FRAC = 0.8 means we
+    # don't begin ramping until inflow particles have travelled 80% of
+    # the distance from x=3 to wake_x_min; the ramp completes ~10 frames
+    # after they fully arrive. Net effect: wake region appears to fill
+    # naturally from the flow that reaches it, not from random spawns.
+    wake_arrival_frames = max(
+        1.0, (wake_x_min - 3.0) / (U_INFLOW * STEPS_PER_FRAME)
+    )
+    wake_hold_frames = wake_arrival_frames * 0.8
+    wake_ramp_window = max(8.0, wake_arrival_frames * 0.2 + 10.0)
 
     # === Phase 2: render frames into a reused figure ===
     fig, ax = plt.subplots(figsize=(FIG_W_IN, FIG_H_IN), dpi=FIG_DPI,
@@ -846,35 +973,48 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
 
     DT_SUB = STEPS_PER_FRAME / RK4_SUBSTEPS
 
+    # Pre-stack rho ONCE for Pressure mode's temporal moving average. Saves
+    # ~50 ms/frame on Detailed vs the per-frame list-of-arrays-then-stack
+    # the simpler implementation needs. Built only when actually needed --
+    # the (n_frames, Nx, Ny) float32 array is ~15 MB on Standard, ~135 MB
+    # on Detailed and isn't free.
+    if viz_mode == "Pressure":
+        rho_stack = np.stack(
+            [s["rho"] for s in snapshots], axis=0,
+        ).astype(np.float32)
+    else:
+        rho_stack = None  # unused; kept for the closure's static analysis
+
     gif_frames = []
     master_palette_img = None
     for i, snap in enumerate(snapshots):
-        # Per-mode background field. Velocity and Pressure NaN-mask the body
-        # interior so the body patch isn't tinted by the field (vorticity
-        # naturally goes to ~0 inside the body, so it doesn't need masking
-        # and we keep its render bit-identical to the visual baseline).
+        # Per-mode background field. Velocity / Pressure NaN-mask the body
+        # AFTER the gaussian filter so the body patch isn't tinted by the
+        # field. We do NOT pre-zero the body cells before filtering: for
+        # Velocity, body cells naturally hold (speed - U_INFLOW) = -U_INFLOW
+        # (since the solid-cell reset gives u = 0); zeroing them would dilute
+        # the wake's true negative values when the filter spreads them. For
+        # Pressure, body cells hold (rho - 1)/3 = 0 already (solid reset =>
+        # rho = 1), so pre-zeroing is a no-op. Vorticity naturally goes to
+        # ~0 inside the body so it doesn't need masking, and we keep its
+        # render bit-identical to the visual baseline.
         if viz_mode == "Vorticity":
             clipped = np.clip(snap["vorticity"], -3.0 * v_clip, 3.0 * v_clip)
             bg_field = gaussian_filter(clipped, sigma=blur_sigma) * wall_fade
         elif viz_mode == "Velocity":
             speed = np.sqrt(snap["u_x"] ** 2 + snap["u_y"] ** 2)
             raw_field = speed - U_INFLOW
-            # Set body cells to 0 BEFORE the gaussian filter (so neighbour
-            # smoothing doesn't pull body=NaN into the fluid side), then NaN
-            # the body cells AFTER so they render transparently under the
-            # body patch.
-            raw_field = np.where(mask, 0.0, raw_field)
             clipped = np.clip(raw_field, -3.0 * v_clip, 3.0 * v_clip)
             bg_field = gaussian_filter(clipped, sigma=blur_sigma) * wall_fade
             bg_field = np.where(mask, np.nan, bg_field)
         else:  # "Pressure" -- temporal average over last PRESSURE_AVG_FRAMES
             _avg_start = max(0, i - PRESSURE_AVG_FRAMES + 1)
-            rho_avg = np.mean(
-                [snapshots[j]["rho"] for j in range(_avg_start, i + 1)],
-                axis=0,
-            )
+            # Slice + mean from the pre-stacked rho buffer (built once
+            # before the render loop) -- vectorised, no per-frame list
+            # allocations. Falls back gracefully on the early frames where
+            # the window is shorter than PRESSURE_AVG_FRAMES.
+            rho_avg = rho_stack[_avg_start:i + 1].mean(axis=0)
             raw_field = (rho_avg - 1.0) / 3.0
-            raw_field = np.where(mask, 0.0, raw_field)
             clipped = np.clip(raw_field, -3.0 * v_clip, 3.0 * v_clip)
             bg_field = gaussian_filter(clipped, sigma=blur_sigma) * wall_fade
             bg_field = np.where(mask, np.nan, bg_field)
@@ -1051,67 +1191,6 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
         tick_labels=["Stalled (slow)", "Inflow speed", "Accelerated (fast)"],
     )
 
-    # Post-process forces -> Cd / Cl / Strouhal -----------------------------
-    # In 2D lattice units with rho ~ 1, the drag/lift coefficients are
-    # Cd = 2 * F_x / (rho * U^2 * L), Cl = 2 * F_y / (rho * U^2 * L),
-    # where L = char_length and U = U_INFLOW (set above). step_njit_mrt_with_force
-    # returns F_x / F_y per step; we keep the full history for the time-series
-    # plot and compute summary stats over the last third of the run (to skip
-    # the initial transient before vortex shedding locks in).
-    cd_history = 2.0 * fx_history / (U_INFLOW ** 2 * char_length)
-    cl_history = 2.0 * fy_history / (U_INFLOW ** 2 * char_length)
-    _stable_tail_start = max(1, n_steps_local // 3 * 2)  # last third
-    cd_mean = float(np.mean(cd_history[_stable_tail_start:]))
-    cl_mean = float(np.mean(cl_history[_stable_tail_start:]))
-
-    # Strouhal: dominant frequency of Cl oscillation (vortex shedding sheds
-    # at the lift's oscillation rate, ~half the drag's rate for symmetric
-    # bodies). FFT on the last-half of the run, in lattice-step units.
-    # St = f * L / U where f is in cycles per lattice step.
-    cl_tail = cl_history[len(cl_history) // 2:]
-    cl_tail_centered = cl_tail - cl_tail.mean()
-    if len(cl_tail_centered) >= 16:
-        fft_mag = np.abs(np.fft.rfft(cl_tail_centered))
-        freqs_per_step = np.fft.rfftfreq(len(cl_tail_centered), d=1.0)
-        # Skip DC bin (index 0); pick the loudest non-DC frequency.
-        peak_idx = int(np.argmax(fft_mag[1:])) + 1
-        peak_freq = float(freqs_per_step[peak_idx])
-        strouhal = peak_freq * char_length / U_INFLOW
-    else:
-        strouhal = float("nan")
-
-    # Time-series plot of Cd + Cl on the same axis. Dark-theme to match the
-    # vorticity GIF; fixed size that reads nicely under the GIF.
-    fig_ts, ax_ts = plt.subplots(figsize=(8.0, 2.4), dpi=80)
-    t_axis = np.arange(n_steps_local)
-    ax_ts.plot(t_axis, cd_history, color="#94a3b8", linewidth=1.0, label="Cd (drag)")
-    ax_ts.plot(t_axis, cl_history, color="#fbbf24", linewidth=1.0, label="Cl (lift)")
-    ax_ts.axhline(0.0, color="#475569", linewidth=0.5)
-    # Shade the "stable tail" so the user can see where the mean was taken.
-    ax_ts.axvspan(
-        _stable_tail_start, n_steps_local,
-        color="#fbbf24", alpha=0.07, zorder=0,
-    )
-    ax_ts.set_xlabel("Lattice timestep", color="#94a3b8", fontsize=9)
-    ax_ts.set_ylabel("Force coefficient", color="#94a3b8", fontsize=9)
-    ax_ts.legend(
-        loc="upper right", facecolor="#0b1220", edgecolor="#334155",
-        labelcolor="#cbd5e1", fontsize=8,
-    )
-    ax_ts.set_facecolor("#0b1220")
-    fig_ts.patch.set_facecolor("#0b1220")
-    for spine in ax_ts.spines.values():
-        spine.set_color("#334155")
-    ax_ts.tick_params(axis="both", colors="#64748b", labelsize=8)
-    ax_ts.grid(True, color="#1e293b", linestyle="--", linewidth=0.5)
-    force_plot_buf = io.BytesIO()
-    fig_ts.savefig(
-        force_plot_buf, format="png", facecolor="#0b1220",
-        bbox_inches="tight", pad_inches=0.1,
-    )
-    plt.close(fig_ts)
-    force_plot_bytes = force_plot_buf.getvalue()
-
     return {
         "gif_bytes": gif_buf_local.getvalue(),
         "bg_cbar_bytes": bg_cbar_b,
@@ -1120,19 +1199,89 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
         "bg_cbar_blurb": bg_cbar_blurb,
         "viz_mode": viz_mode,
         "speed_cbar_bytes": speed_cbar_b,
-        "force_plot_bytes": force_plot_bytes,
-        "cd_history": cd_history.astype(np.float32),
-        "cl_history": cl_history.astype(np.float32),
-        "cd_mean": cd_mean,
-        "cl_mean": cl_mean,
-        "strouhal": float(strouhal),
-        "label": label,
-        "tau": float(tau),
-        "nu": float(nu),
-        "char_length": float(char_length),
-        "lbm_nx": int(LBM_NX),
-        "lbm_ny": int(LBM_NY),
-        "n_frames": int(n_frames_local),
-        "n_steps": int(n_steps_local),
-        "near_stable": bool(tau < 0.51),
     }
+
+
+def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
+                         *, progress_callback=None, n_frames=None,
+                         custom_polygon=None, viz_mode="Vorticity"):
+    """Run LBM and render to GIF + colorbars (legacy convenience wrapper).
+
+    Thin shim over solve_lbm() + render_lbm() that merges their outputs
+    into the historical public-API dict shape. New callers that need to
+    flip viz_mode without re-paying the LBM solve should call solve_lbm()
+    and render_lbm() directly and cache each layer separately.
+
+    Pure function with no Streamlit dependency. The caller owns all I/O.
+
+    Parameters
+    ----------
+    shape_preset : str
+        One of "Cylinder", "Square", "Ellipse", "NACA 0012", "NACA 4412",
+        or "Custom" (requires ``custom_polygon`` to be supplied).
+    custom_polygon : np.ndarray or None
+        Shape (N, 2) polygon in image-pixel coords (PIL convention, y down).
+        Required when shape_preset == "Custom"; ignored otherwise. The
+        rasterizer centres, scales, flips, and rotates it onto the LBM grid
+        using res_cfg["custom_extent"] cells as the longest-axis size.
+    reynolds_target : float
+        Reynolds number based on the body's characteristic length (diameter
+        for cylinder/ellipse, side for square, chord for airfoil).
+    aoa_deg : float
+        Body rotation / wing tilt in degrees. Ignored for Cylinder.
+    res_key : str
+        One of the keys in RESOLUTION_PRESETS ("Standard (320 x 80)" or
+        "Detailed (960 x 240)").
+    progress_callback : callable or None
+        Signature ``(fraction: float in [0, 1], text: str) -> None``.
+        Defaults to a no-op for headless use.
+    n_frames : int or None
+        Overrides the per-preset frame count. Used by end-to-end tests to
+        run a 5-frame pipeline in ~5 s instead of 60/100. Production
+        callers leave it None.
+    viz_mode : str
+        Background heatmap selection. One of VIZ_MODES:
+          * "Vorticity" -- bipolar red/blue, fluid rotation (curl of u).
+          * "Velocity"  -- bipolar speed-minus-inflow: blue = slower than
+            freestream (wake), white = matching, red = faster (squeeze).
+          * "Pressure"  -- bipolar gauge pressure, temporal-averaged over
+            ~5 frames to suppress the LBM acoustic waves a single
+            snapshot would otherwise show.
+        Particles + scale bars + body outline are unchanged across modes.
+
+    Returns
+    -------
+    dict
+        gif_bytes, vort_cbar_bytes, speed_cbar_bytes : bytes for st.image
+        force_plot_bytes                             : PNG of Cd/Cl vs time
+        cd_history, cl_history                       : float32 arrays
+                                                       (length = n_steps)
+        cd_mean, cl_mean                             : floats, mean over the
+                                                       last third of the run
+        strouhal                                     : float (NaN if too few
+                                                       samples for FFT)
+        label                                        : short title string
+        tau, nu, char_length                         : physics scalars
+        lbm_nx, lbm_ny, n_frames, n_steps            : grid + sim sizes
+        near_stable                                  : bool (tau < 0.51)
+    """
+    solve = solve_lbm(
+        shape_preset, reynolds_target, aoa_deg, res_key,
+        n_frames=n_frames, custom_polygon=custom_polygon,
+        progress_callback=progress_callback,
+    )
+    render = render_lbm(
+        solve, viz_mode=viz_mode, progress_callback=progress_callback,
+    )
+    # Merge into the legacy public-API shape. Drop internal-only keys
+    # (snapshots, mask, body_xs/ys, reynolds_target, res_key) so external
+    # callers (tests, scripts) don't see them.
+    result = {
+        k: v for k, v in solve.items()
+        if k not in (
+            "snapshots", "mask", "body_xs", "body_ys",
+            "reynolds_target", "res_key",
+        )
+    }
+    result.update(render)
+    return result

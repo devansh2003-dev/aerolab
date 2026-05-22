@@ -152,29 +152,99 @@ def _cylinder_reference(re_value: int):
     return _textbook_reference("Cylinder", re_value)
 
 
-# Lives outside the conditional so @st.cache_data isn't re-decorated on every
-# Streamlit rerun. The heavy imports happen lazily on first call (the wrapper
-# is never called in Fast mode, so Fast mode's cold-start stays untouched).
-# max_entries=12 caps memory at ~20 MB of cached GIFs -- well within Cloud limits.
-@st.cache_data(show_spinner=False, max_entries=12)
-def _cached_simulate_and_render(
-    shape_preset, reynolds_target, aoa_deg, res_key,
-    custom_polygon=None, viz_mode="Vorticity",
+# Two-layer cache: the LBM solve is mode-independent, the GIF + colorbar
+# rendering is mode-dependent. Splitting them means switching viz_mode
+# (Vorticity -> Velocity -> Pressure) only pays the render cost (~2 s)
+# instead of re-solving the LBM (~40 s on Standard, ~120 s on Detailed
+# locally; 3 x slower on the 1-vCPU Cloud container).
+#
+# Memory budget on Streamlit Cloud (~500 MB process cap):
+#   solve cache  max_entries=4  ~15 MB/entry (snapshots dict) = 60 MB
+#   render cache max_entries=12 ~5-20 MB/entry (GIF bytes)    = 60-240 MB
+# Total cap ~300 MB peak, well within budget on Standard preset; Detailed
+# users tend to run only one or two configs per session so the lower
+# solve cap is fine.
+#
+# The leading-underscore convention on _custom_polygon tells Streamlit to
+# exclude it from the cache key (raw numpy arrays are slow to hash and we
+# already include polygon_key as a stable cache key derived from a SHA
+# hash of the polygon bytes).
+@st.cache_data(show_spinner=False, max_entries=4)
+def _cached_solve(
+    shape_preset, reynolds_target, aoa_deg, res_key, polygon_key,
+    _custom_polygon=None,
 ):
-    from src.lbm_render import simulate_and_render
+    from src.lbm_render import solve_lbm
     progress = st.progress(
         0.0, text=":material/sync: Phase 1 of 2 -- simulating flow (MRT)...",
     )
     try:
         def cb(frac, text):
             progress.progress(frac, text=text)
-        return simulate_and_render(
+        return solve_lbm(
             shape_preset, reynolds_target, aoa_deg, res_key,
-            progress_callback=cb, custom_polygon=custom_polygon,
-            viz_mode=viz_mode,
+            progress_callback=cb, custom_polygon=_custom_polygon,
         )
     finally:
         progress.empty()
+
+
+@st.cache_data(show_spinner=False, max_entries=12)
+def _cached_sim_result(
+    shape_preset, reynolds_target, aoa_deg, res_key, polygon_key,
+    viz_mode, _custom_polygon=None,
+):
+    """Wrapper that combines a cached solve + cached render into the dict
+    shape app.py expects (matches the legacy simulate_and_render output).
+
+    On a cache hit, returns the full dict instantly. On a render-only miss
+    (viz_mode changed, same physics), the solve cache hits and only the
+    render runs -- typically 1-2 s. On a full miss, both run.
+    """
+    from src.lbm_render import render_lbm
+    solve = _cached_solve(
+        shape_preset, reynolds_target, aoa_deg, res_key, polygon_key,
+        _custom_polygon=_custom_polygon,
+    )
+    progress = st.progress(
+        0.5, text=":material/sync: Phase 2 of 2 -- rendering frames...",
+    )
+    try:
+        def cb(frac, text):
+            progress.progress(frac, text=text)
+        render = render_lbm(solve, viz_mode=viz_mode, progress_callback=cb)
+    finally:
+        progress.empty()
+    # Merge into the legacy public-API shape. Drop internal-only keys.
+    result = {
+        k: v for k, v in solve.items()
+        if k not in ("snapshots", "mask", "body_xs", "body_ys",
+                     "reynolds_target", "res_key")
+    }
+    result.update(render)
+    return result
+
+
+# Backward-compat alias for any internal call sites that still reference
+# the old wrapper name. New code should call _cached_sim_result directly.
+def _cached_simulate_and_render(
+    shape_preset, reynolds_target, aoa_deg, res_key,
+    custom_polygon=None, viz_mode="Vorticity",
+):
+    # Polygon hash is the stable cache key. For preset shapes (no polygon)
+    # we pass a literal None marker so all preset runs share the same key
+    # for that slot.
+    if custom_polygon is not None:
+        import hashlib as _hl
+        polygon_key = _hl.sha1(
+            np.ascontiguousarray(custom_polygon).tobytes()
+        ).hexdigest()[:12]
+    else:
+        polygon_key = None
+    return _cached_sim_result(
+        shape_preset, reynolds_target, aoa_deg, res_key, polygon_key,
+        viz_mode, _custom_polygon=custom_polygon,
+    )
 
 
 # --- Real CFD (LBM) mode: animated GIF playback of LBM run ---
@@ -602,6 +672,21 @@ if mode == "Real CFD (LBM)":
         # rewritten via session_state and we want the run to display
         # immediately (without the user clicking Run again).
         if st.session_state.pop("lbm_gallery_pending", False):
+            st.session_state["lbm_last_displayed_config"] = _current_config
+        # Auto-promote viz_mode-only changes: if the user just switched the
+        # viz_mode radio while a run was displayed, treat that as "keep
+        # showing, just re-render with the new mode" rather than bailing
+        # to the gallery and forcing them to click Run again. Cheap thanks
+        # to the solve cache: re-render runs in ~1-2 s vs the full ~40 s
+        # solve. Detect by comparing all _current_config tuple entries
+        # EXCEPT the viz_mode slot (index 5).
+        _last_disp = st.session_state.get("lbm_last_displayed_config")
+        if (
+            _last_disp is not None
+            and len(_last_disp) == 6
+            and _last_disp[:5] == _current_config[:5]
+            and _last_disp[5] != _current_config[5]
+        ):
             st.session_state["lbm_last_displayed_config"] = _current_config
         _should_display_run = run_clicked or (
             st.session_state.get("lbm_last_displayed_config") == _current_config
