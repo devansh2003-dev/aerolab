@@ -367,9 +367,24 @@ def _noop_progress(frac, text):
     pass
 
 
+VIZ_MODES = ("Vorticity", "Velocity", "Pressure")
+
+# Pressure mode applies a temporal moving-average over PRESSURE_AVG_FRAMES
+# snapshots of rho before display. LBM is weakly compressible, so any
+# disturbance (the kick, the inflow ramp, vortex shedding) emits acoustic
+# waves that propagate at c_s = 1/sqrt(3) ~ 0.577 cells/step and look
+# like blue/red lens-shaped bands floating downstream of the body. Over
+# 5 frames * 35 steps/frame * 0.577 cells/step ~ 100 cells of travel,
+# the waves shift far enough that averaging zeros them out. Body-bound
+# pressure features (stagnation, suction) are quasi-static or oscillate
+# at the von Karman shedding rate (~1430 steps for Re=200 cylinder), so
+# they survive the 5-frame average intact.
+PRESSURE_AVG_FRAMES = 5
+
+
 def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
                          *, progress_callback=None, n_frames=None,
-                         custom_polygon=None):
+                         custom_polygon=None, viz_mode="Vorticity"):
     """Run LBM and render to GIF + colorbars.
 
     Pure function with no Streamlit dependency. The caller owns all I/O.
@@ -399,6 +414,16 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
         Overrides the per-preset frame count. Used by end-to-end tests to
         run a 5-frame pipeline in ~5 s instead of 60/100. Production
         callers leave it None.
+    viz_mode : str
+        Background heatmap selection. One of VIZ_MODES:
+          * "Vorticity" -- bipolar red/blue, fluid rotation (curl of u).
+          * "Velocity"  -- bipolar speed-minus-inflow: blue = slower than
+            freestream (wake), white = matching, red = faster (squeeze).
+          * "Pressure"  -- bipolar gauge pressure, temporal-averaged over
+            ~5 frames to suppress the LBM acoustic waves a single
+            snapshot would otherwise show.
+        Particles + scale bars + body outline are unchanged across modes.
+
     Returns
     -------
     dict
@@ -494,13 +519,22 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
     nu = U_INFLOW * char_length / reynolds_target
     tau = nu / CS2 + 0.5
 
-    # Alpha-modulated RdBu_r cmap for the vorticity heatmap. Built fresh
-    # per call so the ListedColormap isn't shared across cache entries.
+    if viz_mode not in VIZ_MODES:
+        raise ValueError(
+            f"viz_mode must be one of {VIZ_MODES}; got {viz_mode!r}"
+        )
+
+    # Alpha-modulated RdBu_r cmap. All three viz modes are bipolar (vorticity
+    # = curl of u, velocity = speed-minus-inflow, pressure = gauge pressure),
+    # so they share the same cmap; only v_clip / cbar labels differ. Built
+    # fresh per call so the ListedColormap isn't shared across cache entries.
     _rdbu = plt.get_cmap("RdBu_r")(np.linspace(0.0, 1.0, 256))
     _alpha_t = np.abs(np.linspace(-1.0, 1.0, 256))
     _rdbu[:, 3] = VORT_ALPHA_MAX * _alpha_t ** 1.4
-    vorticity_cmap = ListedColormap(_rdbu, name="rdbu_alpha70")
-    vorticity_cmap.set_bad((0.0, 0.0, 0.0, 0.0))
+    bipolar_cmap = ListedColormap(_rdbu, name="rdbu_alpha70")
+    bipolar_cmap.set_bad((0.0, 0.0, 0.0, 0.0))
+    # Alias kept for downstream variable names that still say "vorticity_cmap".
+    vorticity_cmap = bipolar_cmap
 
     body_xs, body_ys = body_outline_xy(
         shape_preset, res_cfg, aoa_deg, custom_polygon=custom_polygon,
@@ -616,6 +650,7 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
             "vorticity": vorticity.astype(np.float32),
             "u_x": u[0].astype(np.float32),
             "u_y": u[1].astype(np.float32),
+            "rho": rho_field.astype(np.float32),
             "step": step_counter,
         })
         progress(
@@ -624,28 +659,78 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
             f"simulating frame {frame + 1} / {n_frames_local} (MRT+LES)",
         )
 
-    # Vorticity heatmap calibration. v_clip is the colorbar's saturation
-    # point: blended from the 92nd percentile of |omega| in fluid cells and
-    # a U/L-scaled floor so low-Re wakes stay visible.
+    # Per-viz-mode calibration. v_clip = colorbar saturation point, vmin/vmax
+    # = imshow window. All three modes use the bipolar cmap; only v_clip and
+    # the cbar text change. Body interior is later NaN-masked in the per-frame
+    # branch (Velocity / Pressure) so it doesn't paint colour through the
+    # body patch.
     blur_sigma = VORT_BLUR_SIGMA_BASE + VORT_BLUR_SIGMA_RE_SCALE * np.log10(
         max(reynolds_target / 100.0, 1.0)
     )
-    last_vort_fluid = np.where(mask, np.nan, snapshots[-1]["vorticity"])
-    v_clip = max(
-        float(np.nanpercentile(np.abs(last_vort_fluid), VORT_CLIP_PERCENTILE)),
-        VORT_CLIP_FACTOR * U_INFLOW / max(char_length, 1.0),
-    )
-    bg_cmap = vorticity_cmap
+    bg_cmap = bipolar_cmap
+
+    if viz_mode == "Vorticity":
+        # 92nd percentile of |omega| in fluid cells, with a U/L-scaled floor
+        # so low-Re wakes stay visible.
+        last_vort_fluid = np.where(mask, np.nan, snapshots[-1]["vorticity"])
+        v_clip = max(
+            float(np.nanpercentile(np.abs(last_vort_fluid), VORT_CLIP_PERCENTILE)),
+            VORT_CLIP_FACTOR * U_INFLOW / max(char_length, 1.0),
+        )
+        bg_cbar_labels = ["Clockwise spin", "No rotation", "Anti-clockwise spin"]
+        bg_cbar_title = "Background heatmap — air's rotation"
+        bg_cbar_blurb = (
+            "Red = anti-clockwise vortex, blue = clockwise. White = no spin. "
+            "The two-coloured 'beads on a string' downstream of bluff bodies "
+            "are the von Karman vortex street -- shed alternately off each "
+            "side and carried downstream by the flow."
+        )
+    elif viz_mode == "Velocity":
+        # Bipolar: speed - U_INFLOW. v_clip = U_INFLOW so blue saturates at
+        # speed=0 (wake) and red saturates at speed=2*U_INFLOW (squeeze).
+        v_clip = U_INFLOW
+        bg_cbar_labels = [
+            "Stalled (slower than wind)",
+            "Inflow speed",
+            "Accelerated (faster than wind)",
+        ]
+        bg_cbar_title = "Background heatmap — air's speed vs inflow"
+        bg_cbar_blurb = (
+            "Blue = slower than the inflow (wake behind bluff bodies, "
+            "separated flow above a stalled wing). White = matching the "
+            "inflow. Red = accelerated (the squeeze around a bump or the "
+            "suction side of an airfoil at AoA)."
+        )
+    elif viz_mode == "Pressure":
+        # Gauge pressure (rho - 1) / 3 with a temporal moving average (see
+        # PRESSURE_AVG_FRAMES) to kill LBM acoustic waves. v_clip from the
+        # *averaged* last-frame field, floored at U^2/2 (Bernoulli scale).
+        _avg_start = max(0, len(snapshots) - PRESSURE_AVG_FRAMES)
+        _last_rho_avg = np.mean(
+            [s["rho"] for s in snapshots[_avg_start:]], axis=0,
+        )
+        last_p_fluid = np.where(mask, np.nan, (_last_rho_avg - 1.0) / 3.0)
+        v_clip = max(
+            float(np.nanpercentile(np.abs(last_p_fluid), VORT_CLIP_PERCENTILE)),
+            0.5 * U_INFLOW ** 2,
+        )
+        bg_cbar_labels = [
+            "Low pressure (suction)", "Static", "High pressure (stagnation)",
+        ]
+        bg_cbar_title = "Background heatmap — air's pressure"
+        bg_cbar_blurb = (
+            "Red = high pressure (where air piles up against the front of "
+            "the body). Blue = low pressure / suction (on the upper surface "
+            "of a wing at AoA, or in the cores of shed vortices). The "
+            "asymmetry top-vs-bottom on a tilted airfoil is what generates "
+            "lift. Averaged over a short rolling window to suppress the "
+            "acoustic ripples a single LBM snapshot would otherwise show."
+        )
+    else:  # already validated above; belt-and-braces
+        raise ValueError(f"Unknown viz_mode {viz_mode!r}")
+
     bg_vmin, bg_vmax = -v_clip, v_clip
     bg_cbar_ticks = [-v_clip, 0.0, v_clip]
-    bg_cbar_labels = ["Clockwise spin", "No rotation", "Anti-clockwise spin"]
-    bg_cbar_title = "Background heatmap — air's rotation"
-    bg_cbar_blurb = (
-        "Red = anti-clockwise vortex, blue = clockwise. White = no spin. "
-        "The two-coloured 'beads on a string' downstream of bluff bodies "
-        "are the von Kármán vortex street -- shed alternately off each "
-        "side and carried downstream by the flow."
-    )
 
     # Wall-fade smoothstep weight (broadcasts across x).
     fade_hires = WALL_FADE_CELLS * VORT_UPSAMPLE
@@ -764,8 +849,35 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
     gif_frames = []
     master_palette_img = None
     for i, snap in enumerate(snapshots):
-        clipped = np.clip(snap["vorticity"], -3.0 * v_clip, 3.0 * v_clip)
-        bg_field = gaussian_filter(clipped, sigma=blur_sigma) * wall_fade
+        # Per-mode background field. Velocity and Pressure NaN-mask the body
+        # interior so the body patch isn't tinted by the field (vorticity
+        # naturally goes to ~0 inside the body, so it doesn't need masking
+        # and we keep its render bit-identical to the visual baseline).
+        if viz_mode == "Vorticity":
+            clipped = np.clip(snap["vorticity"], -3.0 * v_clip, 3.0 * v_clip)
+            bg_field = gaussian_filter(clipped, sigma=blur_sigma) * wall_fade
+        elif viz_mode == "Velocity":
+            speed = np.sqrt(snap["u_x"] ** 2 + snap["u_y"] ** 2)
+            raw_field = speed - U_INFLOW
+            # Set body cells to 0 BEFORE the gaussian filter (so neighbour
+            # smoothing doesn't pull body=NaN into the fluid side), then NaN
+            # the body cells AFTER so they render transparently under the
+            # body patch.
+            raw_field = np.where(mask, 0.0, raw_field)
+            clipped = np.clip(raw_field, -3.0 * v_clip, 3.0 * v_clip)
+            bg_field = gaussian_filter(clipped, sigma=blur_sigma) * wall_fade
+            bg_field = np.where(mask, np.nan, bg_field)
+        else:  # "Pressure" -- temporal average over last PRESSURE_AVG_FRAMES
+            _avg_start = max(0, i - PRESSURE_AVG_FRAMES + 1)
+            rho_avg = np.mean(
+                [snapshots[j]["rho"] for j in range(_avg_start, i + 1)],
+                axis=0,
+            )
+            raw_field = (rho_avg - 1.0) / 3.0
+            raw_field = np.where(mask, 0.0, raw_field)
+            clipped = np.clip(raw_field, -3.0 * v_clip, 3.0 * v_clip)
+            bg_field = gaussian_filter(clipped, sigma=blur_sigma) * wall_fade
+            bg_field = np.where(mask, np.nan, bg_field)
 
         # Lightly smooth the velocity for particle advection -- enough
         # to suppress sub-grid LBM oscillations that would jitter the
@@ -1006,6 +1118,7 @@ def simulate_and_render(shape_preset, reynolds_target, aoa_deg, res_key,
         "vort_cbar_bytes": bg_cbar_b,  # alias kept for old tests / external scripts
         "bg_cbar_title": bg_cbar_title,
         "bg_cbar_blurb": bg_cbar_blurb,
+        "viz_mode": viz_mode,
         "speed_cbar_bytes": speed_cbar_b,
         "force_plot_bytes": force_plot_bytes,
         "cd_history": cd_history.astype(np.float32),

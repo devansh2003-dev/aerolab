@@ -125,7 +125,7 @@ def _cylinder_reference(re_value: int):
 @st.cache_data(show_spinner=False, max_entries=12)
 def _cached_simulate_and_render(
     shape_preset, reynolds_target, aoa_deg, res_key,
-    custom_polygon=None,
+    custom_polygon=None, viz_mode="Vorticity",
 ):
     from src.lbm_render import simulate_and_render
     progress = st.progress(
@@ -137,6 +137,7 @@ def _cached_simulate_and_render(
         return simulate_and_render(
             shape_preset, reynolds_target, aoa_deg, res_key,
             progress_callback=cb, custom_polygon=custom_polygon,
+            viz_mode=viz_mode,
         )
     finally:
         progress.empty()
@@ -170,6 +171,7 @@ if mode == "Real CFD (LBM)":
         ("lbm_pending_velocity", "lbm_velocity_slider"),
         ("lbm_pending_aoa", "lbm_aoa_slider"),
         ("lbm_pending_res", "lbm_res_radio"),
+        ("lbm_pending_viz", "lbm_viz_mode"),
     ):
         if _src in st.session_state:
             st.session_state[_dst] = st.session_state.pop(_src)
@@ -466,6 +468,29 @@ if mode == "Real CFD (LBM)":
         )
         res_cfg = RESOLUTION_PRESETS[res_display]
 
+        # Viz mode: which scalar field is painted as the background heatmap.
+        # Particle streaks + body outline + scale bars are unchanged across
+        # modes. Mode change triggers a re-run (cache key includes viz_mode);
+        # pin the run first if you want side-by-side comparison.
+        st.markdown("")
+        st.markdown(":material/palette: **What to color the air with**")
+        from src.lbm_render import VIZ_MODES
+        st.session_state.setdefault("lbm_viz_mode", VIZ_MODES[0])
+        viz_mode = st.radio(
+            "Viz mode",
+            VIZ_MODES,
+            label_visibility="collapsed",
+            help=(
+                "**Vorticity** (default) -- red/blue rotation map. Best "
+                "for seeing vortex shedding. **Velocity** -- speed vs the "
+                "inflow: blue is slower (wake), red is faster (squeeze "
+                "zones). **Pressure** -- gauge pressure: red is high (front "
+                "of body), blue is low (suction). Pressure is averaged over "
+                "a short rolling window to suppress LBM acoustic ripples."
+            ),
+            key="lbm_viz_mode",
+        )
+
         # Shape preview: every shape (built-in or custom) gets a pre-Run
         # render of where the body sits in the tunnel. Confirms scale,
         # position, AoA rotation before the user pays for the simulation.
@@ -535,7 +560,7 @@ if mode == "Real CFD (LBM)":
         # clicked Pin on a successful run.
         _current_config = (
             shape_preset, int(reynolds_target), float(aoa_deg),
-            res_display, _polygon_key,
+            res_display, _polygon_key, viz_mode,
         )
         if run_clicked:
             st.session_state["lbm_last_displayed_config"] = _current_config
@@ -640,6 +665,10 @@ if mode == "Real CFD (LBM)":
             st.session_state["lbm_pending_velocity"] = float(vel_mps)
             st.session_state["lbm_pending_aoa"] = float(aoa)
             st.session_state["lbm_pending_res"] = res
+            # Always reset viz mode to Vorticity for gallery cards -- they're
+            # the first-time-visitor entry point, and Vorticity is the cleanest
+            # "see air" mode.
+            st.session_state["lbm_pending_viz"] = "Vorticity"
             st.session_state["lbm_gallery_pending"] = True
             # Clear any pinned snapshot -- a fresh gallery click should
             # present a clean single-run view, not side-by-side against
@@ -717,7 +746,7 @@ if mode == "Real CFD (LBM)":
     # re-decorated each rerun. The heavy work lives in src/lbm_render.py.
     sim_result = _cached_simulate_and_render(
         shape_preset, int(reynolds_target), float(aoa_deg), res_display,
-        custom_polygon=custom_polygon,
+        custom_polygon=custom_polygon, viz_mode=viz_mode,
     )
     tau = sim_result["tau"]
     nu = sim_result["nu"]
@@ -758,16 +787,21 @@ if mode == "Real CFD (LBM)":
     snapshot_is_current = snapshot == _current_config
 
     if snapshot is not None and not snapshot_is_current:
-        # Snapshot tuple: (shape, Re, AoA, res, polygon_key). For Custom
-        # shapes we also stash the polygon array in session state under
-        # "lbm_snapshot_polygon" so the cache lookup hits and the solver
-        # has something to run on. For preset shapes the polygon slot is
-        # None.
-        snap_shape, snap_re, snap_aoa, snap_res, _snap_poly_key = snapshot
+        # Snapshot tuple: (shape, Re, AoA, res, polygon_key, viz_mode).
+        # For Custom shapes we also stash the polygon array in session
+        # state under "lbm_snapshot_polygon" so the cache lookup hits and
+        # the solver has something to run on. For preset shapes the
+        # polygon slot is None. Older 5-tuple snapshots (from before
+        # viz_mode reintroduction) fall back to "Vorticity".
+        if len(snapshot) == 6:
+            snap_shape, snap_re, snap_aoa, snap_res, _snap_poly_key, snap_viz = snapshot
+        else:
+            snap_shape, snap_re, snap_aoa, snap_res, _snap_poly_key = snapshot
+            snap_viz = "Vorticity"
         snap_polygon = st.session_state.get("lbm_snapshot_polygon")
         snap_result = _cached_simulate_and_render(
             snap_shape, snap_re, snap_aoa, snap_res,
-            custom_polygon=snap_polygon,
+            custom_polygon=snap_polygon, viz_mode=snap_viz,
         )
         st.markdown("---")
         st.markdown("### Side-by-side comparison")
@@ -778,16 +812,18 @@ if mode == "Real CFD (LBM)":
         cmp_cols = st.columns(2)
         with cmp_cols[0]:
             _snap_aoa_part = f"  ·  {snap_aoa:+.1f}°" if abs(snap_aoa) > 0.25 else ""
+            _snap_viz_part = f"  ·  {snap_viz}" if snap_viz != "Vorticity" else ""
             st.markdown(
                 f"**Snapshot:** {snap_shape}  ·  Re {snap_re}"
-                f"{_snap_aoa_part}"
+                f"{_snap_aoa_part}{_snap_viz_part}"
             )
             st.image(snap_result["gif_bytes"], width="stretch")
         with cmp_cols[1]:
             _cur_aoa_part = f"  ·  {aoa_deg:+.1f}°" if abs(aoa_deg) > 0.25 else ""
+            _cur_viz_part = f"  ·  {viz_mode}" if viz_mode != "Vorticity" else ""
             st.markdown(
                 f"**Current:** {shape_preset}  ·  Re {int(reynolds_target)}"
-                f"{_cur_aoa_part}"
+                f"{_cur_aoa_part}{_cur_viz_part}"
             )
             st.image(gif_bytes, width="stretch")
 
@@ -893,7 +929,11 @@ if mode == "Real CFD (LBM)":
         # something IS pinned, since pinning before changing params has no
         # other visible effect on the current view.
         if snapshot is not None:
-            snap_shape, snap_re, snap_aoa, snap_res, _snap_poly_key = snapshot
+            # Tolerate both 6-tuple (new, includes viz_mode) and legacy 5-tuple.
+            if len(snapshot) == 6:
+                snap_shape, snap_re, snap_aoa, snap_res, _snap_poly_key, _snap_viz = snapshot
+            else:
+                snap_shape, snap_re, snap_aoa, snap_res, _snap_poly_key = snapshot
             snap_aoa_str = f", AoA {snap_aoa:+.0f}deg" if abs(snap_aoa) > 0.25 else ""
             snap_res_short = "Standard" if "Standard" in snap_res else "Detailed"
             if snapshot_is_current:
@@ -941,17 +981,35 @@ if mode == "Real CFD (LBM)":
         "border-radius:3px;background:{color};margin-right:0.4rem;"
         "vertical-align:middle;'></span>"
     )
-    # Vorticity heatmap swatches for the first two legend columns. Slots
-    # 3 and 4 (particles, body shape) are below.
-    _left_swatch = (
-        "#b91c1c", "Red wash",
-        "Air rotating *anti-clockwise* -- vortices spinning one way.",
-    )
-    _right_swatch = (
-        "#1d4ed8", "Blue wash",
-        "Air rotating *clockwise* -- the other way. Together they form "
-        "the von Karman street.",
-    )
+    # Per-viz-mode swatch + caption for the first two legend columns.
+    # Slots 3 and 4 (particles, body shape) are mode-independent and
+    # stay below.
+    _BG_LEGEND_BY_MODE = {
+        "Vorticity": (
+            ("#b91c1c", "Red wash",
+             "Air rotating *anti-clockwise* -- vortices spinning one way."),
+            ("#1d4ed8", "Blue wash",
+             "Air rotating *clockwise* -- the other way. Together they "
+             "form the von Karman street."),
+        ),
+        "Velocity": (
+            ("#b91c1c", "Red wash",
+             "**Faster** than the inflow -- squeezed around bumps or "
+             "accelerating over the suction side of an airfoil."),
+            ("#1d4ed8", "Blue wash",
+             "**Slower** than the inflow -- the stalled wake behind a "
+             "bluff body, or the separated region above a stalled wing."),
+        ),
+        "Pressure": (
+            ("#b91c1c", "Red regions",
+             "**High** pressure -- air piling up against the front face. "
+             "Strongest at stagnation points."),
+            ("#1d4ed8", "Blue regions",
+             "**Low** pressure -- suction. On a tilted wing this is "
+             "mostly on the top surface and is what generates lift."),
+        ),
+    }
+    _left_swatch, _right_swatch = _BG_LEGEND_BY_MODE[viz_mode]
 
     st.markdown("##### What you're looking at")
     leg_cols = st.columns(4)
