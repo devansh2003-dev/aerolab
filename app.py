@@ -1039,7 +1039,7 @@ if mode == "Real CFD (LBM)":
             shape_preset, int(reynolds_target), float(aoa_deg), res_display,
             custom_polygon=custom_polygon, viz_mode=viz_mode,
         )
-    except (ZeroDivisionError, FloatingPointError) as _sim_err:
+    except (ZeroDivisionError, FloatingPointError, ArithmeticError) as _sim_err:
         st.error(
             f":material/error: The simulation went numerically unstable "
             f"(`{type(_sim_err).__name__}: {_sim_err}`). This usually "
@@ -1047,6 +1047,19 @@ if mode == "Real CFD (LBM)":
             f"the built-in presets, the **Sample** tab, or simplify your "
             f"drawing (fatter strokes, single closed loop, no thread-like "
             f"branches)."
+        )
+        st.stop()
+    except ValueError as _shape_err:
+        # Pre-flight mask validation in solve_lbm raises ValueError with
+        # an actionable message ("touches the inflow wall", "occupies too
+        # much of the channel", etc.) -- surface it verbatim so the user
+        # knows exactly what to fix rather than seeing a generic stack
+        # trace. Distinct from the ZeroDivision path above: this one
+        # caught the problem BEFORE the simulation, so we phrase it as
+        # geometry feedback, not numerical instability.
+        st.error(
+            f":material/error: This shape can't be simulated: "
+            f"{_shape_err}"
         )
         st.stop()
     except Exception as _sim_err:

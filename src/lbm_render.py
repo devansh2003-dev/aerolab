@@ -524,6 +524,43 @@ def solve_lbm(shape_preset, reynolds_target, aoa_deg, res_key,
     n_frames_local = int(n_frames) if n_frames is not None else res_cfg["n_frames"]
     n_steps_local = n_frames_local * STEPS_PER_FRAME
 
+    # === Pre-flight: mask sanity checks ===
+    # Catch degenerate-shape geometry BEFORE we enter the @njit step path.
+    # The Zou-He inflow/outflow boundaries divide by interior-column rho;
+    # if a user's drawing pushes a solid cell into the inflow column or
+    # leaves the outflow column with no fluid neighbours, that rho can
+    # spike to zero on the first unstable step and trigger
+    # ZeroDivisionError inside @njit. Cheap (one mask sum + slice) to
+    # validate up-front and surface a clear ValueError instead.
+    if shape_preset == "Custom":
+        n_solid = int(mask.sum())
+        n_fluid = mask.size - n_solid
+        if n_solid < 8:
+            raise ValueError(
+                "Shape is too small after rasterisation (fewer than 8 grid cells "
+                "solid). Try a larger source image or a chunkier drawing."
+            )
+        if n_fluid < mask.size // 4:
+            raise ValueError(
+                "Shape occupies too much of the channel (more than 75 % solid). "
+                "Pick a smaller source image or reduce the body extent."
+            )
+        if mask[0, :].any():
+            raise ValueError(
+                "Shape touches the inflow wall (left edge). The simulation "
+                "needs clear inflow -- shift the shape rightward or scale it down."
+            )
+        if mask[-1, :].any() or mask[-2, :].any():
+            raise ValueError(
+                "Shape touches the outflow wall (right edge). The simulation "
+                "needs clear outflow -- shift the shape leftward or scale it down."
+            )
+        if mask[:, 0].any() or mask[:, -1].any():
+            raise ValueError(
+                "Shape touches the top/bottom wall. Centre the drawing vertically "
+                "or scale it down."
+            )
+
     # === Phase 1: simulate, store snapshots ===
     rho0 = np.ones((LBM_NX, LBM_NY))
     u0 = np.zeros((2, LBM_NX, LBM_NY))
@@ -552,9 +589,20 @@ def solve_lbm(shape_preset, reynolds_target, aoa_deg, res_key,
     # inside the early record steps to break perfect symmetry.
     for frame in range(n_frames_local):
         for _ in range(STEPS_PER_FRAME):
-            f, Fx_step, Fy_step = step_njit_mrt_with_force(
-                f, tau, mask, q_field, f_inflow_eq, INFLOW_DIRS, OUTFLOW_DIRS,
-            )
+            try:
+                f, Fx_step, Fy_step = step_njit_mrt_with_force(
+                    f, tau, mask, q_field, f_inflow_eq, INFLOW_DIRS, OUTFLOW_DIRS,
+                )
+            except ZeroDivisionError as _step_err:
+                # The pre-flight checks above should rule out the common
+                # degenerate-shape cases, but if anything slips through
+                # (e.g. a thin internal channel that pinches off after a few
+                # steps), surface step_counter so we can localise the bug
+                # from the user's traceback.
+                raise ZeroDivisionError(
+                    f"@njit step diverged at step {step_counter} of {n_steps_local} "
+                    f"(shape={shape_preset!r}). Underlying: {_step_err}"
+                ) from _step_err
             fx_history[step_counter] = Fx_step
             fy_history[step_counter] = Fy_step
             # Defensive solid-cell reset: see f_eq_solid comment above.
