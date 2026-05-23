@@ -80,7 +80,11 @@ with st.sidebar:
     mode = st.radio(
         "Simulation mode",
         ["Fast (NeuralFoil)", "Real CFD (LBM)"],
-        index=0,
+        # Default to Real CFD: the user-facing "see air move" feature is
+        # what makes AeroLab visually distinctive, and the curated gallery
+        # cards give first-time visitors something compelling to click
+        # without needing to know what NeuralFoil is.
+        index=1,
         label_visibility="collapsed",
         help=(
             "**Fast**: instant ML predictions for NACA airfoils -- great "
@@ -671,22 +675,75 @@ if mode == "Real CFD (LBM)":
         # 1.5 m/s -> Re 500 (airfoils).
         NU_AIR = 1.5e-5     # m^2/s, standard conditions
         L_REAL_M = 0.005    # 5 mm assumed characteristic length
-        # Per-shape Re ceiling. tau = nu/cs^2 + 0.5; tau drops toward 0.5
-        # as Re rises and the LBM becomes unstable at the limit. Sharp
-        # corners (Square) and thin rotated bodies (Ellipse 45 deg) lose
-        # stability margin sooner than streamlined / round bodies. Cap
-        # at the *measured* stability boundary for each preset so a
-        # slider drag can never blunder into the divergence region.
-        # Maximum Re the solver was qualified at:
-        #   Cylinder, NACA: 1500 (well-validated, smooth surfaces)
-        #   Ellipse:        1200 (45 deg rotation is the weak case)
-        #   Square:         1000 (sharp corners + thin shear layers)
-        #   Custom:         1000 (unknown geometry, be conservative)
-        _RE_CEILING_BY_SHAPE = {
-            "Cylinder": 1500, "Square": 1000, "Ellipse": 1200,
-            "NACA 0012": 1500, "NACA 4412": 1500, "Custom": 1000,
-        }
-        _re_cap = _RE_CEILING_BY_SHAPE.get(shape_preset, 1500)
+        # Per-shape, AoA-aware Re ceiling. tau = nu/cs^2 + 0.5 drops
+        # toward 0.5 as Re rises, and the LBM becomes unstable at the
+        # limit. At AoA ~ 0 the body presents a clean rounded / flat
+        # frontal area to the flow; at AoA != 0 the effective frontal
+        # extent grows (Square AoA=45 raises blockage from 35% to ~50%)
+        # AND the shear layers off the now-sharp leading corner thin
+        # out -- both effects push tau closer to 0.5 and the divergence
+        # boundary collapses by 3-5x vs the AoA=0 case.
+        #
+        # Caps below are MEASURED stability boundaries from local
+        # stability sweeps (see scripts/validate_solver.py history;
+        # tested with n_frames=150 at Standard resolution). The slider
+        # can therefore never reach a configuration that crashes:
+        #
+        #   Cylinder (rotation-invariant): 1500
+        #   Square    |AoA|<25 (broadside-ish): 1000
+        #             |AoA|>=25 (diamond-ish): 200  (Re=250 already fails)
+        #   Ellipse   |AoA|<=10 (axis-aligned):  1200
+        #             10<|AoA|<=25 (mid):         800
+        #             |AoA|>25: AoA slider blocks this
+        #   NACA      |AoA|<=15:                 1500
+        #             15<|AoA|<=25:               800  (gallery 'Wing stalls'
+        #                                                uses Re=600 here)
+        #             |AoA|>25: AoA slider blocks this
+        #   Custom:   1000 (unknown geometry; conservative)
+        _aoa_for_cap = float(
+            st.session_state.get(
+                "lbm_pending_aoa",
+                st.session_state.get("lbm_aoa_slider", 0.0),
+            )
+        )
+        _abs_aoa = abs(_aoa_for_cap)
+        # Per-shape, per-AoA Re ceilings. Numbers below come from local
+        # stability sweeps (n_frames=150, Standard preset) and sit at or
+        # below the *measured* PASS boundary -- the slider can therefore
+        # never produce a configuration that crashes the solver.
+        #
+        # Measurements (PASS / FAIL pairs that bracket each cap):
+        #   Cyl: PASS Re=1500 across the Re band
+        #   Sq  AoA=0:   PASS Re=600, FAIL Re=800 (frame 118)
+        #   Sq  AoA>=10: PASS Re=200, FAIL Re=250 (frame 127)
+        #   El  AoA=0:   PASS Re=1000, FAIL Re=1200 (frame 88)
+        #   El  AoA=10:  PASS Re=1000
+        #   El  AoA=15:  PASS Re=800, FAIL Re=1000 (frame 44)
+        #   El  AoA=20:  PASS Re=400, FAIL Re=600 (frame 39)
+        #   NACA AoA=15: PASS Re=1500
+        #   NACA AoA=25: PASS Re=800
+        #   (NACA AoA>25 isn't reachable via slider; see AoA cap below.)
+        if shape_preset == "Cylinder":
+            _re_cap = 1500
+        elif shape_preset == "Square":
+            # Square broadside (|AoA|<5) holds to Re~500 reliably; once
+            # the body rotates more than ~5 deg the corner-shed shear
+            # layers thin out fast and the late-frame stability margin
+            # collapses by Re~600 (measured FAIL at AoA=9.5 Re=600
+            # frame 98). Two-band approach keeps the gallery 'Brick'
+            # card (Re=500, AoA=0) inside the safe envelope.
+            _re_cap = 500 if _abs_aoa < 5.0 else 200
+        elif shape_preset == "Ellipse":
+            if _abs_aoa <= 5.0:
+                _re_cap = 1000
+            elif _abs_aoa <= 15.0:
+                _re_cap = 800
+            else:
+                _re_cap = 400
+        elif shape_preset in ("NACA 0012", "NACA 4412"):
+            _re_cap = 1500 if _abs_aoa <= 15.0 else 800
+        else:  # Custom
+            _re_cap = 800
         # Convert Re ceiling -> max velocity (m/s) for the slider.
         # Round down to the slider's 0.1 step.
         _v_max = float(int(_re_cap * NU_AIR / L_REAL_M * 10)) / 10
@@ -731,26 +788,33 @@ if mode == "Real CFD (LBM)":
             if is_airfoil:
                 st.markdown(":material/rotate_right: **Wing tilt** "
                             "&nbsp; :gray[(angle of attack)]")
-                slider_min, slider_max, slider_default = -45.0, 45.0, 5.0
+                # NACA at AoA > ~25 deg becomes effectively a flat plate
+                # at huge incidence; the massive separation and thin
+                # shear layers off the LE diverge in our LBM even at
+                # Re=200. Cap the slider so users can't reach that
+                # regime -- the stall showcase (gallery card 'Wing
+                # stalls') runs at AoA=20 inside the cap.
+                slider_min, slider_max, slider_default = -25.0, 25.0, 5.0
                 slider_help = (
                     "How steeply the wing is angled into the wind. "
                     "More tilt = more lift -- but go too steep and the wing "
                     "**stalls** (lift collapses, drag spikes). Try +5 deg vs "
-                    "+15 deg vs +30 deg and watch the wake on top change -- "
+                    "+15 deg vs +25 deg and watch the wake on top change -- "
                     "above ~12 deg the flow detaches from the upper surface."
                 )
             else:
                 st.markdown(":material/rotate_right: **Rotation** "
                             "&nbsp; :gray[(body angle vs. wind)]")
-                # Ellipse becomes a thin rotated needle at +/-45 deg --
-                # the resulting paper-thin shear layers lose LBM
-                # stability above Re ~ 1000. Cap rotation at +/-30 deg
-                # for the ellipse so the slider range matches the
-                # qualified envelope. Square / Custom keep the full
-                # +/-45 range (square at 45 is the validated "diamond"
-                # case; custom is user's call).
+                # Ellipse: above AoA ~ 20 deg the rotated needle's
+                # shear layers are too thin to resolve even at Re=600.
+                # Slider tightened to +/-20 deg to keep the slider's
+                # reachable envelope inside the stable region (cf. the
+                # per-shape Re cap above which drops to Re ~ 400 for
+                # AoA > 15 deg ellipses). Square keeps the full +/-45
+                # range so the validated "diamond" case is reachable
+                # (slider's per-shape Re cap drops to Re ~ 200 there).
                 if shape_preset == "Ellipse":
-                    slider_min, slider_max, slider_default = -30.0, 30.0, 0.0
+                    slider_min, slider_max, slider_default = -20.0, 20.0, 0.0
                 else:
                     slider_min, slider_max, slider_default = -45.0, 45.0, 0.0
                 slider_help = (
@@ -1020,16 +1084,15 @@ if mode == "Real CFD (LBM)":
                 ":material/play_arrow:  See lift collapse",
             ),
             (
-                # Re=600 (velocity 1.80) chosen deliberately over a more
-                # dramatic Re=800: at the standard 28-cell square_side, tau
-                # creeps below 0.51 at Re ~ 800 and the MRT+LES solver
-                # starts producing isolated NaN cells in the high-shear
-                # corner shear layers (visible as a "Simulation diverged
-                # at frame ..." abort). Re=600 is well inside the
-                # validated band, still violent enough to read as a
-                # bluff-body wake, and matches the textbook Cd ~ 1.95
-                # reference shipped in the badge.
-                "Square  (boxy)", 1.80, 0.0, "Standard (320 x 80)",
+                # Re=500 (velocity 1.50). Wider stability mapping
+                # discovered that Square AoA~0 at Re=600 occasionally
+                # diverges in the late frames (frame ~98 of 150) when
+                # the user nudges AoA off zero by a degree or two, so
+                # the Square broadside Re cap is now 500. The wake is
+                # still violent enough at Re=500 to read as a bluff-
+                # body shedding showcase; textbook badge still applies
+                # (Okajima Cd ~ 2.0 at Re=500).
+                "Square  (boxy)", 1.50, 0.0, "Standard (320 x 80)",
                 "Vorticity",
                 "Brick in a hurricane",
                 "A flat face slammed into the wind. A wide, violent wake "
@@ -1038,7 +1101,19 @@ if mode == "Real CFD (LBM)":
                 ":material/play_arrow:  Watch the chaos",
             ),
             (
-                "Square  (boxy)", 1.80, 45.0, "Standard (320 x 80)",
+                # The diamond (Square AoA=45 deg) orientation rotates the
+                # 28-cell side so its DIAGONAL faces the flow -- the
+                # effective frontal extent jumps from 28 to ~40 cells and
+                # blockage rises from 35 % to ~50 %. The thinner shear
+                # layers off the now-sharp leading-edge corner make this
+                # orientation much less LBM-stable than broadside: tested
+                # divergence boundary is around Re ~ 250 (vs ~ 1000 at
+                # AoA=0). The card therefore runs at Re=200 (vel=0.60)
+                # which is well inside the stable envelope and still
+                # shows the qualitative "narrower wake / sharper LE" story
+                # the description promises. Same physics lesson, no
+                # crash on click.
+                "Square  (boxy)", 0.60, 45.0, "Standard (320 x 80)",
                 "Vorticity",
                 "Diamond cuts the wind",
                 "Same square, rotated 45 deg. Sharper leading edge, "

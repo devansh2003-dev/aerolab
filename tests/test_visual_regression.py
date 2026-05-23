@@ -229,8 +229,13 @@ GALLERY_CARD_CONFIGS = [
     ("Cylinder",  200, 0.0,  "Standard (320 x 80)", "Vorticity", "Swirls behind a pole"),
     ("NACA 4412", 600, 4.0,  "Standard (320 x 80)", "Pressure",  "How a wing lifts (clean)"),
     ("NACA 4412", 600, 20.0, "Standard (320 x 80)", "Pressure",  "How a wing stalls"),
-    ("Square",    600, 0.0,  "Standard (320 x 80)", "Vorticity", "Brick in a hurricane"),
-    ("Square",    600, 45.0, "Standard (320 x 80)", "Vorticity", "Diamond cuts the wind"),
+    ("Square",    500, 0.0,  "Standard (320 x 80)", "Vorticity", "Brick in a hurricane"),
+    # Diamond (Square AoA=45) -- the rotated orientation pushes the
+    # effective blockage from 35 % to ~50 % and shortens the LBM
+    # stability envelope from Re ~ 1000 (broadside) to Re ~ 250
+    # (diamond). The gallery card runs at Re=200 (vel=0.60), well
+    # inside the stable envelope.
+    ("Square",    200, 45.0, "Standard (320 x 80)", "Vorticity", "Diamond cuts the wind"),
     ("Cylinder",  50,  0.0,  "Standard (320 x 80)", "Vorticity", "Almost stopped (honey)"),
 ]
 
@@ -250,9 +255,18 @@ def test_gallery_card_runs_without_diverging(
     whole "this is reliable" promise dies. Asserts only the
     transient-survivable properties (see module-level comment for why
     the cd_mean band is wide).
+
+    n_frames is chosen large enough to actually exercise the solver's
+    divergence envelope. The previous value of 12 frames (= 420 lattice
+    steps) was below the typical divergence step (1000-1500 for the
+    sharper-cornered shapes), which let the Diamond-at-Re=600 bug
+    slip through the gallery-card test even though end users were
+    hitting it at production n_frames=150. n_frames=50 (= 1750 steps)
+    covers the divergence window seen across all current cards while
+    keeping the parametrized matrix under ~3 min total in CI.
     """
     out = simulate_and_render(
-        shape, re, aoa, res, viz_mode=viz, n_frames=12,
+        shape, re, aoa, res, viz_mode=viz, n_frames=50,
     )
     # 1. Render pipeline produced a real GIF (not a transparent placeholder).
     assert isinstance(out["gif_bytes"], bytes) and len(out["gif_bytes"]) > 5000, (
