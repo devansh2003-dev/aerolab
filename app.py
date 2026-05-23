@@ -58,7 +58,7 @@ st.markdown(
     "<span style='opacity:0.4'>·</span>"
     "<span style='opacity:0.7'>browser-based aerodynamics</span>"
     "<span style='opacity:0.4'>·</span>"
-    "<span style='opacity:0.55;font-size:0.75rem;'>v0.4.1</span>"
+    "<span style='opacity:0.55;font-size:0.75rem;'>v0.5.0</span>"
     "<span style='opacity:0.4'>·</span>"
     "<a href='https://github.com/devansh2003-dev/AeroLab/blob/main/VALIDATION.md' "
     "target='_blank' style='color:#10b981;text-decoration:none;"
