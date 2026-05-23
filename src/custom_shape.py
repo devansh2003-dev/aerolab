@@ -359,27 +359,114 @@ def extract_silhouette_from_image(png_bytes: bytes) -> SilhouetteResult:
     )
 
 
+def vertices_to_polygon(
+    vertices: list,
+    canvas_w: int,
+    canvas_h: int,
+) -> SilhouetteResult:
+    """Convert click-placed vertex list into a SilhouetteResult.
+
+    The custom polygon_drawer component returns its drawing as a list of
+    ``{"x": ..., "y": ...}`` dicts in canvas-pixel coordinates (origin
+    top-left, y down). This helper is the canonical adapter from that
+    format into the (N, 2) polygon_xy convention the rest of the LBM
+    pipeline expects -- same coordinate frame as the Upload tab's
+    ``extract_silhouette_from_image`` so downstream code stays
+    source-agnostic.
+
+    Validation:
+      * vertices must be a non-empty list of dict-likes with x, y keys
+      * polygon must have at least 3 distinct vertices (a triangle is
+        the minimum closed shape)
+      * canvas dimensions must be positive
+      * the polygon must have non-zero extent in BOTH axes (a single
+        click stack or a perfectly straight line is rejected)
+
+    Raises ValueError with a user-readable message on degenerate input.
+    """
+    if not isinstance(vertices, (list, tuple)):
+        raise ValueError(
+            "Expected a list of points from the drawing canvas; "
+            "got something else."
+        )
+    if len(vertices) < 3:
+        raise ValueError(
+            f"Need at least 3 points to make a shape; got {len(vertices)}. "
+            "Click more points before closing."
+        )
+    if canvas_w <= 0 or canvas_h <= 0:
+        raise ValueError(
+            f"Canvas dimensions must be positive; got {canvas_w}x{canvas_h}."
+        )
+
+    pts = []
+    for i, v in enumerate(vertices):
+        try:
+            x = float(v["x"])
+            y = float(v["y"])
+        except (KeyError, TypeError, ValueError) as e:
+            raise ValueError(
+                f"Vertex {i} is malformed (expected {{'x': ..., 'y': ...}})."
+            ) from e
+        if not (np.isfinite(x) and np.isfinite(y)):
+            raise ValueError(f"Vertex {i} has non-finite coordinates.")
+        pts.append((x, y))
+
+    poly = np.array(pts, dtype=np.float64)
+    x_extent = float(poly[:, 0].max() - poly[:, 0].min())
+    y_extent = float(poly[:, 1].max() - poly[:, 1].min())
+    if x_extent < 1.0 or y_extent < 1.0:
+        raise ValueError(
+            "The drawn shape has near-zero extent in one direction "
+            "(looks like a line, not a polygon). Spread the points out "
+            "more before closing."
+        )
+
+    return SilhouetteResult(
+        polygon_xy=poly,
+        image_w=int(canvas_w),
+        image_h=int(canvas_h),
+        n_holes_filled=0,
+        n_components_found=1,
+        warnings=[],
+    )
+
+
 def canvas_image_to_polygon(canvas_image: np.ndarray) -> SilhouetteResult:
     """Convert a streamlit-drawable-canvas image into a body silhouette polygon.
 
     The canvas ships H x W x 4 RGBA uint8 with a dark background and the
-    user's strokes drawn in white. Freehand strokes are typically *open*
-    curves (a sketched circle is a line, not a disk), so we
-      1. binarise on alpha (drawn vs not-drawn),
-      2. dilate the strokes a few pixels so they overlap enough to enclose
-         a region (handles the user not quite meeting the ends of a curve),
-      3. binary_fill_holes to make the enclosed region a solid silhouette,
-      4. re-encode as a white-on-black PNG,
-      5. defer to the existing image silhouette extractor for contour +
-         polygon simplification.
+    user's drawing in white. We support both drawing modes the app exposes:
 
-    Raises ValueError if the canvas is blank or the strokes don't enclose
-    a usable region (extractor's own rejection rules apply).
+      * Polygon mode -- the canvas already renders a filled polygon (the
+        user clicked vertices and double-clicked to close). The drawn
+        region is a solid 2D blob; binary erosion by a few pixels still
+        leaves most of it intact.
+      * Freedraw mode -- the user sketches a freehand curve. The drawn
+        region is a thin stroke; erosion eats most of it. We dilate to
+        bridge near-touching endpoints, then binary_fill_holes to convert
+        an enclosed loop into a disk.
+
+    Pipeline:
+      1. binarise on alpha (drawn vs not-drawn),
+      2. classify mode by eroded/drawn area ratio,
+      3. for polygon mode: use the drawn region as-is (no fill_holes
+         needed, it's already solid),
+         for freedraw mode: dilate + binary_fill_holes, and reject if
+         the loop never closed,
+      4. re-encode as a white-on-black PNG,
+      5. defer to extract_silhouette_from_image for contour + Douglas-
+         Peucker simplification.
+
+    Raises ValueError if the canvas is blank, the strokes don't enclose
+    a usable region, or the resulting blob is degenerate.
     """
     import io
 
     from PIL import Image
-    from scipy.ndimage import binary_dilation, binary_fill_holes
+    from scipy.ndimage import (
+        binary_dilation, binary_erosion, binary_fill_holes,
+    )
 
     if canvas_image is None:
         raise ValueError("Canvas is empty -- sketch something first.")
@@ -394,22 +481,35 @@ def canvas_image_to_polygon(canvas_image: np.ndarray) -> SilhouetteResult:
     if not drawn.any():
         raise ValueError("No drawing detected -- sketch a shape first.")
 
-    # Dilate strokes by ~stroke_width / 4 so nearly-touching ends connect.
-    # The canvas uses stroke_width=10; iterations=2 gives ~4 px reach which
-    # closes typical free-hand gaps without ballooning small features.
-    dilated = binary_dilation(drawn, iterations=2)
-    # Fill the enclosed region -- a sketched circle becomes a disk.
-    filled = binary_fill_holes(dilated)
+    # Mode classification: erode drawn by 4 px. A filled polygon (50+ px
+    # in extent) survives erosion easily; a 10-px-wide freehand stroke
+    # collapses to a sliver. Threshold at 50 % survival -- well above
+    # the ~10 % survival of a 10-px stroke but well below the ~80 %
+    # survival of a 50-px polygon, so the boundary is unambiguous.
+    eroded = binary_erosion(drawn, iterations=4)
+    is_filled_polygon = (
+        eroded.any() and int(eroded.sum()) >= 0.5 * int(drawn.sum())
+    )
 
-    # Sanity: filled area must exceed the dilated stroke area, otherwise
-    # the user drew an open curve that didn't enclose anything (so
-    # binary_fill_holes returned the stroke unchanged).
-    if int(filled.sum()) <= int(dilated.sum()) * 1.1:
-        raise ValueError(
-            "Your sketch doesn't enclose a region. Draw a closed shape "
-            "(loop or scribble that closes on itself), or use the toolbar "
-            "to undo and try again."
-        )
+    if is_filled_polygon:
+        # Polygon mode: drawn is already a solid blob, no fill needed.
+        filled = drawn
+    else:
+        # Freedraw mode: dilate by ~stroke_width / 4 so nearly-touching
+        # endpoints connect (stroke_width=10 -> iterations=2 -> ~4 px
+        # reach), then fill the enclosed region.
+        dilated = binary_dilation(drawn, iterations=2)
+        filled = binary_fill_holes(dilated)
+
+        # Sanity: filled area must exceed the dilated stroke area,
+        # otherwise the user drew an open curve that didn't enclose
+        # anything (binary_fill_holes returned the stroke unchanged).
+        if int(filled.sum()) <= int(dilated.sum()) * 1.1:
+            raise ValueError(
+                "Your sketch doesn't enclose a region. Close the loop "
+                "(end where you started), or switch to **Polygon mode** "
+                "above -- click to place vertices, double-click to close."
+            )
 
     # Re-encode as a white-on-black PNG and run the existing extractor.
     h, w = filled.shape

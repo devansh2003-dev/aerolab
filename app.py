@@ -35,6 +35,17 @@ from plotly.subplots import make_subplots
 
 from src.airfoils import analyze_airfoil, get_airfoil
 
+# Register the custom polygon-drawer component at module load. declare_component
+# only actually registers the component (and exposes its iframe URL) when run
+# inside a Streamlit ScriptRunContext, AND only on the script-run that
+# encounters the declare call. Importing it at the top of app.py guarantees
+# that every script run -- including the first one a fresh visitor triggers --
+# registers the component before any tab tries to render it. Without this
+# top-level import, the component is only registered if the user navigates
+# into the Real CFD > Custom > Draw tab, and the iframe URL 404s for everyone
+# else (silently producing a broken-looking blank canvas).
+from components import polygon_drawer  # noqa: F401, E402
+
 # --- Page config (must be the first Streamlit call) ---
 st.set_page_config(page_title="AeroLab", layout="wide")
 
@@ -248,16 +259,32 @@ def _cached_solve(
     _custom_polygon=None,
 ):
     from src.lbm_render import solve_lbm
-    progress = st.progress(
-        0.0, text=":material/sync: Phase 1 of 2 -- simulating flow (MRT)...",
+    # First run in a fresh session pays the Numba JIT-compile tax
+    # (~20-30 s); subsequent runs return instantly from cache or
+    # finish their JIT-compiled inner loop in seconds. We detect the
+    # "first run" case via a session-state flag and surface a friendly,
+    # honest warm-up message instead of a cryptic "simulating flow (MRT)"
+    # that freezes for 20 s with no movement.
+    _is_first_run = not st.session_state.get("lbm_solver_warmed_up", False)
+    _initial_text = (
+        ":material/local_fire_department: Warming up the solver "
+        "(first run takes ~20 s while the just-in-time compiler "
+        "translates the physics to fast machine code -- later runs are "
+        "instant)..."
+        if _is_first_run else
+        ":material/sync: Simulating the flow..."
     )
+    progress = st.progress(0.0, text=_initial_text)
     try:
         def cb(frac, text):
             progress.progress(frac, text=text)
-        return solve_lbm(
+        result = solve_lbm(
             shape_preset, reynolds_target, aoa_deg, res_key,
             progress_callback=cb, custom_polygon=_custom_polygon,
         )
+        # Solver returned, JIT cache is now warm for this session.
+        st.session_state["lbm_solver_warmed_up"] = True
+        return result
     finally:
         progress.empty()
 
@@ -280,7 +307,7 @@ def _cached_sim_result(
         _custom_polygon=_custom_polygon,
     )
     progress = st.progress(
-        0.5, text=":material/sync: Phase 2 of 2 -- rendering frames...",
+        0.5, text=":material/sync: Painting the airflow frames...",
     )
     try:
         def cb(frac, text):
@@ -509,15 +536,20 @@ if mode == "Real CFD (LBM)":
                     accept_multiple_files=False,
                     label_visibility="collapsed",
                     help=(
-                        "Drop in any image with a clear subject on a uniform "
-                        "background (white, black, grey, or any solid colour). "
-                        "All common raster formats supported: PNG, JPG, GIF, "
-                        "BMP, TIFF, WEBP, plus ICO / PPM / TGA. Transparent "
-                        "PNGs and EXIF-rotated phone photos are auto-handled. "
-                        "Minimum 100x100 px. (For HEIC iPhone photos, convert "
-                        "to PNG in your phone's share sheet first.) Tip: "
-                        "orient your image so the FRONT of the shape faces "
-                        "left -- wind comes from the left in the simulation."
+                        "Drop in any image with a clear subject on a "
+                        "plain background (white, black, grey, or any "
+                        "solid colour).\n\n"
+                        "- :material/check_circle: Most common image "
+                        "formats work (PNG, JPG, WEBP, etc.). Transparent "
+                        "PNGs and phone photos in the wrong orientation "
+                        "are fixed automatically.\n"
+                        "- :material/photo_size_select_actual: Minimum "
+                        "100 x 100 px.\n"
+                        "- :material/west: Orient the image so the FRONT "
+                        "of the shape faces **left** — that's where the "
+                        "wind comes from.\n\n"
+                        ":gray[*HEIC iPhone photos: convert to PNG via "
+                        "your phone's share sheet first.*]"
                     ),
                     key="lbm_custom_upload",
                 )
@@ -555,64 +587,66 @@ if mode == "Real CFD (LBM)":
             # --- Draw tab ---
             with _draw_tab:
                 st.caption(
-                    "Draw a closed shape -- the enclosed region becomes "
-                    "your body. Wind flows left to right. Use the toolbar "
-                    "(:material/undo: Undo, :material/delete: Clear) to "
-                    "fix mistakes."
+                    ":material/touch_app: **Click** to drop each corner. "
+                    "When you have 3 + corners, **click the green dot** "
+                    "(the first corner you placed) to close the shape. "
+                    "Wind blows left -> right, so put the FRONT of your "
+                    "shape on the left."
                 )
-                # Defensive import: if streamlit-drawable-canvas fails to
-                # install on Cloud (it's pinned but the wheel can break
-                # against minor Streamlit version bumps), the rest of the
-                # app should still work -- show a polite "draw is offline
-                # right now" message and let the user fall back to Upload /
-                # Sample tabs instead of crashing the whole script.
-                _canvas_available = True
+                # polygon_drawer is imported at the top of app.py (so the
+                # component registers on every script run, not just when
+                # the Draw tab is first rendered). We still wrap the
+                # *render* call in try/except so a frontend bug doesn't
+                # nuke the whole sidebar -- users can fall back to Upload
+                # or Sample.
+                _drawer_available = True
+                _drawer_result = None
                 try:
-                    from streamlit_drawable_canvas import st_canvas
-                except Exception as _canvas_imp_err:
-                    _canvas_available = False
+                    _drawer_result = polygon_drawer(
+                        width=400, height=200, key="lbm_polygon_drawer",
+                    )
+                except Exception as _drawer_imp_err:  # noqa: BLE001
+                    _drawer_available = False
                     st.warning(
-                        f":material/warning: The drawing canvas component "
-                        f"isn't available in this environment "
-                        f"(`{type(_canvas_imp_err).__name__}: "
-                        f"{_canvas_imp_err}`). Use the **Upload** or "
+                        f":material/warning: The drawing canvas isn't "
+                        f"available in this environment "
+                        f"(`{type(_drawer_imp_err).__name__}: "
+                        f"{_drawer_imp_err}`). Use the **Upload** or "
                         f"**Sample** tabs to provide a custom shape."
                     )
-                    canvas_result = None
-                if _canvas_available:
-                    # Aspect roughly matches the LBM channel (4:1 on Standard).
-                    canvas_result = st_canvas(
-                        fill_color="rgba(255, 255, 255, 0)",  # no fill (we use freedraw)
-                        stroke_width=10,
-                        stroke_color="#ffffff",
-                        background_color="#0a0a0a",
-                        update_streamlit=True,
-                        height=160,
-                        width=320,
-                        drawing_mode="freedraw",
-                        display_toolbar=True,
-                        key="lbm_canvas",
+                # The component returns its state on every interaction.
+                # We treat a closed polygon as the trigger to commit the
+                # drawing into session_state -- no separate "Use this
+                # drawing" button needed, which removes a click from the
+                # workflow and makes the close-on-start-vertex gesture
+                # the natural commit signal.
+                if _drawer_available and _drawer_result is not None:
+                    _verts = _drawer_result.get("vertices", []) or []
+                    _is_closed = bool(_drawer_result.get("closed", False))
+                    _cw = int(_drawer_result.get("width", 400))
+                    _ch = int(_drawer_result.get("height", 200))
+                    # Detect a fresh closure event: only commit once per
+                    # close so re-clicking doesn't re-spawn flips / labels.
+                    _drawing_sig = (
+                        len(_verts), _is_closed,
+                        tuple((round(v.get("x", 0), 2), round(v.get("y", 0), 2))
+                              for v in _verts),
                     )
-                if _canvas_available and st.button(
-                    ":material/check: Use this drawing",
-                    width="stretch", key="lbm_canvas_use",
-                    help=(
-                        "Convert your sketch into a body silhouette. "
-                        "Open curves are auto-closed; the enclosed region "
-                        "is filled."
-                    ),
-                ):
-                    from src.custom_shape import canvas_image_to_polygon
-                    if canvas_result is None or canvas_result.image_data is None:
-                        st.error(":material/error: Sketch something first.")
-                    else:
+                    _prev_sig = st.session_state.get("lbm_drawer_last_sig")
+                    if _is_closed and _drawing_sig != _prev_sig:
+                        from src.custom_shape import vertices_to_polygon
                         try:
-                            result = canvas_image_to_polygon(canvas_result.image_data)
-                            st.session_state["lbm_custom_polygon"] = result.polygon_xy
+                            _r = vertices_to_polygon(_verts, _cw, _ch)
+                            st.session_state["lbm_custom_polygon"] = _r.polygon_xy
                             st.session_state["lbm_custom_label"] = "Your drawing"
                             st.session_state["lbm_custom_flipped"] = False
                             st.session_state.pop("lbm_last_upload_hash", None)
-                            st.rerun()
+                            st.session_state["lbm_drawer_last_sig"] = _drawing_sig
+                            st.success(
+                                f":material/check_circle: Captured "
+                                f"{len(_verts)}-corner shape. Preview "
+                                f"below; adjust sliders and press Run."
+                            )
                         except ValueError as e:
                             st.error(f":material/error: {e}")
 
@@ -761,14 +795,17 @@ if mode == "Real CFD (LBM)":
             min_value=0.15, max_value=_v_max, step=0.1,
             label_visibility="collapsed",
             help=(
-                f"Wind speed past the object. We assume a 5 mm characteristic "
-                f"length in standard air (nu = 1.5e-5 m^2/s), so the solver "
-                f"runs at Re = velocity x 333.33, clamped to [50, {_re_cap}] "
-                f"for stability with the **{shape_preset}** preset. Sharper / "
-                f"more bluff shapes lose stability margin sooner -- Square "
-                f"caps at Re 1000, smooth bodies at 1500. Low velocity = "
-                f"syrupy laminar flow; high velocity = chaotic vortex "
-                f"shedding."
+                f"How fast the wind blows past the object.\n\n"
+                f"- **Slow** (left): syrupy, smooth flow — like honey "
+                f"sliding past.\n"
+                f"- **Fast** (right): chaotic swirling — like wind ripping "
+                f"around a flagpole.\n\n"
+                f"The slider caps at the speed where the **{shape_preset}** "
+                f"shape stays solver-stable (Reynolds number up to {_re_cap}). "
+                f"Bluff, sharp-cornered shapes hit the wall sooner than "
+                f"smooth ones.\n\n"
+                f":gray[*Technical: we assume a 5 mm reference size in "
+                f"standard air, so Reynolds Re &asymp; velocity x 333.*]"
             ),
             key="lbm_velocity_slider",
         )
@@ -859,14 +896,15 @@ if mode == "Real CFD (LBM)":
             list(RESOLUTION_PRESETS.keys()),
             label_visibility="collapsed",
             help=(
-                "**Standard** (320x80, D=28 body, 5250 sim steps) -- "
-                "body+wake fill the viewport, wake develops within the "
-                "recording. ~40 s local / ~3.3 min Cloud. **Detailed** "
-                "(960x240, D=80 body, 5250 sim steps) -- 9x more cells, "
-                "~3x bigger bodies, longer downstream channel; the wake "
-                "reaches full periodic limit-cycle inside the loop and "
-                "airfoil downwash is much more visible. ~100 s local / "
-                "~6 min Cloud."
+                "How fine the simulation grid is.\n\n"
+                "- **Standard** (320 x 80 cells) — fast, ~40 s on your "
+                "machine / ~3 min on Streamlit Cloud. Wake forms inside "
+                "the recording window. Pick this while you're exploring.\n"
+                "- **Detailed** (960 x 240 cells) — 9x more cells, 3x "
+                "bigger body, longer downstream channel. ~100 s local / "
+                "~6 min Cloud. The wake settles into its full periodic "
+                "rhythm and airfoil downwash is much sharper. Pick this "
+                "for a final render or screenshot."
             ),
             key="lbm_res_radio",
         )
@@ -1655,40 +1693,68 @@ if mode == "Real CFD (LBM)":
         _force_cols = st.columns(3)
         with _force_cols[0]:
             st.metric(
-                "Drag coefficient (Cd)",
+                "Drag (Cd)",
                 f"{sim_result['cd_mean']:.2f}",
                 delta=_cd_delta,
                 delta_color="off",
                 help=(
-                    "Mean drag coefficient, averaged over the last third "
-                    "of the simulation to skip the start-up transient."
+                    "**Drag coefficient.** How hard the air pushes back "
+                    "on the shape. Bigger = more drag. A brick has Cd "
+                    "around 2; a sleek teardrop is below 0.1. Averaged "
+                    "over the last third of the run, so the start-up "
+                    "transient is excluded."
                 ),
+            )
+            st.caption(
+                ":gray[Air resistance. Lower = sleeker.]"
             )
         with _force_cols[1]:
             st.metric(
-                "Lift coefficient (Cl)",
+                "Lift (Cl)",
                 f"{sim_result['cl_mean']:+.2f}",
                 help=(
-                    "Mean lift coefficient. Near zero for symmetric "
-                    "shapes at AoA=0; rises sharply with AoA on airfoils."
+                    "**Lift coefficient.** Sideways push, perpendicular "
+                    "to the wind. A wing tilted into the flow gets "
+                    "positive lift; a symmetric shape at zero tilt "
+                    "averages ~0 (the up-and-down swirls cancel out). "
+                    "Same averaging window as Drag."
                 ),
+            )
+            st.caption(
+                ":gray[Sideways push. Wings need it; bluff bodies have ~0.]"
             )
         with _force_cols[2]:
             if np.isfinite(_st_val):
                 st.metric(
-                    "Strouhal (St)",
+                    "Shedding rhythm (St)",
                     f"{_st_val:.3f}",
                     delta=_st_delta,
                     delta_color="off",
                     help=(
-                        "Dimensionless vortex-shedding frequency, "
-                        "St = f * L / U. From an FFT of the Cl history."
+                        "**Strouhal number.** How often vortices peel "
+                        "off the back of the shape, scaled by size and "
+                        "speed. Stays around 0.2 for a cylinder no "
+                        "matter the wind speed -- which is exactly why "
+                        "telephone wires can hum a steady musical note "
+                        "in a breeze."
                     ),
+                )
+                st.caption(
+                    ":gray[How fast vortices peel off. ~0.2 for cylinders.]"
                 )
             else:
                 st.metric(
-                    "Strouhal (St)", "—",
-                    help="Not enough samples in the run for a stable FFT.",
+                    "Shedding rhythm (St)", "—",
+                    help=(
+                        "The run was too short (or the shape too steady) "
+                        "to lock onto a shedding frequency. Try **Detailed** "
+                        "resolution (more frames) or bump Flow speed higher "
+                        "so the vortices fire faster."
+                    ),
+                )
+                st.caption(
+                    ":gray[Run was too short to spot the rhythm. "
+                    "Try Detailed mode.]"
                 )
         st.image(sim_result["force_plot_bytes"], width="stretch")
         st.caption(
@@ -1963,7 +2029,16 @@ with st.sidebar:
         value=5e5,
         format_func=lambda x: f"{x:.0e}",
         label_visibility="collapsed",
-        help="Flow speed relative to chord. Light aircraft cruise: ~3-6 million.",
+        help=(
+            "**Reynolds number** — how fast and turbulent the air feels "
+            "to the wing.\n\n"
+            "- :material/explore: Hand glider / RC plane: ~1e5 (100,000)\n"
+            "- :material/sports: Sailplane / glider: ~5e5 (500,000)\n"
+            "- :material/flight: Light aircraft cruise: ~3e6 – 6e6\n"
+            "- :material/flight_takeoff: Jet airliner cruise: ~1e7+\n\n"
+            ":gray[*Bigger = faster / bigger wing / thinner air. Set "
+            "this to match the real flight regime you care about.*]"
+        ),
     )
 
     st.markdown("")
@@ -1974,10 +2049,14 @@ with st.sidebar:
         index=0,
         label_visibility="collapsed",
         help=(
-            "NeuralFoil's accuracy/speed trade-off. **Best** matches XFoil to "
-            "within ~3% (research-grade). **Balanced** is ~2x faster, ~5% accurate. "
-            "**Fast** is ~5x faster, ~10% accurate -- great for sweeping wide "
-            "alpha or Re ranges where you want shape not exactness."
+            "How accurate the ML model is — at the cost of speed.\n\n"
+            "- **Best**: research-grade. Within ~3 % of the gold-standard "
+            "industry tool (XFoil). Use this for a final report or polar.\n"
+            "- **Balanced**: ~2x faster, ~5 % off. Good default for "
+            "exploration.\n"
+            "- **Fast**: ~5x faster, ~10 % off. Pick this when you're "
+            "sweeping a big range of angles or Reynolds numbers and just "
+            "want to see the *shape* of the trend."
         ),
     )
     nf_model_size = NF_MODEL_PRESETS[nf_model_display]

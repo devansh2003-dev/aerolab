@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>AeroLab polygon drawer</title>
+<style>
+  :root {
+    color-scheme: dark;
+  }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    font-family: "Source Sans 3", "Source Sans Pro", -apple-system, BlinkMacSystemFont,
+                 "Segoe UI", Roboto, sans-serif;
+    color: #cbd5e1;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .wrap {
+    position: relative;
+    width: 100%;
+    box-sizing: border-box;
+  }
+  .canvas-host {
+    position: relative;
+    display: inline-block;
+    border-radius: 6px;
+    overflow: hidden;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset,
+                0 6px 16px rgba(0, 0, 0, 0.35);
+  }
+  canvas {
+    display: block;
+    cursor: crosshair;
+    background: #0b1220;
+  }
+  canvas.closed {
+    cursor: default;
+  }
+  .hint {
+    position: absolute;
+    top: 8px;
+    left: 10px;
+    font-size: 11px;
+    color: #94a3b8;
+    background: rgba(11, 18, 32, 0.78);
+    padding: 3px 8px;
+    border-radius: 3px;
+    pointer-events: none;
+    letter-spacing: 0.01em;
+  }
+  .hint.success {
+    color: #86efac;
+    background: rgba(20, 83, 45, 0.55);
+  }
+  .toolbar {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+    align-items: center;
+  }
+  button.tool {
+    background: #1f2937;
+    color: #e2e8f0;
+    border: 1px solid #334155;
+    padding: 5px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    font-family: inherit;
+    transition: background 0.12s ease, border-color 0.12s ease;
+  }
+  button.tool:hover:not(:disabled) {
+    background: #334155;
+    border-color: #475569;
+  }
+  button.tool:active:not(:disabled) {
+    background: #1e293b;
+  }
+  button.tool:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+  .status {
+    flex: 1;
+    text-align: right;
+    color: #94a3b8;
+    font-size: 11px;
+    letter-spacing: 0.02em;
+  }
+  .status.ready {
+    color: #86efac;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="canvas-host">
+    <canvas id="c" width="400" height="200"></canvas>
+    <div class="hint" id="hint">Click to place points</div>
+  </div>
+  <div class="toolbar">
+    <button class="tool" id="undo" title="Undo last point (Ctrl+Z)">↶ Undo</button>
+    <button class="tool" id="clear" title="Clear all points">⟲ Clear</button>
+    <div class="status" id="status">0 points placed.</div>
+  </div>
+</div>
+
+<script>
+// ---------- Streamlit bridge (postMessage protocol) ----------
+// Streamlit components run in an iframe and communicate with the host
+// page via postMessage. The three messages we use:
+//   componentReady  -> tells Streamlit the iframe is mounted and ready
+//   setFrameHeight  -> resizes the iframe to fit our content
+//   setComponentValue -> sends a JSON value back to Python on every change
+function sendMessage(type, data) {
+  const msg = Object.assign({ isStreamlitMessage: true, type: type }, data || {});
+  window.parent.postMessage(msg, "*");
+}
+function setComponentReady() {
+  sendMessage("streamlit:componentReady", { apiVersion: 1 });
+}
+function setFrameHeight(height) {
+  sendMessage("streamlit:setFrameHeight", { height: height });
+}
+function setComponentValue(value) {
+  sendMessage("streamlit:setComponentValue", { value: value, dataType: "json" });
+}
+
+// ---------- Canvas drawing state ----------
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d");
+const hint = document.getElementById("hint");
+const statusEl = document.getElementById("status");
+const undoBtn = document.getElementById("undo");
+const clearBtn = document.getElementById("clear");
+
+let vertices = [];   // list of {x, y}
+let cursor = null;   // current mouse position, or null when outside canvas
+let closed = false;  // true once the user has clicked the green start dot
+
+// Pixel radius around the start vertex within which a click closes
+// the polygon. 14 px is comfortable for mouse precision without being
+// so large that users close shapes by accident on small polygons.
+const CLOSE_RADIUS = 14;
+
+function distance(a, b) {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+function nearStartVertex() {
+  return (
+    cursor !== null &&
+    vertices.length >= 3 &&
+    !closed &&
+    distance(cursor, vertices[0]) < CLOSE_RADIUS
+  );
+}
+
+// ---------- Rendering ----------
+function render() {
+  // Background
+  ctx.fillStyle = "#0b1220";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Subtle grid for spatial reference (40-px squares)
+  ctx.strokeStyle = "rgba(148, 163, 184, 0.08)";
+  ctx.lineWidth = 1;
+  for (let x = 40; x < canvas.width; x += 40) {
+    ctx.beginPath();
+    ctx.moveTo(x + 0.5, 0);
+    ctx.lineTo(x + 0.5, canvas.height);
+    ctx.stroke();
+  }
+  for (let y = 40; y < canvas.height; y += 40) {
+    ctx.beginPath();
+    ctx.moveTo(0, y + 0.5);
+    ctx.lineTo(canvas.width, y + 0.5);
+    ctx.stroke();
+  }
+
+  // Wind arrow at left edge to orient the user
+  drawWindArrow();
+
+  if (vertices.length === 0) return;
+
+  // Polygon outline / interior
+  ctx.beginPath();
+  ctx.moveTo(vertices[0].x, vertices[0].y);
+  for (let i = 1; i < vertices.length; i++) {
+    ctx.lineTo(vertices[i].x, vertices[i].y);
+  }
+  if (closed) {
+    ctx.closePath();
+    ctx.fillStyle = "rgba(248, 250, 252, 0.18)";
+    ctx.fill();
+    ctx.strokeStyle = "#f8fafc";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  } else {
+    ctx.strokeStyle = "#f8fafc";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    // Rubber-band preview line from the last placed vertex to the cursor
+    if (cursor !== null) {
+      ctx.beginPath();
+      ctx.moveTo(vertices[vertices.length - 1].x, vertices[vertices.length - 1].y);
+      ctx.lineTo(cursor.x, cursor.y);
+      ctx.strokeStyle = nearStartVertex()
+        ? "rgba(34, 197, 94, 0.95)"
+        : "rgba(248, 250, 252, 0.45)";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 5]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+
+  // Vertex markers. The start vertex gets a green halo once we have
+  // enough points to close, which signals "you can click here to finish".
+  vertices.forEach(function (v, i) {
+    if (i === 0 && vertices.length >= 3 && !closed) {
+      ctx.beginPath();
+      ctx.arc(v.x, v.y, CLOSE_RADIUS, 0, Math.PI * 2);
+      ctx.fillStyle = nearStartVertex()
+        ? "rgba(34, 197, 94, 0.55)"
+        : "rgba(34, 197, 94, 0.20)";
+      ctx.fill();
+      ctx.strokeStyle = "rgba(34, 197, 94, 0.85)";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+    ctx.beginPath();
+    ctx.arc(v.x, v.y, 4.5, 0, Math.PI * 2);
+    ctx.fillStyle = (i === 0 && !closed) ? "#22c55e" : "#f8fafc";
+    ctx.fill();
+    ctx.strokeStyle = "#0b1220";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  });
+}
+
+function drawWindArrow() {
+  // Translucent left-pointing-INTO-shape arrow + "wind" label, so the
+  // user knows which side to put the front of their shape on.
+  const baseY = canvas.height - 14;
+  ctx.strokeStyle = "rgba(148, 163, 184, 0.55)";
+  ctx.fillStyle = "rgba(148, 163, 184, 0.75)";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(8, baseY);
+  ctx.lineTo(40, baseY);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(40, baseY);
+  ctx.lineTo(34, baseY - 4);
+  ctx.lineTo(34, baseY + 4);
+  ctx.closePath();
+  ctx.fill();
+  ctx.font = "10px ui-monospace, SFMono-Regular, Menlo, monospace";
+  ctx.fillStyle = "rgba(148, 163, 184, 0.75)";
+  ctx.fillText("wind", 8, baseY - 6);
+}
+
+function updateHint() {
+  hint.classList.remove("success");
+  statusEl.classList.remove("ready");
+  if (closed) {
+    hint.textContent = "Shape closed — ready to use";
+    hint.classList.add("success");
+    statusEl.textContent = vertices.length + " points · closed";
+    statusEl.classList.add("ready");
+  } else if (vertices.length === 0) {
+    hint.textContent = "Click to place points";
+    statusEl.textContent = "0 points placed.";
+  } else if (vertices.length < 3) {
+    hint.textContent = "Need at least 3 points";
+    statusEl.textContent = vertices.length + " / 3 minimum.";
+  } else {
+    hint.textContent = "Click the green dot to close";
+    statusEl.textContent = vertices.length + " points · click green dot to close.";
+  }
+  undoBtn.disabled = vertices.length === 0 && !closed;
+  clearBtn.disabled = vertices.length === 0 && !closed;
+  if (closed) {
+    canvas.classList.add("closed");
+  } else {
+    canvas.classList.remove("closed");
+  }
+}
+
+function pushValueToStreamlit() {
+  setComponentValue({
+    vertices: vertices.map(function (v) { return { x: v.x, y: v.y }; }),
+    closed: closed,
+    width: canvas.width,
+    height: canvas.height,
+  });
+}
+
+// ---------- Input handling ----------
+function canvasMousePos(e) {
+  const r = canvas.getBoundingClientRect();
+  return {
+    x: (e.clientX - r.left) * (canvas.width / r.width),
+    y: (e.clientY - r.top) * (canvas.height / r.height),
+  };
+}
+
+canvas.addEventListener("mousedown", function (e) {
+  if (closed) return;
+  const p = canvasMousePos(e);
+  // Click on start vertex (with 3+ points) closes the polygon.
+  if (vertices.length >= 3 && distance(p, vertices[0]) < CLOSE_RADIUS) {
+    closed = true;
+  } else {
+    vertices.push(p);
+  }
+  render();
+  updateHint();
+  pushValueToStreamlit();
+});
+
+canvas.addEventListener("mousemove", function (e) {
+  cursor = canvasMousePos(e);
+  render();   // local-only repaint; we don't push to Streamlit on every pixel
+});
+
+canvas.addEventListener("mouseleave", function () {
+  cursor = null;
+  render();
+});
+
+undoBtn.addEventListener("click", function () {
+  if (closed) {
+    closed = false;
+  } else if (vertices.length > 0) {
+    vertices.pop();
+  }
+  render();
+  updateHint();
+  pushValueToStreamlit();
+});
+
+clearBtn.addEventListener("click", function () {
+  vertices = [];
+  cursor = null;
+  closed = false;
+  render();
+  updateHint();
+  pushValueToStreamlit();
+});
+
+// Keyboard shortcut: Ctrl+Z / Cmd+Z to undo while the iframe has focus.
+window.addEventListener("keydown", function (e) {
+  if ((e.ctrlKey || e.metaKey) && e.key === "z") {
+    e.preventDefault();
+    undoBtn.click();
+  }
+});
+
+// ---------- Lifecycle ----------
+// Listen for the host's render event so we can resize the canvas if the
+// host passes new width/height args. The first event also tells us when
+// the iframe is fully wired up.
+window.addEventListener("message", function (event) {
+  if (!event.data || event.data.type !== "streamlit:render") return;
+  const args = (event.data.args || {});
+  const newW = parseInt(args.width || 0, 10);
+  const newH = parseInt(args.height || 0, 10);
+  if (newW > 0 && newW !== canvas.width) canvas.width = newW;
+  if (newH > 0 && newH !== canvas.height) canvas.height = newH;
+  setFrameHeight(canvas.height + 60);
+  render();
+});
+
+// Tell Streamlit we're ready and set initial iframe height.
+setComponentReady();
+setFrameHeight(canvas.height + 60);
+render();
+updateHint();
+</script>
+</body>
+</html>

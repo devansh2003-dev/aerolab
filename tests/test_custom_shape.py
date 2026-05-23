@@ -22,6 +22,7 @@ from src.custom_shape import (
     extract_silhouette_from_image,
     polygon_outline_xy,
     polygon_to_lbm_mask,
+    vertices_to_polygon,
 )
 
 
@@ -737,3 +738,142 @@ def test_canvas_to_polygon_none_raises():
     fail with a polite message rather than an AttributeError."""
     with pytest.raises(ValueError, match="empty"):
         canvas_image_to_polygon(None)
+
+
+def test_canvas_to_polygon_filled_polygon_mode():
+    """When the canvas runs in polygon drawing mode, st_canvas renders
+    the user's polygon as a filled solid (translucent fill_color over the
+    interior). The drawn region is a 2D blob, not a thin stroke. The
+    converter should detect this and skip the open-loop closure check
+    -- the polygon is already closed by definition."""
+    h, w = 200, 400
+    def stroke(mask):
+        # Solid-filled diamond, ~80 px tall, ~120 px wide -- the kind of
+        # shape st_canvas renders in polygon mode after the user clicks
+        # 4 vertices and double-clicks to close.
+        cy, cx = h // 2, w // 2
+        yy, xx = np.mgrid[:h, :w]
+        diamond = (np.abs(xx - cx) / 60 + np.abs(yy - cy) / 40) <= 1.0
+        mask[diamond] = True
+    rgba = _synth_drawn_stroke(h, w, stroke)
+    result = canvas_image_to_polygon(rgba)
+    # Should produce a valid silhouette polygon, not raise "doesn't enclose".
+    assert result.polygon_xy.ndim == 2 and result.polygon_xy.shape[1] == 2
+    assert result.polygon_xy.shape[0] >= 4
+    # Bbox should match the filled diamond roughly (120 x 80).
+    poly = result.polygon_xy
+    assert np.ptp(poly[:, 0]) > 100, f"x-extent too small: {np.ptp(poly[:, 0]):.1f}"
+    assert np.ptp(poly[:, 1]) > 60, f"y-extent too small: {np.ptp(poly[:, 1]):.1f}"
+
+
+def test_vertices_to_polygon_happy_path():
+    """The new polygon_drawer component returns vertices as a list of
+    {x, y} dicts. vertices_to_polygon adapts them into the SilhouetteResult
+    shape the rest of the pipeline expects."""
+    verts = [
+        {"x": 100.0, "y": 50.0},
+        {"x": 300.0, "y": 50.0},
+        {"x": 300.0, "y": 150.0},
+        {"x": 100.0, "y": 150.0},
+    ]
+    result = vertices_to_polygon(verts, canvas_w=400, canvas_h=200)
+    assert isinstance(result, SilhouetteResult)
+    assert result.image_w == 400 and result.image_h == 200
+    assert result.polygon_xy.shape == (4, 2)
+    assert result.polygon_xy[0, 0] == 100.0 and result.polygon_xy[0, 1] == 50.0
+    # Result polygon must rasterize -- end-to-end sanity check.
+    mask = polygon_to_lbm_mask(
+        result.polygon_xy, Nx=320, Ny=80, cx=160.0, cy=40.0,
+        target_extent_cells=60.0,
+    )
+    assert int(mask.sum()) > 100
+
+
+def test_vertices_to_polygon_rejects_too_few():
+    """Polygon needs at least 3 vertices to enclose anything."""
+    with pytest.raises(ValueError, match="at least 3 points"):
+        vertices_to_polygon(
+            [{"x": 10.0, "y": 10.0}, {"x": 20.0, "y": 20.0}],
+            canvas_w=400, canvas_h=200,
+        )
+
+
+def test_vertices_to_polygon_rejects_zero_extent_line():
+    """A 'polygon' that's actually a straight horizontal line (all y's
+    the same) has zero vertical extent -- can't rasterize a real shape
+    from it. Reject early with a user-facing message."""
+    line = [{"x": float(x), "y": 100.0} for x in (10, 50, 100, 200, 300)]
+    with pytest.raises(ValueError, match="near-zero extent"):
+        vertices_to_polygon(line, canvas_w=400, canvas_h=200)
+
+
+def test_vertices_to_polygon_rejects_non_finite():
+    """Defensive: a malformed message from the JS bridge could deliver
+    NaN/Inf coordinates. We reject rather than letting them poison
+    the rasterizer."""
+    bad = [
+        {"x": 10.0, "y": 10.0},
+        {"x": float("nan"), "y": 50.0},
+        {"x": 50.0, "y": 50.0},
+    ]
+    with pytest.raises(ValueError, match="non-finite"):
+        vertices_to_polygon(bad, canvas_w=400, canvas_h=200)
+
+
+def test_vertices_to_polygon_rejects_malformed_vertex():
+    """A vertex missing the x or y key shouldn't crash with a KeyError;
+    it should surface as a user-readable ValueError."""
+    bad = [
+        {"x": 10.0, "y": 10.0},
+        {"x": 50.0},  # missing 'y'
+        {"x": 100.0, "y": 100.0},
+    ]
+    with pytest.raises(ValueError, match="malformed"):
+        vertices_to_polygon(bad, canvas_w=400, canvas_h=200)
+
+
+def test_vertices_to_polygon_rejects_wrong_type():
+    """If the JS bridge somehow returns something other than a list
+    (e.g. None or a dict), we should fail fast with a clear message."""
+    with pytest.raises(ValueError, match="list of points"):
+        vertices_to_polygon(None, canvas_w=400, canvas_h=200)
+    with pytest.raises(ValueError, match="list of points"):
+        vertices_to_polygon({"x": 10, "y": 10}, canvas_w=400, canvas_h=200)
+
+
+def test_vertices_to_polygon_end_to_end_simulation():
+    """End-to-end smoke: vertex list -> polygon -> simulate_and_render."""
+    from src.lbm_render import simulate_and_render
+    # Diamond shape, 4 vertices
+    verts = [
+        {"x": 200.0, "y": 60.0},
+        {"x": 280.0, "y": 100.0},
+        {"x": 200.0, "y": 140.0},
+        {"x": 120.0, "y": 100.0},
+    ]
+    result = vertices_to_polygon(verts, canvas_w=400, canvas_h=200)
+    out = simulate_and_render(
+        "Custom", reynolds_target=200, aoa_deg=0.0,
+        res_key="Standard (320 x 80)",
+        n_frames=3, custom_polygon=result.polygon_xy,
+    )
+    assert isinstance(out["gif_bytes"], bytes) and len(out["gif_bytes"]) > 0
+    assert out["label"].startswith("Custom shape")
+
+
+def test_canvas_to_polygon_thin_freehand_loop_still_works():
+    """Regression check: the freehand-loop path (stroke that encloses a
+    region) must still work after adding polygon-mode detection. An open-
+    annulus stroke gets dilated + fill_holes'd into a disk, as before."""
+    h, w, r = 160, 320, 35
+    def stroke(mask):
+        yy, xx = np.mgrid[:h, :w]
+        dist = np.hypot(xx - w // 2, yy - h // 2)
+        # 10-px-thick ring, like freedraw stroke_width=10.
+        mask[(dist > r - 5) & (dist < r + 5)] = True
+    rgba = _synth_drawn_stroke(h, w, stroke)
+    result = canvas_image_to_polygon(rgba)
+    # The filled disk should have bbox ~ 2r x 2r.
+    poly = result.polygon_xy
+    assert np.ptp(poly[:, 0]) > 2 * r - 10
+    assert np.ptp(poly[:, 1]) > 2 * r - 10

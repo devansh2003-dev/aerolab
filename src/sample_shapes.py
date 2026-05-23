@@ -95,31 +95,36 @@ def car_profile_polygon() -> np.ndarray:
 
 
 def building_cross_section_polygon() -> np.ndarray:
-    """A tall building silhouette: stepped facade + spire on top.
+    """A tall building silhouette, lying on its side so wind blows
+    across it (the classic "wind around a tower" 2D benchmark).
 
-    ~100 px wide x 300 px tall. Will rotate 90 deg by default in the app
-    so the flow goes ACROSS the building rather than blowing it from
-    above (which would be a structural-wind-load test, valid but not
-    the typical 2D CFD demo orientation). Mirrors the classic
-    'wind around a square tower' undergrad benchmark.
+    Original drawing (upright, ~100 px wide x 300 px tall) is rotated
+    90 deg CW into the returned polygon so the long axis sits
+    horizontally: ~300 px wide x ~100 px tall. The foundation faces the
+    inflow on the LEFT; the spire points away on the right. With the
+    polygon scaled to 60 cells (Standard preset extent), this gives a
+    ~60 x 19 lattice body = ~24 % vertical blockage, in line with the
+    other bundled samples (fish, car) and well below the 50 % threshold
+    where the channel walls start to dominate the wake.
+
+    Without this rotation, the upright building runs ~75 % vertical
+    blockage and reports an absurdly high Cd (~30+) -- the simulation
+    is correct but unphysical for the intended "look at the wake"
+    use case.
     """
-    return np.array([
-        # Spire / antenna at top
-        (50.0, 6.0),
+    # Upright polygon, image coords (origin top-left, y down).
+    # Spire tip is at low y (top of image); foundation is at high y.
+    upright = np.array([
+        (50.0, 6.0),    # Spire / antenna tip
         (44.0, 24.0),
-        # Roof corners with step
         (24.0, 28.0),
         (24.0, 38.0),
         (8.0, 42.0),
-        # Down the left face with one step (setback)
         (8.0, 110.0),
         (18.0, 115.0),
         (18.0, 290.0),
-        # Base bottom-left
-        (4.0, 296.0),
-        # Base bottom-right
-        (96.0, 296.0),
-        # Up the right face with mirrored step
+        (4.0, 296.0),   # Base bottom-left
+        (96.0, 296.0),  # Base bottom-right
         (82.0, 290.0),
         (82.0, 115.0),
         (92.0, 110.0),
@@ -128,6 +133,13 @@ def building_cross_section_polygon() -> np.ndarray:
         (76.0, 28.0),
         (56.0, 24.0),
     ], dtype=np.float64)
+    # Rotate 90 deg CW: (x, y) -> (y, x_max - x). Result: foundation
+    # ends up on the LEFT (low x, facing inflow), spire on the RIGHT.
+    x_max = upright[:, 0].max()
+    rotated = np.empty_like(upright)
+    rotated[:, 0] = upright[:, 1]
+    rotated[:, 1] = x_max - upright[:, 0]
+    return rotated
 
 
 SAMPLE_SHAPES = {

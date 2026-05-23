@@ -1,17 +1,17 @@
 # AeroLab
 
-> Browser-based aerodynamics playground. No install, no signup.
+> A browser-based aerodynamics playground. Try the hosted demo with no signup, or `pip install` and run it locally.
 
 ![NACA 4412 airfoil at Re=600, +15° AoA](assets/hero_naca4412_re600_aoa15.gif)
 
-Drop in a 2D shape (cylinder, square, ellipse, NACA 4-digit airfoil, or **upload your own image**), set wind speed, watch the wake develop. Two modes:
+Drop in a 2D shape (cylinder, square, ellipse, NACA 4-digit airfoil, **upload your own image**, or **sketch one in the browser**), set wind speed, watch the wake develop. Two modes:
 
 - **Fast (NeuralFoil)** — instant ML polar predictions for airfoils.
 - **Real CFD (LBM)** — full Lattice Boltzmann simulation rendered as an animated GIF, on any shape you can sketch.
 
 CPU-only, free to use, mobile-friendly.
 
-**Live demo:** [aerolab-devansh.streamlit.app](https://aerolab-devansh.streamlit.app/)
+**Live demo:** [aerolab-devansh.streamlit.app](https://aerolab-devansh.streamlit.app/) (no install, no signup)
 
 ## Validation
 
@@ -55,19 +55,20 @@ streamlit run app.py
 ```
 
 ```powershell
-pytest -q                                # 129 unit tests, ~70 s warm
+pytest -q                                # 186 unit tests, ~70 s warm
 python scripts/dev_validate_cfd.py       # 4 physics gates + 3 diagnostics, ~90 s
 ```
 
 ## Features
 
 **Real CFD (LBM mode)**
-- **6 shape options:** cylinder, square, ellipse, NACA 0012, NACA 4412, **and "Upload your own"** (PNG/JPG → silhouette extraction → live preview → CFD GIF)
-- **Try-a-sample buttons:** built-in fish, car profile, and building cross-section silhouettes — one click, no upload needed
+- **6 shape options:** cylinder, square, ellipse, NACA 0012, NACA 4412, **and "Custom"** (Upload an image / Draw in-browser / pick a built-in Sample)
+- **3 ways to ship a custom shape:** drop a PNG / JPG (silhouette extraction), click-to-draw a polygon on the in-browser canvas (click vertices, click the green start dot to close), or pick a bundled sample (fish, car profile, building cross-section)
+- **3 viz modes:** Vorticity (rotation), Velocity (|u|), and Pressure — switchable without re-solving
 - Velocity slider 0.15–4.5 m/s (mapped to Re 50–1500 via Re = U·L/ν), per-shape AoA / rotation, two grid presets
 - MRT collision + Smagorinsky LES, Zou-He inflow/outflow, Bouzidi interpolated bounce-back for built-in shapes (halfway BB for custom uploads — Bouzidi q-field for arbitrary polygons is on the roadmap)
 - Side-by-side pinned comparison (works for custom shapes too), GIF download with parameter + shape encoded filenames
-- Vorticity heatmap (RdBu_r) + speed-coloured RK4 streaklines (plasma) + smooth body outline + flow/scale annotations baked in
+- Speed-coloured RK4 streaklines (plasma) + smooth body outline + flow/scale annotations baked in
 
 **Fast (NeuralFoil)**
 - Instant lift/drag/polar for NACA airfoils, three model sizes (xxxlarge / medium / xsmall)
@@ -81,7 +82,7 @@ Phase 1 (solver core, W1–4) shipped Day 5, expanded Days 6–14 with originall
 | Phase | Weeks | Deliverable | Status |
 |------:|------:|------|------|
 | 1 — Solver core | 1–4 | LBM works, validated, deployed with 5+ shapes | ✅ Day 5; expanded to D14 |
-| 2 — Shape freedom | 5–8 | **Image upload + silhouette extraction**, multi-viz, side-by-side, GIF export, gallery | **Upload ✅**, sample silhouettes ✅, side-by-side ✅, GIF ✅, gallery ✅. **Multi-viz (pressure / `\|u\|` / streamline density): pending.** Drawable canvas (hand-draw on trackpad): pending. |
+| 2 — Shape freedom | 5–8 | **Image upload + silhouette extraction**, multi-viz, side-by-side, GIF export, gallery | **Upload ✅**, sample silhouettes ✅, **click-to-draw canvas ✅**, side-by-side ✅, GIF ✅, gallery ✅, multi-viz (vorticity / velocity / pressure) ✅. |
 | 3 — Polish + 3D | 9–12 | NeuralFoil ✅, optional AeroSandbox+AVL 3D, OpenFOAM cross-validation, launch | NeuralFoil + Cloud deploy ✅; 3D + OpenFOAM pending |
 
 ## Validation
@@ -147,7 +148,7 @@ aerolab/
 │   ├── naca0012_aoa_polar.py       # 8-angle airfoil polar
 │   ├── dev_validate_cfd.py         # 4 physics gates + 3 diagnostics
 │   └── dev_grid_convergence.py     # Std vs Detailed + Richardson extrapolation
-└── tests/                          # 129 unit tests (incl. Phase 2 W5 gate)
+└── tests/                          # 186 unit tests (incl. Phase 2 W5 gate)
 ```
 
 ## License
