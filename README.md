@@ -75,9 +75,9 @@ python scripts/dev_validate_cfd.py       # 4 physics gates + 3 diagnostics, ~90 
 
 ## Status
 
-**Day ~21 of a 12-week build. Phase 2 W5 (image upload) shipped.**
+**Day ~15 of a 12-week build. Phases 1 + 2 closed; Phase 3 in progress.**
 
-Phase 1 (solver core, W1–4) shipped Day 5, expanded Days 6–14 with originally-Phase-2/3 work (MRT, Bouzidi, Zou-He, Mei momentum exchange). Phase 2 W5 (image/SVG upload with silhouette extraction — the headline differentiator) shipped on Day ~21.
+Phase 1 (solver core, W1–4) shipped Day 5, expanded Days 6–14 with originally-Phase-2/3 work (MRT, Bouzidi, Zou-He, Mei momentum exchange). Phase 2 (W5 image upload, W6 multi-viz, W7 side-by-side compare, W8 gallery, plus a Phase-2.5 click-to-draw canvas) all shipped. Currently in Phase 3 polish: NeuralFoil ✅, validation against Williamson 1996 + Okajima 1982 ✅, plain-English UX overhaul ✅. 3D wing and OpenFOAM cross-validation remain optional stretch goals.
 
 | Phase | Weeks | Deliverable | Status |
 |------:|------:|------|------|
