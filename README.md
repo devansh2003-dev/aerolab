@@ -13,6 +13,22 @@ CPU-only, free to use, mobile-friendly.
 
 **Live demo:** [aerolab-devansh.streamlit.app](https://aerolab-devansh.streamlit.app/)
 
+## Validation
+
+[![validated](https://img.shields.io/badge/validated-Williamson%201996%20%2B%20Okajima%201982-success)](VALIDATION.md)
+
+The 2D D2Q9 MRT-LES solver has been benchmarked against published experimental data from peer-reviewed fluid-dynamics literature. After standard Allen-Vincenti / West-Apelt blockage correction, the solver matches free-stream reference values within:
+
+| Quantity     | Median error | Max error | Tolerance band | Reference source                          |
+|--------------|--------------|-----------|----------------|-------------------------------------------|
+| Cylinder Cd  | **2.9 %**    | **6.9 %** | ± 15 %         | Williamson 1996 ARFM 28; Norberg 1994     |
+| Square Cd    | **8.9 %**    | **12.5 %**| ± 25 %         | Okajima 1982 JFM 123; Sohankar 1998       |
+| Cylinder St  | **15.2 %**   | **23.4 %**| ± 30 %         | Williamson 1996                           |
+
+Mass conservation is verified to **machine precision** (drift ≈ 3 × 10⁻¹³ over 5000 steps in a closed box) and to **0.84 %** of throughflow in the open channel. Continuous validation runs on every commit via `tests/test_validation_benchmark.py`.
+
+See [VALIDATION.md](VALIDATION.md) for full methodology, results table, limitations, and 14 academic citations.
+
 ## Performance
 
 | Mode                    | Local (4+ cores) | Cloud (1 vCPU) |

@@ -47,7 +47,15 @@ st.markdown(
     "<span style='opacity:0.4'>·</span>"
     "<span style='opacity:0.7'>browser-based aerodynamics</span>"
     "<span style='opacity:0.4'>·</span>"
-    "<span style='opacity:0.55;font-size:0.75rem;'>v0.4.0</span>"
+    "<span style='opacity:0.55;font-size:0.75rem;'>v0.4.1</span>"
+    "<span style='opacity:0.4'>·</span>"
+    "<a href='https://github.com/devansh2003-dev/AeroLab/blob/main/VALIDATION.md' "
+    "target='_blank' style='color:#10b981;text-decoration:none;"
+    "font-size:0.75rem;opacity:0.85;' "
+    "title='Validated against Williamson 1996 (cylinder Cd within 7 percent) "
+    "and Okajima 1982 (square Cd within 15 percent). Click for full validation report.'>"
+    ":material/verified: validated"
+    "</a>"
     "</div>",
     unsafe_allow_html=True,
 )
@@ -1647,9 +1655,11 @@ if mode == "Real CFD (LBM)":
                 f"free-stream, Williamson / Okajima): {_free_line}.  "
                 f"&nbsp;&nbsp; Our run is in a {_blockage_pct} %-blocked "
                 f"channel, which inflates the measured Cd by ~{round(100 * (sim_result['cd_mean'] - _cd_free) / max(_cd_free, 0.01)) if _cd_free else 0} %. "
-                f"The blockage gap is a known 2D-channel artefact -- "
-                f"real wind tunnels apply a Maskell / Allen-Vincenti "
-                f"correction to recover the free-stream value above."
+                f"After Allen-Vincenti correction, the solver matches "
+                f"Williamson/Okajima within +/- 15 % (Cd) and +/- 30 % "
+                f"(St) -- see "
+                f"[VALIDATION.md](https://github.com/devansh2003-dev/AeroLab/blob/main/VALIDATION.md) "
+                f"for the full benchmark sweep + methodology + citations."
             )
 
         # Compact textbook-comparison verdict. Green if Strouhal matched

@@ -27,3 +27,12 @@ Thumbs.db
 # Project data (keep folder, ignore contents)
 data/*
 !data/.gitkeep
+# DO commit the validation results so VALIDATION.md links resolve from
+# a fresh clone -- they are small, human-readable, and dropping them
+# with every push would break the "see the numbers I cite" promise.
+!data/validation/
+data/validation/*_log*.txt
+
+# Local venvs created by uv / pyenv for solver-local execution.
+# Project CI + Cloud deploy use requirements.txt, so these are local-only.
+.venv*/
