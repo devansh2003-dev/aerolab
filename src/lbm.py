@@ -473,7 +473,7 @@ def zou_he_outflow_pressure(f, rho_out=1.0):
 # Equivalence with the pure-NumPy reference is checked by a unit test in
 # tests/test_lbm.py -- if you change either, the test must still pass.
 
-@njit(fastmath=True)
+@njit(fastmath=True, error_model="numpy")
 def step_njit_with_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs, outflow_dirs):
     """One fused LBM timestep + momentum-exchange force calculation.
 
@@ -891,7 +891,7 @@ def collide_mrt(f, tau):
     return np.einsum("ij,jxy->ixy", M_inv, m_post)
 
 
-@njit(fastmath=True)
+@njit(fastmath=True, error_model="numpy")
 def step_njit_mrt_with_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs, outflow_dirs):
     """One fused MRT-LBM timestep + momentum-exchange force calculation.
 
@@ -1183,7 +1183,7 @@ def step_njit_mrt_with_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs,
     return f_new, Fx, Fy
 
 
-@njit(fastmath=True)
+@njit(fastmath=True, error_model="numpy")
 def step_njit_mrt_no_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs, outflow_dirs):
     """MRT timestep without the momentum-exchange force calculation.
 

@@ -587,22 +587,16 @@ def solve_lbm(shape_preset, reynolds_target, aoa_deg, res_key,
     # No separate warmup -- frame 0 captures uniform inflow and the
     # wake develops visibly over the first ~30 frames. The kick fires
     # inside the early record steps to break perfect symmetry.
+    # Blow-up detection cadence. Checking np.isfinite on the full (9, Nx, Ny)
+    # f-array every step is ~0.1 ms on Standard -- a few percent of step cost
+    # we don't want to pay. Once per frame (every STEPS_PER_FRAME steps) is
+    # tight enough that we catch the divergence before NaN propagates through
+    # the rendering pipeline, while staying well under 1 % overhead.
     for frame in range(n_frames_local):
         for _ in range(STEPS_PER_FRAME):
-            try:
-                f, Fx_step, Fy_step = step_njit_mrt_with_force(
-                    f, tau, mask, q_field, f_inflow_eq, INFLOW_DIRS, OUTFLOW_DIRS,
-                )
-            except ZeroDivisionError as _step_err:
-                # The pre-flight checks above should rule out the common
-                # degenerate-shape cases, but if anything slips through
-                # (e.g. a thin internal channel that pinches off after a few
-                # steps), surface step_counter so we can localise the bug
-                # from the user's traceback.
-                raise ZeroDivisionError(
-                    f"@njit step diverged at step {step_counter} of {n_steps_local} "
-                    f"(shape={shape_preset!r}). Underlying: {_step_err}"
-                ) from _step_err
+            f, Fx_step, Fy_step = step_njit_mrt_with_force(
+                f, tau, mask, q_field, f_inflow_eq, INFLOW_DIRS, OUTFLOW_DIRS,
+            )
             fx_history[step_counter] = Fx_step
             fy_history[step_counter] = Fy_step
             # Defensive solid-cell reset: see f_eq_solid comment above.
@@ -611,6 +605,22 @@ def solve_lbm(shape_preset, reynolds_target, aoa_deg, res_key,
                 f[2, kick_x, kick_y] += KICK_AMPLITUDE
                 f[4, kick_x, kick_y] -= KICK_AMPLITUDE
             step_counter += 1
+
+        # End-of-frame blow-up check. With error_model='numpy' the @njit
+        # step path no longer raises ZeroDivisionError on degenerate cells
+        # -- it produces inf/NaN silently and keeps going. We detect the
+        # divergence here and bail before the rendering code sees NaN
+        # snapshots and produces a black GIF. ValueError lets the polite
+        # handler in app.py surface a "shape too unstable at this Re"
+        # message that's actionable for the user.
+        if not np.isfinite(f).all():
+            raise ValueError(
+                f"Simulation diverged at frame {frame + 1} of {n_frames_local} "
+                f"(step {step_counter} of {n_steps_local}, shape={shape_preset!r}, "
+                f"Re={reynolds_target}). This Reynolds number is at the edge of "
+                f"the solver's stability for this shape -- try a lower Re (the "
+                f"square cylinder is reliable up to Re ~ 1000)."
+            )
 
         rho_field, u = macroscopic(f)
         dv_dx = np.zeros_like(u[1])

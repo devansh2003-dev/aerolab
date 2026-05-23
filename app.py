@@ -47,7 +47,7 @@ st.markdown(
     "<span style='opacity:0.4'>·</span>"
     "<span style='opacity:0.7'>browser-based aerodynamics</span>"
     "<span style='opacity:0.4'>·</span>"
-    "<span style='opacity:0.55;font-size:0.75rem;'>v0.3.1</span>"
+    "<span style='opacity:0.55;font-size:0.75rem;'>v0.3.2</span>"
     "</div>",
     unsafe_allow_html=True,
 )
@@ -909,7 +909,16 @@ if mode == "Real CFD (LBM)":
                 ":material/play_arrow:  See lift collapse",
             ),
             (
-                "Square  (boxy)", 2.40, 0.0, "Standard (320 x 80)",
+                # Re=600 (velocity 1.80) chosen deliberately over a more
+                # dramatic Re=800: at the standard 28-cell square_side, tau
+                # creeps below 0.51 at Re ~ 800 and the MRT+LES solver
+                # starts producing isolated NaN cells in the high-shear
+                # corner shear layers (visible as a "Simulation diverged
+                # at frame ..." abort). Re=600 is well inside the
+                # validated band, still violent enough to read as a
+                # bluff-body wake, and matches the textbook Cd ~ 1.95
+                # reference shipped in the badge.
+                "Square  (boxy)", 1.80, 0.0, "Standard (320 x 80)",
                 "Vorticity",
                 "Brick in a hurricane",
                 "A flat face slammed into the wind. A wide, violent wake "
@@ -918,7 +927,7 @@ if mode == "Real CFD (LBM)":
                 ":material/play_arrow:  Watch the chaos",
             ),
             (
-                "Square  (boxy)", 2.40, 45.0, "Standard (320 x 80)",
+                "Square  (boxy)", 1.80, 45.0, "Standard (320 x 80)",
                 "Vorticity",
                 "Diamond cuts the wind",
                 "Same square, rotated 45 deg. Sharper leading edge, "
