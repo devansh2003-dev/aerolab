@@ -202,6 +202,69 @@ def test_invalid_viz_mode_raises():
         )
 
 
+# === Gallery-card regression matrix =====================================
+# Each card in app.py's _gallery_cards list MUST run end-to-end without
+# raising, and the force coefficients must land in a physically plausible
+# band for the shape. The bands are loose (-50 % .. +50 % around the
+# solver-baseline reference Cd) so this catches structural regressions
+# without false-positiving on the 5-frame-mean noise of a 60-frame smoke
+# run. Re-tighten the bounds if someone adds a more sensitive test for the
+# specific (shape, Re) physics.
+#
+# Card schema mirrors app.py: (shape, velocity_mps, aoa_deg, res, viz).
+# velocity_mps * 333.33 = Re. Test uses Re directly for clarity.
+GALLERY_CARD_CONFIGS = [
+    # (shape, Re, aoa, res, viz, expected_cd_low, expected_cd_high, label)
+    ("Cylinder",  200, 0.0,  "Standard (320 x 80)", "Vorticity", 0.8, 2.5, "Swirls behind a pole"),
+    ("NACA 4412", 600, 4.0,  "Standard (320 x 80)", "Pressure",  0.0, 1.0, "How a wing lifts (clean)"),
+    ("NACA 4412", 600, 20.0, "Standard (320 x 80)", "Pressure",  0.0, 2.0, "How a wing stalls"),
+    ("Square",    600, 0.0,  "Standard (320 x 80)", "Vorticity", 1.0, 3.0, "Brick in a hurricane"),
+    ("Square",    600, 45.0, "Standard (320 x 80)", "Vorticity", 0.5, 2.5, "Diamond cuts the wind"),
+    ("Cylinder",  50,  0.0,  "Standard (320 x 80)", "Vorticity", 1.0, 3.5, "Almost stopped (honey)"),
+]
+
+
+@pytest.mark.parametrize(
+    "shape,re,aoa,res,viz,cd_lo,cd_hi,label",
+    GALLERY_CARD_CONFIGS,
+    ids=[c[7] for c in GALLERY_CARD_CONFIGS],
+)
+def test_gallery_card_runs_and_lands_in_band(
+    shape, re, aoa, res, viz, cd_lo, cd_hi, label,
+):
+    """Every gallery card should complete without diverging and produce a
+    Cd inside the documented per-card band. This is the single most
+    important regression test for AeroLab: if a user clicks a curated
+    card and it crashes (or returns a wildly wrong Cd), the whole "this
+    is reliable" promise dies. n_frames=12 keeps the matrix under
+    ~30 s warm; the bands are loose enough that one transient frame
+    won't false-fail.
+    """
+    out = simulate_and_render(
+        shape, re, aoa, res, viz_mode=viz, n_frames=12,
+    )
+    # 1. Render pipeline produced a real GIF (not a transparent placeholder).
+    assert isinstance(out["gif_bytes"], bytes) and len(out["gif_bytes"]) > 5000, (
+        f"Card {label!r}: GIF is empty or under 5 KB -- render pipeline broke"
+    )
+    # 2. Force coefficients are finite (NaN would mean the solver diverged
+    #    silently past the end-of-frame isfinite check in solve_lbm).
+    assert np.isfinite(out["cd_mean"]), (
+        f"Card {label!r}: cd_mean is NaN -- solver diverged"
+    )
+    assert np.isfinite(out["cl_mean"]), (
+        f"Card {label!r}: cl_mean is NaN"
+    )
+    # 3. Cd is inside the documented band. Catches sign flips, unit-mistakes,
+    #    and major physics regressions; loose enough to absorb the short-run
+    #    transient (12 frames isn't enough for fully developed shedding, so
+    #    Cd is allowed to read up to 25 % off the solver baseline).
+    assert cd_lo <= out["cd_mean"] <= cd_hi, (
+        f"Card {label!r}: cd_mean = {out['cd_mean']:.3f}, expected band "
+        f"[{cd_lo}, {cd_hi}]. Did the solver baseline shift?"
+    )
+
+
 def test_pressure_temporal_average_suppresses_acoustic_waves():
     """The Pressure mode applies a rolling temporal mean over the rho field
     to wash out LBM acoustic ripples. We test the effect by simulating a

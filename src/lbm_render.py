@@ -895,10 +895,13 @@ def render_lbm(solve, *, viz_mode="Vorticity", progress_callback=None):
     #   center). On Detailed NACA (chord=100) that left ~50 cells of
     #   empty channel between the trailing edge and the spawn box --
     #   visible as "streams trail off past the leading edge". We now use
-    #   char_length/2 + 6: that's just past the body's trailing edge at
-    #   AoA=0 and still past it at AoA=45 (since x-extent shrinks with
-    #   cos(AoA)). Spawns that land INSIDE the rotated body footprint
-    #   are still rejected by the mask check below.
+    #   char_length/2 + 3: hugs the body's trailing edge at AoA=0 so the
+    #   user can see vortices peeling off the moment they form (the most
+    #   visually dramatic frames). Spawns that land INSIDE the rotated
+    #   body footprint at AoA=45 are still rejected by the mask check
+    #   below. The previous +6 buffer left a 3-cell deadzone where the
+    #   wake's birth was unsampled -- visually the wake "appeared" two
+    #   cells downstream of the body instead of right at the surface.
     # * wake_x_max = LBM_NX * (1 - WAKE_OUTFLOW_FRAC). Last 15 % of the
     #   channel is the trail-off zone: no fresh spawns, but aged wake
     #   particles drift through it and fade out. On Detailed (Nx=960)
@@ -907,7 +910,7 @@ def render_lbm(solve, *, viz_mode="Vorticity", progress_callback=None):
     #   the channel-end emptiness was from wake_x_max being too far
     #   back, leaving the body-to-mid-channel region under-spawned.
     BODY_X = res_cfg["body_x"]
-    wake_x_min = BODY_X + char_length / 2 + 6
+    wake_x_min = BODY_X + char_length / 2 + 3
     wake_x_max = LBM_NX * (1.0 - WAKE_OUTFLOW_FRAC)
     wake_y_min = LBM_NY * 0.08
     wake_y_max = LBM_NY * 0.92
