@@ -46,6 +46,8 @@ st.markdown(
     "<span>AeroLab</span>"
     "<span style='opacity:0.4'>·</span>"
     "<span style='opacity:0.7'>browser-based aerodynamics</span>"
+    "<span style='opacity:0.4'>·</span>"
+    "<span style='opacity:0.55;font-size:0.75rem;'>v0.3.1</span>"
     "</div>",
     unsafe_allow_html=True,
 )
