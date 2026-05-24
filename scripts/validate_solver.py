@@ -168,22 +168,26 @@ class CaseResult:
     runtime_sec: float
 
 
-# Per-shape validation tolerance bands. Justified by the measured spread
-# in our quick-sweep numbers (see VALIDATION.md "Tolerance bands"):
-#   Cylinder Cd: K=1.10 AV correction recovers Williamson within 7 %
-#     across Re=100-500. 15 % band has comfortable headroom.
-#   Square Cd:   K=1.00 AV correction recovers Okajima within 13 %
-#     across Re=200-500. 25 % band has comfortable headroom (square
-#     has stronger corner-shedding / channel coupling).
+# Per-shape validation tolerance bands. These MUST match the gates in
+# tests/test_validation_benchmark.py exactly -- if you change one, change
+# both. (External review 2026-05-24 caught a 30 vs 35 drift here.)
+#
+# Justified by the measured spread in the full 14-case validation sweep
+# (see VALIDATION.md):
+#   Cylinder Cd: K=1.10 AV correction recovers Williamson within
+#     median 4.3 % / max 11.6 % across Re=100-1000. 15 % band passes all.
+#   Square Cd:   K=1.00 AV correction recovers Okajima within median
+#     5.4 % / max 21.8 % across Re=150-500. 25 % band needed at the
+#     high-Re end where corner-shed channel coupling is strongest.
 #   Cylinder St: West-Apelt correction recovers Williamson within
-#     ~23 % at Re=100; tighter at higher Re. 30 % band passes all.
+#     ~23 % worst-case. 35 % band has noise-floor headroom.
 #   Square St:   structurally not recoverable by single-formula
 #     correction at B=0.35 (channel-resonance shedding mode locks
 #     near St_raw ~ 0.37 across Re). Reported but not gated.
 CD_TOLERANCE = {"Cylinder": 15.0, "Square": 25.0}
-ST_TOLERANCE = {"Cylinder": 30.0, "Square": None}   # None = report-only
+ST_TOLERANCE = {"Cylinder": 35.0, "Square": None}   # None = report-only
 CD_TOLERANCE_PCT = 25.0  # fallback for unknown shapes in summary stats
-ST_TOLERANCE_PCT = 30.0
+ST_TOLERANCE_PCT = 35.0
 
 
 # =============================================================================

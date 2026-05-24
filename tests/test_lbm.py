@@ -381,8 +381,12 @@ def test_bounce_back_preserves_density_at_solid_cells():
 # ---------------------------------------------------------------------------
 
 def test_step_njit_matches_pure_numpy_single_step():
-    """One JIT'd step must bit-equivalent the pure-NumPy reference path on a
-    cylinder configuration with non-trivial state (mass + small y-perturbation).
+    """One JIT'd step must match the pure-NumPy reference path to within
+    ``atol=1e-10`` (NOT bit-identical -- ``fastmath=True`` lets the
+    compiler reassociate FP ops, and parallel reductions don't preserve
+    sum order). The 1e-10 tolerance is far below LBM discretization
+    error, so the test catches algorithmic bugs while accepting
+    round-off drift from fastmath.
 
     Uses a no-Bouzidi (all -1) q-field so the JIT step's Bouzidi block is a
     no-op, matching the pure-NumPy reference path which uses halfway BB.

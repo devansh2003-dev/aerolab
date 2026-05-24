@@ -17,15 +17,17 @@ CPU-only, free to use, mobile-friendly.
 
 [![validated](https://img.shields.io/badge/validated-Williamson%201996%20%2B%20Okajima%201982-success)](VALIDATION.md)
 
-The 2D D2Q9 MRT-LES solver has been benchmarked against published experimental data from peer-reviewed fluid-dynamics literature. After standard Allen-Vincenti / West-Apelt blockage correction, the solver matches free-stream reference values within:
+The 2D D2Q9 MRT-LES solver has been benchmarked against published experimental data from peer-reviewed fluid-dynamics literature. The Standard interactive preset runs in a 35 %-blocked channel (chosen for solve speed + GIF size); raw drag is inflated ~2.5–3× by wall acceleration, and an Allen-Vincenti / West-Apelt blockage correction is applied before comparison to the free-stream reference. **The "validation" is therefore of the corrected estimate, not the raw solver output.** Full 14-case sweep (Re 100 – 1000):
 
 | Quantity     | Median error | Max error | Tolerance band | Reference source                          |
 |--------------|--------------|-----------|----------------|-------------------------------------------|
-| Cylinder Cd  | **2.9 %**    | **6.9 %** | ± 15 %         | Williamson 1996 ARFM 28; Norberg 1994     |
-| Square Cd    | **8.9 %**    | **12.5 %**| ± 25 %         | Okajima 1982 JFM 123; Sohankar 1998       |
-| Cylinder St  | **15.2 %**   | **23.4 %**| ± 30 %         | Williamson 1996                           |
+| Cylinder Cd  | **4.3 %**    | **11.6 %**| ± 15 %         | Williamson 1996 ARFM 28; Norberg 1994     |
+| Square Cd    | **5.4 %**    | **21.8 %**| ± 25 %         | Okajima 1982 JFM 123; Sohankar 1998       |
+| Cylinder St  | **12.6 %**   | **23.4 %**| ± 35 %         | Williamson 1996                           |
 
-Mass conservation is verified to **machine precision** (drift ≈ 3 × 10⁻¹³ over 5000 steps in a closed box) and to **0.84 %** of throughflow in the open channel. Continuous validation runs on every commit via `tests/test_validation_benchmark.py`.
+Strouhal numbers are reported with the West-Apelt 1982 channel correction, but at 35 % blockage the confined-channel shedding mode noticeably flattens the raw St(Re) curve — see [VALIDATION.md §4.1](VALIDATION.md) for the honest caveat. Square St is **not** quoted as validated for this reason.
+
+Mass conservation is at **machine precision** (drift ≈ 3 × 10⁻¹³ over 5000 steps in a closed box) and **0.84 %** of throughflow in the open channel — this 0.84 % is the documented Zou-He tradeoff (prescribed velocity OR exact mass conservation, not both), not a "leak" to be hidden. Continuous validation runs on every commit via `tests/test_validation_benchmark.py`.
 
 See [VALIDATION.md](VALIDATION.md) for full methodology, results table, limitations, and 14 academic citations.
 

@@ -8,31 +8,47 @@ Methodology
 -----------
 For each (shape, Re) case:
 
-  1. Run the solver in its default Standard configuration.
+  1. Run the solver in its default Standard configuration
+     (320 x 80 grid, body D = 28 cells -> blockage B = 0.35).
   2. Apply the Allen-Vincenti / Pope-Harper 2D-bluff-body blockage
-     correction:
+     correction to Cd, and the West-Apelt 1982 channel correction to St:
         Cd_corrected = Cd_raw * (1 - K * B)^2
-        St_corrected = St_raw * (1 - B)
+        St_corrected = St_raw / (1 + 2 * B + B^2)
      where B = D/H is the lateral blockage ratio (= 0.35 on Standard)
-     and K is a shape constant (1.10 for cylinder, 0.70 for square),
-     fitted to recover free-stream values within the literature spread.
+     and K is a shape constant (1.10 for cylinder, 1.00 for square),
+     fitted within the Barlow-Rae-Pope literature range [0.5, 1.5] to
+     recover free-stream Cd. NOTE: at B = 0.35 these formulae are an
+     order of magnitude outside their derivation regime (small-blockage
+     wind tunnels at a few percent); the corrected numbers are best
+     read as "blockage-corrected estimate of free-stream Cd", not a
+     direct measurement. See VALIDATION.md sections 2.3 and 4 for the
+     full honest discussion.
   3. Compare corrected estimate to published free-stream reference:
         Cylinder: Williamson 1996 ARFM, Norberg 1994 JFM
         Square:   Okajima 1982 JFM, Sohankar 1998 IJNMF
   4. Pass if abs(error) <= tolerance.
 
-Tolerances are deliberately industry-standard for the 2D-LBM-at-D=28
-regime:
-    Cd:   +/- 20 % (Mei-Luo-Shyy 1999 report 5-10 % at D=40, B=12 %)
-    St:   +/- 25 % (St scales nonlinearly with blockage, harder to
-                    correct with a single coefficient)
+Per-shape tolerance bands (from the documented spread in the local
+14-case validation sweep):
+    Cylinder Cd:  +/- 15 %   (K = 1.10 recovers Williamson within
+                              median 4.3 % / max 11.6 %)
+    Square Cd:    +/- 25 %   (K = 1.00 recovers Okajima within
+                              median 5.4 % / max 21.8 %; corner-shed
+                              channel coupling widens the spread)
+    Cylinder St:  +/- 35 %   (West-Apelt under-corrects; max measured
+                              error 23.4 % at n_frames=200)
+    Square St:    not gated  (channel-resonance shedding at B = 0.35
+                              is structurally not recoverable by any
+                              single-formula correction -- see
+                              VALIDATION.md section 4.1)
 
 These are NOT the bands you'd accept from a 3D Fluent / OpenFOAM run.
-They ARE the bands you'd accept from a 2D educational LBM at moderate
-resolution -- documented at length in VALIDATION.md.
+They ARE the bands an educational 2D LBM at this resolution + blockage
+can support. Documented at length in VALIDATION.md.
 
-Runtime: each case takes ~50 s at n_frames=300. CI matrix below uses
-n_frames=200 (~33 s/case) for a 5-case sweep = ~3 min total CI cost.
+Runtime: each case takes ~50 s at n_frames=300 (the level our
+validate_solver.py docstring documents as above the FFT noise floor).
+CI uses the same n_frames=300 so the gate matches the headline numbers.
 """
 from __future__ import annotations
 
@@ -49,31 +65,31 @@ from scripts.validate_solver import (  # noqa: E402
     STANDARD_BLOCKAGE, run_case,
 )
 
-# n_frames at this validation level. 200 frames = 7000 lattice steps =
-# ~5 shedding periods at Re=200 -- enough for FFT to resolve the
-# fundamental shedding peak above the transient noise floor.
-VALIDATION_N_FRAMES = 200
+# n_frames at this validation level. 300 frames = 10500 lattice steps =
+# ~8 shedding periods at Re=200, ABOVE the 250-frame FFT noise floor
+# documented in scripts/validate_solver.py. The earlier value (200)
+# tested Strouhal in the noise band and forced a wider tolerance to
+# avoid false-failing -- caught in external review 2026-05-24.
+VALIDATION_N_FRAMES = 300
 
 # Per-shape tolerance bands -- chosen from the local validation sweep
-# numbers documented in VALIDATION.md. Cylinder Cd is the tightest
-# benchmark because the K=1.10 Allen-Vincenti correction works very
-# well; Square Cd is looser because Square shedding is more strongly
-# coupled to channel-resonance modes that a single K factor cannot
-# fully capture. Strouhal is universally less corrigible than Cd
-# because shedding frequency has wake-resonance content that velocity-
-# scale corrections under-correct (cylinder) or under-correct heavily
-# (square) -- we gate on St for cylinder only and treat square-St as
-# diagnostic-only (logged but not pass/fail).
-CD_TOL_CYLINDER = 15.0   # tight: solver matches Williamson within 7 % so far
-CD_TOL_SQUARE   = 25.0   # looser: corner-driven channel coupling adds spread
-# Cylinder St: West-Apelt correction recovers Williamson within ~23 % at
-# n_frames=300 (local validation), but at the CI's n_frames=200 the FFT
-# bin width is wider and the peak-picking noise adds another ~10 % to
-# the residual at Re=100 where shedding fundamental is closest to the
-# Nyquist boundary. 35 % accommodates both effects without false-failing.
+# numbers documented in VALIDATION.md.
+#   Cylinder Cd: K=1.10 Allen-Vincenti recovers Williamson within
+#                median 4.3 % / max 11.6 %  -> 15 % band has headroom
+#   Square Cd:   K=1.00 Allen-Vincenti recovers Okajima within
+#                median 5.4 % / max 21.8 %  -> 25 % band needed for
+#                corner-shed channel coupling at high Re
+#   Cylinder St: West-Apelt under-corrects channel-resonance shift;
+#                worst measured error 23.4 % at Re=100 -> 35 % band
+#                (still well above noise floor since CI now runs
+#                n_frames=300, not 200)
+#   Square St:   gated at None -- channel-resonance St at B=0.35 is
+#                structurally not recoverable by any single-formula
+#                correction; see VALIDATION.md section 4.1
+CD_TOL_CYLINDER = 15.0
+CD_TOL_SQUARE   = 25.0
 ST_TOL_CYLINDER = 35.0
-ST_TOL_SQUARE   = None   # diagnostic-only: confined-square St is structurally
-                         # uncorrectable by a single formula; document, not gate
+ST_TOL_SQUARE   = None
 
 # Per-shape Cd-only validation cases (no shedding -> no Strouhal).
 NO_SHEDDING_CASES = [
@@ -114,11 +130,19 @@ def test_solver_matches_published_cd_freestream(shape, re):
     per-shape tolerance.
 
     Cylinder gets the tighter +/- 15 % band because the K=1.10 Allen-
-    Vincenti correction recovers Williamson Cd within 7 % across the
-    Re=100-500 validated range. Square gets +/- 25 % because Square
-    shedding has stronger channel-resonance coupling that a single K
-    cannot fully capture; the measured spread in our quick sweep is
-    +/- 13 % so the 25 % band gives headroom for run-to-run variation.
+    Vincenti correction recovers Williamson Cd within median 4.3 % /
+    max 11.6 % across the Re=100-1000 validated band. Square gets
+    +/- 25 % because Square shedding has stronger channel-resonance
+    coupling that a single K cannot fully capture; measured spread is
+    median 5.4 % / max 21.8 %.
+
+    NOTE on what this gate proves: the "correction" Cd_raw * (1-KB)^2
+    at B=0.35 is a 2.65x rescale. Allen-Vincenti was derived for
+    small-blockage wind tunnels (B < 0.05); applying it at B=0.35 is
+    well outside the regime it was validated for. The gate therefore
+    proves the corrected ESTIMATE matches reference, not that the
+    solver matches reference natively. See VALIDATION.md sections 2.3
+    and 4 for full discussion.
     """
     cd_ref, _ = _expected_freestream(shape, re)
     assert cd_ref is not None, f"No reference Cd for {shape} Re={re}"

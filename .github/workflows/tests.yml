@@ -1,10 +1,14 @@
 name: tests
 
 # Runs the pytest suite on every push to main and every PR. The full suite
-# (106 tests as of 2026-05-19) takes ~21 s on a warm cache, ~80 s cold (numba
-# JIT compile is the bulk of cold-cache time; one visual-regression test
-# runs a 51-frame canonical-cylinder pipeline that takes ~10 s of the warm
-# total).
+# (186 tests as of 2026-05-24, of which ~44 are solver physics and the
+# remainder cover shapes, polygon geometry, custom-shape extraction, force
+# calculation, render pipeline, and visual regression) takes ~30 s warm
+# cache, ~90 s cold (numba JIT compile dominates the cold-cache delta).
+# The validation-benchmark suite runs separately (~8 min) — full Williamson
+# + Okajima sweep at n_frames=300, above the documented FFT noise floor.
+# One visual-regression test renders a 51-frame canonical-cylinder pipeline
+# as a fingerprint check (~10 s of the warm total).
 #
 # We pin to Python 3.11 because numba 0.65.1 (pinned in requirements.txt)
 # doesn't yet wheel for 3.12+ on every platform; bump together when we

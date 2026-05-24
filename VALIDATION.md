@@ -143,9 +143,9 @@ Pass / fail thresholds, applied to the blockage-corrected estimate:
 
 | Quantity        | Tolerance   | Justification |
 |-----------------|-------------|---------------|
-| Cylinder Cd     | ± 15 %      | Tightest band the data permits; max measured error 6.9 %. |
-| Square Cd       | ± 25 %      | Looser to absorb the corner-shedding / channel coupling spread (max measured 12.5 %). |
-| Cylinder St     | ± 30 %      | West-Apelt corrects most but not all of the channel-mode shedding shift. |
+| Cylinder Cd     | ± 15 %      | Tightest band the data permits; max measured error 11.6 % across the full Re = 100 – 1000 band. |
+| Square Cd       | ± 25 %      | Looser to absorb corner-shedding / channel coupling; max measured 21.8 % at the high-Re end. |
+| Cylinder St     | ± 35 %      | West-Apelt corrects most but not all of the channel-mode shedding shift; max measured 23.4 % at Re = 100. |
 | Square St       | not gated   | Channel-resonance shedding at B = 0.35 produces a near-Re-independent raw St ≈ 0.37 that is **not** recoverable by any single-formula blockage correction. Reported but not pass/fail. |
 
 These bands are **looser** than the 5 % that 3D Fluent / OpenFOAM

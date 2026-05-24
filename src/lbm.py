@@ -489,7 +489,7 @@ def step_njit_with_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs, out
     Streamlit Cloud's container produced a NUMBA_NUM_THREADS RuntimeError at
     JIT-compile time. ``prange`` in this file is aliased to ``range`` (top of
     module) so the loop syntax stays unchanged. Warm-step throughput on a
-    240x80 grid is ~0.2 ms/step serial; local loses the ~2-3x parallel speedup
+    320x80 grid is ~0.2 ms/step serial; local loses the ~2-3x parallel speedup
     but Cloud's 1 vCPU was already serial in practice.
 
     First call triggers JIT compilation (~5-8 sec). Subsequent calls reuse the
@@ -748,7 +748,7 @@ def step_njit_with_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs, out
 # 360, 437-451. The constraint is 0 < s_i < 2 for stability; values near 1.0
 # maximize stability, values near 1/tau minimize accuracy loss vs BGK at low
 # Re. We pick the middle ground here -- empirically stable from Re=50 up
-# through at least Re=1500 on the 240x80 standard preset.
+# through at least Re=1500 on the 320x80 standard preset.
 
 # MRT free relaxation rates (applied to the non-conserved, non-viscous
 # moments). Tuned to 1.4 -- the Lallemand-Luo middle ground validated for
@@ -905,7 +905,7 @@ def step_njit_mrt_with_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs,
     populations -- no matrix multiplies inside the hot loop.
 
     Compile time: ~6-10 sec on first call, cached thereafter. Warm-step
-    throughput on 240x80 serial: ~0.4 ms/step (~2x slower than BGK, acceptable
+    throughput on 320x80 serial: ~0.4 ms/step (~2x slower than BGK, acceptable
     for the much larger stable Re envelope).
     """
     Nx = f.shape[1]
@@ -1189,7 +1189,7 @@ def step_njit_mrt_no_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs, o
 
     Drop-in for the Streamlit visualization path (it doesn't consume Fx/Fy).
     Identical physics to ``step_njit_mrt_with_force`` minus the
-    8-direction force-accumulator loop. On a 240x80 grid this saves
+    8-direction force-accumulator loop. On a 320x80 grid this saves
     ~5-8% per step -- small per step, useful across 2000+ record steps.
     Validation scripts that need Fx/Fy keep using the with-force variant;
     this is a pure performance refinement for the viz path.
