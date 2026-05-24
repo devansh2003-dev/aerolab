@@ -22,10 +22,10 @@ The 2D D2Q9 MRT-LES solver has been benchmarked against published experimental d
 | Quantity     | Median error | Max error | Tolerance band | Reference source                          |
 |--------------|--------------|-----------|----------------|-------------------------------------------|
 | Cylinder Cd  | **4.3 %**    | **11.6 %**| ± 15 %         | Williamson 1996 ARFM 28; Norberg 1994     |
-| Square Cd    | **5.4 %**    | **21.8 %**| ± 25 %         | Okajima 1982 JFM 123; Sohankar 1998       |
-| Cylinder St  | **12.6 %**   | **23.4 %**| ± 35 %         | Williamson 1996                           |
+| Square Cd    | **8.9 %**    | **21.8 %**| ± 25 %         | Okajima 1982 JFM 123; Sohankar 1998       |
+| Cylinder St  | **15.2 %**   | **23.4 %**| ± 35 % †       | Williamson 1996                           |
 
-Strouhal numbers are reported with the West-Apelt 1982 channel correction, but at 35 % blockage the confined-channel shedding mode noticeably flattens the raw St(Re) curve — see [VALIDATION.md §4.1](VALIDATION.md) for the honest caveat. Square St is **not** quoted as validated for this reason.
+† **Cylinder St is qualitative, not parallel-quality.** Vortex shedding is present in the right ballpark — the dominant FFT peak is within ~15–25 % of Williamson 1996 across Re = 100 – 1000. At 35 % blockage the confined-channel shedding mode flattens the raw St(Re) curve far more than any single-formula correction (West-Apelt 1982 applied here) can recover, so we report it as a sanity check, not a validation row on a par with the Cd numbers. Square St is **not** quoted at all for the same reason. See [VALIDATION.md §4.1](VALIDATION.md) for the full caveat.
 
 Mass conservation is at **machine precision** (drift ≈ 3 × 10⁻¹³ over 5000 steps in a closed box) and **0.84 %** of throughflow in the open channel — this 0.84 % is the documented Zou-He tradeoff (prescribed velocity OR exact mass conservation, not both), not a "leak" to be hidden. Continuous validation runs on every commit via `tests/test_validation_benchmark.py`.
 

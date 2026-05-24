@@ -65,7 +65,7 @@ st.markdown(
     "font-size:0.75rem;opacity:0.85;' "
     "title='Blockage-corrected Cd against Williamson 1996 (cylinder, "
     "median 4 percent, max 12 percent) and Okajima 1982 (square, "
-    "median 5 percent, max 22 percent) across Re 100-1000. The Standard "
+    "median 9 percent, max 22 percent) across Re 100-1000. The Standard "
     "preset runs at 35 percent blockage so the correction is large; click "
     "for the full honest methodology.'>"
     ":material/verified: validated"

@@ -234,15 +234,14 @@ See §4.1 for the full explanation.
 
 **Validated band** (Re = 100 – 1000 cylinder, Re = 150 – 500 square):
 
-- **Cd: 12 / 12 PASS.** Median abs error **4.7 %**, max **21.8 %**
-  (Square Re = 150, within the ± 25 % square band).
-  - Cylinder Cd (Re = 100 – 1000): median 4.3 %, max 11.6 %, all
-    inside ± 15 %.
-  - Square Cd (Re = 150 – 500): median 5.4 %, max 21.8 %, all
-    inside ± 25 %.
-- **St (cylinder, gated): 8 / 8 PASS** at ± 35 % (Re = 80 – 1000),
-  7 / 7 at ± 25 % if restricted to Re = 100 – 1000.
-  - Median abs error 16.0 %, max 23.4 % (at Re = 100, the wider
+- **Cd: 11 / 11 PASS.** Per-shape headline numbers (verified against
+  `data/validation/results.json` by `tests/test_doc_validation_consistency.py`):
+  - Cylinder Cd (Re = 100 – 1000, n = 7): median 4.3 %, max 11.6 %,
+    all inside ± 15 %.
+  - Square Cd (Re = 150 – 500, n = 4): median 8.9 %, max 21.8 %,
+    all inside ± 25 %.
+- **St (cylinder, gated): 7 / 7 PASS** at ± 35 % (Re = 100 – 1000).
+  - Median abs error 15.2 %, max 23.4 % (at Re = 100, the wider
     FFT-bin regime).
 - **St (square, reported only): 38 – 52 % error.** Not gated; see §4.1.
 
