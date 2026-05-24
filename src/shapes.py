@@ -158,7 +158,9 @@ def ellipse_q_field(
     where (Xr_0, Yr_0) are the body-frame coords of the fluid cell and
     (X_dir, Y_dir) is the body-frame lattice direction.
 
-    Falls back to cylinder_q_field's behavior when a == b and aoa_deg == 0.
+    The general analytic ellipse formula naturally reduces to a circle
+    when a == b, so the a==b, aoa_deg==0 special case is handled by the
+    same code path -- no separate fall-through branch exists.
     """
     mask = ellipse_mask(Nx, Ny, cx, cy, a, b, aoa_deg)
     q = np.full((Nx, Ny, 9), -1.0, dtype=np.float64)

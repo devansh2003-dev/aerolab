@@ -19,9 +19,25 @@ def get_airfoil(airfoil: AirfoilLike) -> asb.Airfoil:
 
     Centralizing this conversion means callers don't need to import aerosandbox
     just to construct an airfoil from a NACA name.
+
+    Raises
+    ------
+    ValueError
+        If ``airfoil`` is a string but AeroSandbox can't resolve it to a real
+        airfoil (e.g. 'nacabanana', a stray UIUC name with no DAT file). In
+        those cases asb.Airfoil silently returns an instance with
+        ``coordinates = None`` which then crashes downstream rendering --
+        we surface that as an explicit error here so callers can catch it.
     """
     if isinstance(airfoil, str):
-        return asb.Airfoil(airfoil)
+        af = asb.Airfoil(airfoil)
+        if af.coordinates is None or len(af.coordinates) == 0:
+            raise ValueError(
+                f"{airfoil!r} is not a recognised airfoil. AeroSandbox "
+                f"resolved it to an empty coordinate set. Use a 4-/5-digit "
+                f"NACA code (e.g. 'naca4412') or a known UIUC name."
+            )
+        return af
     return airfoil
 
 

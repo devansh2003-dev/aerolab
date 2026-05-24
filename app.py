@@ -68,7 +68,9 @@ st.markdown(
     "median 9 percent, max 22 percent) across Re 100-1000. The Standard "
     "preset runs at 35 percent blockage so the correction is large; click "
     "for the full honest methodology.'>"
-    ":material/verified: validated"
+    # U+2713 check mark; the Streamlit :material/X: shortcode doesn't
+    # render inside a raw HTML markdown block, so we use the unicode glyph.
+    "&#10003; validated"
     "</a>"
     "</div>",
     unsafe_allow_html=True,
@@ -237,6 +239,37 @@ def _freestream_reference(shape_preset: str, re_value: int):
     else:
         cd_free, st_free = None, None
     return cd_free, st_free
+
+
+# Allen-Vincenti shape constants. Match scripts/validate_solver.py exactly --
+# the per-shape K is in [0.5, 1.5] per Barlow-Rae-Pope. Diamond uses the
+# square value because the 2-D blockage acceleration depends on the maximum
+# lateral extent, not the corner orientation.
+_AV_K = {"Cylinder": 1.10, "Square": 1.00}
+
+
+def _blockage_corrected(shape_preset: str, cd_raw: float, st_raw: float,
+                         char_length: float, lbm_ny: int):
+    """Apply Allen-Vincenti / West-Apelt blockage corrections in-app, so the
+    Forces panel can lead with the corrected estimate instead of the raw
+    35 %-blocked number. Returns (cd_corr, st_corr, blockage_ratio, K).
+
+    cd_corr = cd_raw * (1 - K*B)^2   (Allen-Vincenti / Pope-Harper, 2-D)
+    st_corr = st_raw / (1 + 2B + B^2) (West & Apelt 1982 JFM 114)
+
+    Returns (None, None, B, None) for shapes we don't ship K for (e.g.
+    Custom drawn polygons -- no blockage-correction reference exists).
+    """
+    B = float(char_length) / max(float(lbm_ny), 1.0)
+    K = _AV_K.get(shape_preset)
+    if K is None:
+        return None, None, B, None
+    cd_corr = cd_raw * (1.0 - K * B) ** 2
+    st_corr = (
+        st_raw / (1.0 + 2.0 * B + B * B)
+        if np.isfinite(st_raw) else float("nan")
+    )
+    return cd_corr, st_corr, B, K
 
 
 # Two-layer cache: the LBM solve is mode-independent, the GIF + colorbar
@@ -1666,51 +1699,80 @@ if mode == "Real CFD (LBM)":
             ":material/insights: **Forces measured during this run** "
             "(drag, lift, vortex-shedding frequency)"):
         _st_val = sim_result.get("strouhal", float("nan"))
-        # Textbook reference: ship comparison data for the canonical
-        # validated cases. Cylinder always shows; Square shows only when
-        # the body presents a flat face (aoa ~ 0) since the table is for
-        # broadside flow only. Used both as inline deltas under the
-        # metric tiles and as a single honest summary below the plot.
+        _cd_raw = float(sim_result["cd_mean"])
+        # Compute the Allen-Vincenti corrected estimate so we can lead
+        # with the free-stream-equivalent number instead of the raw
+        # 35 %-blocked value (which would otherwise show a +130 % delta
+        # against the textbook free-stream Cd and make the solver look
+        # broken -- external review 2026-05-24).
+        _ny = sim_result.get("lbm_ny", 80)
+        _L = sim_result.get("char_length", 1.0)
+        _cd_corr, _st_corr, _B, _K = _blockage_corrected(
+            shape_preset, _cd_raw, _st_val, _L, _ny,
+        )
+        _blockage_pct = round(100.0 * _B)
+        # Free-stream textbook (Williamson / Okajima) for the "vs textbook"
+        # delta. Cylinder always shows; Square shows only when the body
+        # presents a flat face (aoa ~ 0) since the table is broadside.
         _show_textbook = (
             shape_preset == "Cylinder"
             or (shape_preset == "Square" and abs(aoa_deg) < 5.0)
         )
-        _cd_ref, _st_ref = (
-            _textbook_reference(shape_preset, int(reynolds_target))
+        _cd_free, _st_free = (
+            _freestream_reference(shape_preset, int(reynolds_target))
             if _show_textbook else (None, None)
         )
-        # Inline deltas on the Cd / Strouhal metric tiles -- compact "vs
-        # textbook" indicator without burying it in a paragraph.
-        # delta_color="off" keeps the chip gray because our Cd reads high
-        # for structural reasons (confinement + bounce-back), not because
-        # of user error -- red/green would mislead.
+        # Compare the CORRECTED estimate to textbook, not the raw value.
+        # delta_color="off" stays gray because high-blockage square Cd
+        # can still legitimately read +15-25 %.
         _cd_delta = (
-            f"{sim_result['cd_mean'] - _cd_ref:+.2f} vs textbook {_cd_ref:.2f}"
-            if _cd_ref is not None else None
+            f"{(_cd_corr if _cd_corr is not None else _cd_raw) - _cd_free:+.2f} "
+            f"vs free-stream {_cd_free:.2f}"
+            if (_cd_free is not None) else None
         )
         _st_delta = (
-            f"{_st_val - _st_ref:+.3f} vs textbook {_st_ref:.3f}"
-            if (_st_ref is not None and np.isfinite(_st_val)) else None
+            f"{(_st_corr if _st_corr is not None else _st_val) - _st_free:+.3f} "
+            f"vs free-stream {_st_free:.3f}"
+            if (_st_free is not None and np.isfinite(_st_val)) else None
         )
 
         _force_cols = st.columns(3)
         with _force_cols[0]:
-            st.metric(
-                "Drag (Cd)",
-                f"{sim_result['cd_mean']:.2f}",
-                delta=_cd_delta,
-                delta_color="off",
-                help=(
-                    "**Drag coefficient.** How hard the air pushes back "
-                    "on the shape. Bigger = more drag. A brick has Cd "
-                    "around 2; a sleek teardrop is below 0.1. Averaged "
-                    "over the last third of the run, so the start-up "
-                    "transient is excluded."
-                ),
-            )
-            st.caption(
-                ":gray[Air resistance. Lower = sleeker.]"
-            )
+            if _cd_corr is not None:
+                st.metric(
+                    "Drag (Cd, corrected)",
+                    f"{_cd_corr:.2f}",
+                    delta=_cd_delta,
+                    delta_color="off",
+                    help=(
+                        "**Blockage-corrected drag coefficient.** Allen-"
+                        "Vincenti (1944) / Pope-Harper rescale of the raw "
+                        "channel Cd to the free-stream equivalent, so it "
+                        "compares apples-to-apples with Williamson 1996 / "
+                        "Okajima 1982. The raw value (shown below) is "
+                        f"inflated by the {_blockage_pct} %-blocked "
+                        "channel walls accelerating the local flow."
+                    ),
+                )
+                st.caption(
+                    f":gray[Raw (channel): **{_cd_raw:.2f}** &nbsp;|&nbsp; "
+                    f"K = {_K:.2f} at B = {_B:.2f}]"
+                )
+            else:
+                # Shapes without a tabulated K (Custom polygons,
+                # airfoils outside the validation set): just show raw.
+                st.metric(
+                    "Drag (Cd, raw)",
+                    f"{_cd_raw:.2f}",
+                    help=(
+                        "Raw measured drag coefficient in the simulation "
+                        "channel. We don't ship a blockage-correction "
+                        "constant for this shape, so this value is what "
+                        "the solver measured directly (inflated by the "
+                        f"{_blockage_pct} % channel blockage)."
+                    ),
+                )
+                st.caption(":gray[Channel-confined; no correction applied.]")
         with _force_cols[1]:
             st.metric(
                 "Lift (Cl)",
@@ -1728,23 +1790,32 @@ if mode == "Real CFD (LBM)":
             )
         with _force_cols[2]:
             if np.isfinite(_st_val):
+                _st_shown = _st_corr if _st_corr is not None else _st_val
                 st.metric(
                     "Shedding rhythm (St)",
-                    f"{_st_val:.3f}",
+                    f"{_st_shown:.3f}",
                     delta=_st_delta,
                     delta_color="off",
                     help=(
-                        "**Strouhal number.** How often vortices peel "
-                        "off the back of the shape, scaled by size and "
-                        "speed. Stays around 0.2 for a cylinder no "
-                        "matter the wind speed -- which is exactly why "
-                        "telephone wires can hum a steady musical note "
-                        "in a breeze."
+                        "**Strouhal number** (West-Apelt 1982 corrected "
+                        "where applicable). How often vortices peel off "
+                        "the back of the shape, scaled by size and speed. "
+                        "Stays around 0.2 for a cylinder no matter the "
+                        "wind speed -- which is exactly why telephone "
+                        "wires can hum a steady musical note in a breeze. "
+                        "At high blockage the channel-resonance mode "
+                        "biases this number even after correction; see "
+                        "VALIDATION.md section 4.1."
                     ),
                 )
-                st.caption(
-                    ":gray[How fast vortices peel off. ~0.2 for cylinders.]"
-                )
+                if _st_corr is not None:
+                    st.caption(
+                        f":gray[Raw (channel): **{_st_val:.3f}**]"
+                    )
+                else:
+                    st.caption(
+                        ":gray[How fast vortices peel off. ~0.2 for cylinders.]"
+                    )
             else:
                 st.metric(
                     "Shedding rhythm (St)", "—",
@@ -1767,48 +1838,25 @@ if mode == "Real CFD (LBM)":
             "unreliable -- try a longer / Detailed run."
         )
 
-        # === Free-stream reference (the honest "what would IRL measure?"
-        # number) ===
-        # Our solver runs in a confined channel: Standard has 35 %
-        # blockage (D=28 in Ny=80), Detailed has 33 % (D=80 in Ny=240).
-        # The walls accelerate the local flow past the body, which
-        # inflates the measured Cd by ~25-40 % vs. wind-tunnel free
-        # stream. Surface BOTH numbers and explain the gap, so the user
-        # walks away with: (a) confidence that the solver is working
-        # (vs. _REFERENCE_CD), AND (b) the real-world Cd they would
-        # cite in a report (from _FREESTREAM_CD). This is the
-        # "very close to IRL data" deliverable -- the corrected number,
-        # not the raw confined-channel one.
-        _cd_free, _st_free = _freestream_reference(
-            shape_preset, int(reynolds_target),
-        )
-        if _show_textbook and (_cd_free is not None or _st_free is not None):
-            _free_bits = []
-            if _cd_free is not None:
-                _free_bits.append(f"**Cd &asymp; {_cd_free:.2f}**")
-            if _st_free is not None and np.isfinite(_st_val):
-                _free_bits.append(f"**St &asymp; {_st_free:.3f}**")
-            _free_line = " &nbsp;·&nbsp; ".join(_free_bits)
-            # Resolution-aware blockage ratio for the caption -- LBM_NY
-            # and char_length live on sim_result.
-            _ny = sim_result.get("lbm_ny", 80)
-            _L = sim_result.get("char_length", 1.0)
-            _blockage_pct = round(100.0 * _L / max(_ny, 1))
-            st.info(
-                f":material/public: **In unbounded flow** (wind-tunnel "
-                f"free-stream, Williamson / Okajima): {_free_line}.  "
-                f"&nbsp;&nbsp; Our run is in a {_blockage_pct} %-blocked "
-                f"channel, which inflates the raw measured Cd by ~"
-                f"{round(100 * (sim_result['cd_mean'] - _cd_free) / max(_cd_free, 0.01)) if _cd_free else 0} %. "
-                f"After applying the Allen-Vincenti blockage correction "
-                f"(a ~2.65x rescale at this blockage), the **corrected "
-                f"estimate** of free-stream Cd matches Williamson / "
-                f"Okajima within +/- 15 % (cylinder) / +/- 25 % (square). "
-                f"Strouhal is reported with the West-Apelt correction "
-                f"but the channel-resonance shedding at this blockage "
-                f"limits its predictive value -- see "
-                f"[VALIDATION.md](https://github.com/devansh2003-dev/AeroLab/blob/main/VALIDATION.md) "
-                f"section 4.1 for the honest discussion."
+        # === Methodology line (single source of truth on what those
+        # numbers mean) ===
+        # The metric tiles already lead with the blockage-corrected Cd,
+        # so we no longer need a paragraph explaining the raw-vs-corrected
+        # gap. One concise caption with the citation is enough.
+        if _show_textbook and _cd_free is not None and _cd_corr is not None:
+            st.caption(
+                f":material/public: Free-stream reference: "
+                f"**Cd &asymp; {_cd_free:.2f}** (Williamson 1996 / "
+                f"Okajima 1982). Our channel is **{_blockage_pct} %-"
+                f"blocked**; the corrected Cd above applies the standard "
+                f"Allen-Vincenti rescale with K = {_K:.2f}, recovering "
+                f"the free-stream value within &plusmn; 15 % (cylinder) "
+                f"or &plusmn; 25 % (square) across Re 100 - 1000. "
+                f"Strouhal carries the West-Apelt 1982 correction but at "
+                f"this blockage the channel-resonance mode limits its "
+                f"predictive value -- see "
+                f"[VALIDATION.md](https://github.com/devansh2003-dev/aerolab/blob/main/VALIDATION.md) "
+                f"section 4.1."
             )
 
         # Compact textbook-comparison verdict. Green if Strouhal matched
@@ -1974,8 +2022,19 @@ st.caption(
 
 
 def normalize_naca(raw: str) -> str:
-    """Accept '4412', 'naca4412', 'NACA 4412', etc., return 'naca4412'."""
+    """Accept '4412', 'naca4412', 'NACA 4412', etc., return 'naca4412'.
+
+    Raises ValueError with a user-actionable message if ``raw`` is not a
+    4- or 5-digit NACA code (anything else gets passed straight through
+    to asb.Airfoil which silently returns coordinates=None and then
+    crashes downstream rendering -- caught in external review 2026-05-24).
+    """
     cleaned = raw.strip().lower().replace("naca", "").replace(" ", "")
+    if not cleaned.isdigit() or len(cleaned) not in (4, 5):
+        raise ValueError(
+            f"{raw!r} is not a valid NACA code. Expected 4 or 5 digits "
+            f"(e.g. '4412', 'NACA 23012'), got {cleaned!r}."
+        )
     return f"naca{cleaned}"
 
 
@@ -2069,18 +2128,29 @@ with st.sidebar:
     )
     nf_model_size = NF_MODEL_PRESETS[nf_model_display]
 
-# Parse and dedupe airfoil names while preserving input order.
+# Parse and dedupe airfoil names while preserving input order. Each token
+# can fail validation independently -- we surface a per-token warning so
+# 'naca4412, banana' shows the polar for naca4412 and explains why banana
+# was skipped, instead of crashing the whole app.
 seen = set()
 airfoil_names = []
 for raw in raw_names.split(","):
-    if raw.strip():
+    if not raw.strip():
+        continue
+    try:
         n = normalize_naca(raw)
-        if n not in seen:
-            seen.add(n)
-            airfoil_names.append(n)
+    except ValueError as exc:
+        st.warning(f"Skipping {raw.strip()!r}: {exc}")
+        continue
+    if n not in seen:
+        seen.add(n)
+        airfoil_names.append(n)
 
 if not airfoil_names:
-    st.warning("Enter at least one airfoil name in the sidebar.")
+    st.warning(
+        "No valid airfoils to analyze. Try a 4- or 5-digit NACA code "
+        "like `naca4412` or `naca23012`."
+    )
     st.stop()
 
 # Categorical color palette (Plotly's default qualitative set). Reused across all
@@ -2133,6 +2203,13 @@ for i, name in enumerate(valid_names):
     af = airfoil_objs[name]
     color = PALETTE[i % len(PALETTE)]
     label = name.upper()
+
+    # Defensive: get_airfoil already raises on None coords, but a future
+    # caller path could bypass it -- so we keep the guard cheap rather
+    # than crash on af.coordinates[:, 0].
+    if af.coordinates is None or len(af.coordinates) == 0:
+        st.warning(f"Skipping {label}: no geometry coordinates available.")
+        continue
 
     # Shape: airfoil.coordinates is a closed loop (TE -> upper -> LE -> lower -> TE).
     geom_fig.add_trace(

@@ -1,18 +1,20 @@
 name: tests
 
-# Runs the pytest suite on every push to main and every PR. The full suite
-# (186 tests as of 2026-05-24, of which ~44 are solver physics and the
-# remainder cover shapes, polygon geometry, custom-shape extraction, force
-# calculation, render pipeline, and visual regression) takes ~30 s warm
+# Runs ruff lint + pytest on every push to main and every PR. The fast
+# suite (199 tests as of 2026-05-24, covering solver physics, shapes,
+# polygon geometry, custom-shape extraction, forces, render, airfoil
+# input validation, doc-drift gate, and visual regression) takes ~30 s warm
 # cache, ~90 s cold (numba JIT compile dominates the cold-cache delta).
-# The validation-benchmark suite runs separately (~8 min) — full Williamson
-# + Okajima sweep at n_frames=300, above the documented FFT noise floor.
-# One visual-regression test renders a 51-frame canonical-cylinder pipeline
-# as a fingerprint check (~10 s of the warm total).
+# The validation-benchmark suite runs separately (~8 min) — full
+# Williamson + Okajima sweep at n_frames=300, above the documented FFT
+# noise floor. One visual-regression test renders a 51-frame canonical-
+# cylinder pipeline as a fingerprint check (~10 s of the warm total).
 #
 # We pin to Python 3.11 because numba 0.65.1 (pinned in requirements.txt)
 # doesn't yet wheel for 3.12+ on every platform; bump together when we
-# upgrade numba.
+# upgrade numba. All test tooling (pytest, ruff) is pinned in
+# requirements-dev.txt -- CI installs the same versions a contributor
+# gets locally, so a green CI run is reproducible.
 
 on:
   push:
@@ -37,12 +39,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
-          pip install ruff
 
-      # Lint is now blocking. Codebase is ruff-clean (autofix + manual
-      # pass on 2026-05-24); flipping continue-on-error: true -> false
-      # means any new violation fails CI. Add explicit # noqa if you
-      # need to suppress a single line.
+      # Lint is blocking. Codebase is ruff-clean as of 2026-05-24; any
+      # new violation fails CI. Add explicit `# noqa: <CODE>` if you
+      # need to suppress a single line with justification.
       - name: Lint with ruff
         run: ruff check .
 

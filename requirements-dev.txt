@@ -1,3 +1,10 @@
 # Dev-only deps. NOT installed on Streamlit Cloud (it reads requirements.txt only).
 # Install locally with: pip install -r requirements-dev.txt
-pytest
+#
+# Pinned because the test suite + lint gate are reproducibility contracts:
+# a `pytest -q` that passes on Cloud should pass identically locally and
+# in CI, which means every tool in the chain has to be pinned the way the
+# runtime deps in requirements.txt are. External review 2026-05-24 flagged
+# the unpinned versions as a hole in the "everything is pinned" pitch.
+pytest==9.0.3
+ruff==0.15.14

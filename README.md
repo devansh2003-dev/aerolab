@@ -15,7 +15,8 @@ CPU-only, free to use, mobile-friendly.
 
 ## Validation
 
-[![validated](https://img.shields.io/badge/validated-Williamson%201996%20%2B%20Okajima%201982-success)](VALIDATION.md)
+[![tests](https://github.com/devansh2003-dev/aerolab/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/devansh2003-dev/aerolab/actions/workflows/tests.yml)
+[![benchmarks](https://img.shields.io/badge/benchmarks-Williamson%201996%20%2B%20Okajima%201982-success)](VALIDATION.md)
 
 The 2D D2Q9 MRT-LES solver has been benchmarked against published experimental data from peer-reviewed fluid-dynamics literature. The Standard interactive preset runs in a 35 %-blocked channel (chosen for solve speed + GIF size); raw drag is inflated ~2.5–3× by wall acceleration, and an Allen-Vincenti / West-Apelt blockage correction is applied before comparison to the free-stream reference. **The "validation" is therefore of the corrected estimate, not the raw solver output.** Full 14-case sweep (Re 100 – 1000):
 
@@ -57,7 +58,7 @@ streamlit run app.py
 ```
 
 ```powershell
-pytest -q                                # 186 unit tests, ~70 s warm
+pytest -q                                # 199 unit tests (+11 validation-benchmark gates), ~70 s warm
 python scripts/dev_validate_cfd.py       # 4 physics gates + 3 diagnostics, ~90 s
 ```
 
@@ -77,7 +78,7 @@ python scripts/dev_validate_cfd.py       # 4 physics gates + 3 diagnostics, ~90 
 
 ## Status
 
-**Day ~15 of a 12-week build. Phases 1 + 2 closed; Phase 3 in progress.**
+**Day 16 of a 12-week build (started 2026-05-09). Phases 1 + 2 closed; Phase 3 in progress.**
 
 Phase 1 (solver core, W1–4) shipped Day 5, expanded Days 6–14 with originally-Phase-2/3 work (MRT, Bouzidi, Zou-He, Mei momentum exchange). Phase 2 (W5 image upload, W6 multi-viz, W7 side-by-side compare, W8 gallery, plus a Phase-2.5 click-to-draw canvas) all shipped. Currently in Phase 3 polish: NeuralFoil ✅, validation against Williamson 1996 + Okajima 1982 ✅, plain-English UX overhaul ✅. 3D wing and OpenFOAM cross-validation remain optional stretch goals.
 

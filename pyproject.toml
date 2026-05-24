@@ -2,7 +2,7 @@
 #
 # We are NOT a pip-installable package -- this file exists to (a) declare
 # project metadata for tooling that reads it (Renovate, Snyk, IDEs), and
-# (b) hold tool config (pytest, ruff, black) so editor + CLI behaviour is
+# (b) hold tool config (pytest, ruff) so editor + CLI behaviour is
 # reproducible. Streamlit Cloud still reads requirements.txt; the
 # [project] dependency list here mirrors it but is informational.
 
@@ -46,8 +46,8 @@ dev = ["pytest"]
 
 [project.urls]
 Homepage   = "https://aerolab-devansh.streamlit.app/"
-Repository = "https://github.com/devansh2003-dev/AeroLab"
-Issues     = "https://github.com/devansh2003-dev/AeroLab/issues"
+Repository = "https://github.com/devansh2003-dev/aerolab"
+Issues     = "https://github.com/devansh2003-dev/aerolab/issues"
 
 # === Tool config ===
 
@@ -57,9 +57,10 @@ minversion = "7.0"
 testpaths = ["tests"]
 # Put the project root on sys.path so `from src.foo import ...` works
 # regardless of how pytest is invoked. Locally, `python -m pytest` does
-# this implicitly via the -m flag; CI's bare `pytest -q` does NOT, which
-# has been silently breaking every CI run since the project was set up.
-# Adding pythonpath makes both invocations work the same way.
+# this implicitly; CI's bare `pytest -q` does not. Set as of commit
+# 70e1026 (workflow run #45) -- earlier CI runs were green because they
+# only ran the smoke tests, and the imports that needed sys.path were
+# in test files that weren't yet collected. Both invocations now match.
 pythonpath = ["."]
 # Short, quiet output by default. Override at the CLI with -v.
 addopts = "-q --strict-markers"
@@ -92,13 +93,7 @@ ignore = [
 # are routine.
 "scripts/**" = ["E402", "F401", "F841"]
 
-[tool.black]
-line-length    = 100
-target-version = ["py311"]
-extend-exclude = '''
-/(
-    data
-  | assets
-  | \.pytest_cache
-)/
-'''
+# black was previously configured here but never installed or run in
+# CI / dev. Removed 2026-05-24 to stop being "configured-but-dead"
+# tooling. Ruff's formatter (ruff format) is what we'll use if we add
+# autoformatting back later.
