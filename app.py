@@ -44,7 +44,16 @@ from plotly.subplots import make_subplots
 # into the Real CFD > Custom > Draw tab, and the iframe URL 404s for everyone
 # else (silently producing a broken-looking blank canvas).
 from components import polygon_drawer  # noqa: F401, E402
-from src.airfoils import analyze_airfoil, get_airfoil
+from src.airfoils import analyze_airfoil, get_airfoil, normalize_naca, thickness_camber
+from src.references import (
+    blockage_corrected as _blockage_corrected,
+)
+from src.references import (
+    freestream_reference as _freestream_reference,
+)
+from src.references import (
+    textbook_reference as _textbook_reference,
+)
 
 # --- Page config (must be the first Streamlit call) ---
 st.set_page_config(page_title="AeroLab", layout="wide")
@@ -127,164 +136,15 @@ with st.sidebar:
     st.divider()
 
 # --- Cached LBM simulate+render wrapper (module level) ---
-# Textbook 2D bluff-body Cd / Strouhal vs Reynolds. We ship TWO tables
-# per shape so the user gets an honest picture:
-#
-#   _*_REFERENCE_CD   -- expected output of OUR solver in its 33-35 %
-#                        blockage channel. Used by the "vs textbook"
-#                        delta chip as a sanity check: if your sim is
-#                        within ~5 % of this, the solver is healthy.
-#   _*_FREESTREAM_CD  -- true unbounded-flow values from the canonical
-#                        experiments (Williamson 1996, Norberg 1994 for
-#                        cylinder; Okajima 1982, Sohankar 1998 for square).
-#                        Shown as a separate "free-stream estimate" line
-#                        so the user knows what the real-world Cd is.
-#
-# The gap between the two is almost entirely 2D channel-blockage
-# inflation (Maskell + Allen-Vincenti style). Honest disclosure of both
-# values teaches the user a real CFD lesson: confined-domain results
-# always need an unblocking correction before they can be compared to
-# wind-tunnel / atmospheric data.
-_CYLINDER_REFERENCE_CD = {
-    40: 1.55, 80: 1.40, 100: 1.40, 150: 1.32, 200: 1.30,
-    300: 1.35, 500: 1.40, 800: 1.41, 1000: 1.40, 1500: 1.42,
-}
-_CYLINDER_FREESTREAM_CD = {
-    # Williamson 1996 "Vortex Dynamics in the Cylinder Wake" + Norberg
-    # 1994. Drag drops monotonically from Re~40 (laminar attached, Cd ~
-    # 1.55) through the wake-transition regime; settles near 1.0 at
-    # Re=1000 and stays there into the subcritical band.
-    40: 1.55, 80: 1.38, 100: 1.32, 150: 1.20, 200: 1.15,
-    300: 1.08, 500: 1.02, 800: 1.00, 1000: 0.99, 1500: 1.00,
-}
-_CYLINDER_REFERENCE_ST = {
-    80: 0.155, 100: 0.165, 150: 0.180, 200: 0.197, 300: 0.207,
-    500: 0.215, 800: 0.215, 1000: 0.21, 1500: 0.21,
-}
-_CYLINDER_FREESTREAM_ST = {
-    # Williamson 1989: St vs Re, asymptotes near 0.21 above Re~400.
-    80: 0.155, 100: 0.166, 150: 0.182, 200: 0.197, 300: 0.205,
-    500: 0.207, 800: 0.210, 1000: 0.210, 1500: 0.210,
-}
-
-# Square cylinder (sharp-edged, broadside to flow): Cd is much flatter
-# than the round cylinder because separation is geometry-locked at the
-# corners regardless of Re. Strouhal hovers around 0.13 across the laminar
-# / transitional shedding range. References: Okajima JFM 1982 (Re 70-500),
-# Sohankar/Norberg/Davidson IJNMF 1998 (Re 45-200), Saha/Biswas/Muralidhar
-# IJHFF 2003. We cover Re 80-1500 to match our slider's reachable band.
-_SQUARE_REFERENCE_CD = {
-    80: 1.55, 100: 1.50, 150: 1.50, 200: 1.50, 300: 1.65,
-    500: 1.95, 800: 2.05, 1000: 2.10, 1500: 2.15,
-}
-_SQUARE_FREESTREAM_CD = {
-    # Okajima 1982 / Sohankar et al 1998 / Saha et al 2003 averaged.
-    # Square Cd is geometry-locked at corners and changes less with Re
-    # than cylinder, but grows mildly from ~1.5 at Re=100 to ~2.1 at
-    # Re=1000 as the wake becomes more vigorous in real flows.
-    80: 1.50, 100: 1.50, 150: 1.55, 200: 1.60, 300: 1.85,
-    500: 2.00, 800: 2.10, 1000: 2.15, 1500: 2.20,
-}
-_SQUARE_REFERENCE_ST = {
-    80: 0.130, 100: 0.135, 150: 0.140, 200: 0.143, 300: 0.140,
-    500: 0.135, 800: 0.130, 1000: 0.128, 1500: 0.125,
-}
-_SQUARE_FREESTREAM_ST = {
-    # Okajima 1982. Square St is much flatter than cylinder because the
-    # shedding frequency is set by the geometry-locked corner separation.
-    80: 0.140, 100: 0.143, 150: 0.146, 200: 0.148, 300: 0.142,
-    500: 0.135, 800: 0.130, 1000: 0.128, 1500: 0.125,
-}
+# Bluff-body reference data + blockage-correction helpers live in
+# src/references.py (imported at the top of this file). The leading
+# underscores on the aliases above match the convention the rest of
+# this script uses for "in-app private" lookups.
 
 
-def _interp_or_none(re_value: float, table: dict):
-    """Linear-interpolated table lookup, returns None if out of range."""
-    if not table:
-        return None
-    lo, hi = min(table), max(table)
-    if re_value < lo or re_value > hi:
-        return None
-    keys = sorted(table)
-    vals = [table[k] for k in keys]
-    return float(np.interp(re_value, keys, vals))
-
-
-def _textbook_reference(shape_preset: str, re_value: int):
-    """Linear-interpolated textbook (Cd, St) for a canonical 2-D bluff body.
-
-    Supports Cylinder (round) and Square (broadside). Returns (None, None)
-    for shapes we don't ship a reference for, or for Re outside the
-    validated band. The Square table is for broadside flow only -- at
-    aoa=45 (diamond orientation) Cd drops to ~1.5 and St rises, but we
-    don't ship a separate diamond table, so the caller is responsible for
-    only invoking this when the body presents a flat face (aoa ~ 0).
-    """
-    if shape_preset == "Cylinder":
-        cd_ref = _interp_or_none(re_value, _CYLINDER_REFERENCE_CD)
-        st_ref = _interp_or_none(re_value, _CYLINDER_REFERENCE_ST)
-    elif shape_preset == "Square":
-        cd_ref = _interp_or_none(re_value, _SQUARE_REFERENCE_CD)
-        st_ref = _interp_or_none(re_value, _SQUARE_REFERENCE_ST)
-    else:
-        cd_ref, st_ref = None, None
-    return cd_ref, st_ref
-
-
-# Backward-compat alias: some older callers / tests still imported the
-# cylinder-only entry point. Forward to the generalized lookup.
 def _cylinder_reference(re_value: int):
+    """Backward-compat alias kept for tests / older importers."""
     return _textbook_reference("Cylinder", re_value)
-
-
-def _freestream_reference(shape_preset: str, re_value: int):
-    """True unbounded-flow (Cd, St) from Williamson / Norberg / Okajima.
-
-    Distinct from _textbook_reference, which is calibrated to our 33-35 %
-    blocked-channel solver: that lookup answers "is the simulation
-    behaving as expected?", while this one answers "what would you
-    measure in a wind tunnel?". Both are useful, for different reasons.
-    Returns (None, None) outside the validated band.
-    """
-    if shape_preset == "Cylinder":
-        cd_free = _interp_or_none(re_value, _CYLINDER_FREESTREAM_CD)
-        st_free = _interp_or_none(re_value, _CYLINDER_FREESTREAM_ST)
-    elif shape_preset == "Square":
-        cd_free = _interp_or_none(re_value, _SQUARE_FREESTREAM_CD)
-        st_free = _interp_or_none(re_value, _SQUARE_FREESTREAM_ST)
-    else:
-        cd_free, st_free = None, None
-    return cd_free, st_free
-
-
-# Allen-Vincenti shape constants. Match scripts/validate_solver.py exactly --
-# the per-shape K is in [0.5, 1.5] per Barlow-Rae-Pope. Diamond uses the
-# square value because the 2-D blockage acceleration depends on the maximum
-# lateral extent, not the corner orientation.
-_AV_K = {"Cylinder": 1.10, "Square": 1.00}
-
-
-def _blockage_corrected(shape_preset: str, cd_raw: float, st_raw: float,
-                         char_length: float, lbm_ny: int):
-    """Apply Allen-Vincenti / West-Apelt blockage corrections in-app, so the
-    Forces panel can lead with the corrected estimate instead of the raw
-    35 %-blocked number. Returns (cd_corr, st_corr, blockage_ratio, K).
-
-    cd_corr = cd_raw * (1 - K*B)^2   (Allen-Vincenti / Pope-Harper, 2-D)
-    st_corr = st_raw / (1 + 2B + B^2) (West & Apelt 1982 JFM 114)
-
-    Returns (None, None, B, None) for shapes we don't ship K for (e.g.
-    Custom drawn polygons -- no blockage-correction reference exists).
-    """
-    B = float(char_length) / max(float(lbm_ny), 1.0)
-    K = _AV_K.get(shape_preset)
-    if K is None:
-        return None, None, B, None
-    cd_corr = cd_raw * (1.0 - K * B) ** 2
-    st_corr = (
-        st_raw / (1.0 + 2.0 * B + B * B)
-        if np.isfinite(st_raw) else float("nan")
-    )
-    return cd_corr, st_corr, B, K
 
 
 # Two-layer cache: the LBM solve is mode-independent, the GIF + colorbar
@@ -2097,40 +1957,9 @@ st.caption(
 )
 
 
-def normalize_naca(raw: str) -> str:
-    """Accept '4412', 'naca4412', 'NACA 4412', etc., return 'naca4412'.
-
-    Raises ValueError with a user-actionable message if ``raw`` is not a
-    4- or 5-digit NACA code (anything else gets passed straight through
-    to asb.Airfoil which silently returns coordinates=None and then
-    crashes downstream rendering -- caught in external review 2026-05-24).
-    """
-    cleaned = raw.strip().lower().replace("naca", "").replace(" ", "")
-    if not cleaned.isdigit() or len(cleaned) not in (4, 5):
-        raise ValueError(
-            f"{raw!r} is not a valid NACA code. Expected 4 or 5 digits "
-            f"(e.g. '4412', 'NACA 23012'), got {cleaned!r}."
-        )
-    return f"naca{cleaned}"
-
-
-def thickness_camber(coords: np.ndarray, x_stations: np.ndarray):
-    """Compute t(x)/c and camber(x)/c at the given x/c stations.
-
-    AeroSandbox airfoil coordinates start at the trailing edge, walk counter-clockwise
-    over the upper surface to the leading edge, and back to the trailing edge along
-    the lower surface. We split at the LE (min-x point) and interpolate each surface
-    at common x stations to get thickness and camber.
-    """
-    le_idx = int(np.argmin(coords[:, 0]))
-    upper = coords[: le_idx + 1][::-1]   # LE -> TE on upper surface
-    lower = coords[le_idx:]               # LE -> TE on lower surface
-    y_upper = np.interp(x_stations, upper[:, 0], upper[:, 1])
-    y_lower = np.interp(x_stations, lower[:, 0], lower[:, 1])
-    thickness = y_upper - y_lower
-    camber = (y_upper + y_lower) / 2
-    return thickness, camber
-
+# `normalize_naca` and `thickness_camber` moved to src/airfoils.py during
+# the D1 split -- they're imported at the top of this file. NeuralFoil
+# model-size config lives below.
 
 # NeuralFoil model size: smaller = faster inference, less accurate.
 # Default to the largest (xxxlarge, ~1 ms/point, matches XFoil within ~few %)

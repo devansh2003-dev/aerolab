@@ -9,11 +9,12 @@ leaked the deploy path. The crash root-caused to two layers:
      which then crashed downstream `coordinates[:, 0]`.
 
 These tests lock down both layers so a regression can't re-introduce
-either failure mode.
+either failure mode. (`normalize_naca` lives in src/airfoils.py as of
+the D1 split; previously it was inside app.py and had to be ast-parsed
+out, since importing app.py runs the whole Streamlit UI top-level.)
 """
 from __future__ import annotations
 
-import ast
 import sys
 from pathlib import Path
 
@@ -22,25 +23,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from src.airfoils import get_airfoil  # noqa: E402
-
-
-def _load_normalize_naca():
-    """Extract normalize_naca from app.py without importing the whole
-    Streamlit script (importing app.py runs the entire UI top-level).
-    """
-    src = (ROOT / "app.py").read_text(encoding="utf-8")
-    tree = ast.parse(src)
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name == "normalize_naca":
-            ns: dict = {}
-            exec(ast.unparse(node), ns)
-            return ns["normalize_naca"]
-    raise RuntimeError("normalize_naca not found in app.py")
-
-
-normalize_naca = _load_normalize_naca()
-
+from src.airfoils import get_airfoil, normalize_naca  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # normalize_naca: accepted shapes
