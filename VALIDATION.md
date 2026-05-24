@@ -252,6 +252,41 @@ onset it over-corrects (Re = 40 cylinder Cd reads 32 % high after
 correction because the wake is laminar attached and the blockage
 physics is dominated by solid blockage alone).
 
+### 3.4 Low-blockage cross-check (Validation preset, B = 5 %)
+
+External review suggested running the same sweep at a low-blockage
+grid where the Allen-Vincenti correction is ~ 10 % rather than ~ 65 %
+— if the solver is correct, the corrected estimate should track
+Williamson directly without the large rescale doing the heavy lifting.
+We added `Validation (700 × 400)` with `D = 20, B = 0.05` and ran the
+canonical cylinder + square sweep at it (`python scripts/validate_solver.py
+--headline`, `data/validation/results_lowblockage.{json,md}`).
+
+What it showed:
+
+- **Cylinder Strouhal recovers Williamson to within 0.1 – 2 %** at
+  Re = 300 – 1000, vs the 15 – 23 % residual at Standard's 35 %
+  blockage. The West-Apelt correction at small B is much closer to a
+  no-op, and the natural shedding mode is no longer channel-locked.
+  This is a clean win for Strouhal accuracy.
+
+- **Cylinder Cd at low blockage is grid-resolution-limited**, not
+  blockage-limited. With `D = 20` the cylinder voxelization staircase
+  + Bouzidi sub-cell correction together leave a small but real
+  thickness perturbation that biases Cd upward by ~ 2 % at Re = 100,
+  ~ 14 % at Re = 200, and ~ 33 – 37 % by Re = 500 – 1000. The fix is
+  a bigger cylinder (`D ≥ 40` → `Ny ≥ 800`), not a different blockage
+  correction. We did not bake that into the headline because the
+  resulting grid (~ 560 k cells) puts each case at ~ 20 min and the
+  9-case sweep at ~ 3 h, which is impractical to run as part of every
+  release.
+
+The headline tables (§3.2, §3.3) therefore continue to report the
+Standard-preset Allen-Vincenti-corrected numbers. The low-blockage
+sweep results stay in `data/validation/results_lowblockage.md` as a
+documented cross-check for anyone who wants to inspect what changes
+when blockage shrinks.
+
 ---
 
 ## 4. Known limitations

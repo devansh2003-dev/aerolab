@@ -201,8 +201,8 @@ def run_case(
     shape: str,
     re: int,
     aoa_deg: float = 0.0,
-    resolution: str = "Validation (700 x 400)",
-    n_frames: int = 400,
+    resolution: str = "Standard (320 x 80)",
+    n_frames: int = 300,
 ) -> CaseResult:
     """Run the solver, extract Cd / Cl / St on the converged tail, apply
     Allen-Vincenti blockage correction, and compare to published free-stream
@@ -461,18 +461,19 @@ def main() -> int:
     parser.add_argument("--case",
                         help=f"Run a single case by id, e.g. cyl-re200. "
                              f"IDs: {sorted(CASE_BY_ID.keys())}")
-    parser.add_argument("--n-frames", type=int, default=400,
-                        help="Frames per case (default 400 = 14000 steps).")
+    parser.add_argument("--n-frames", type=int, default=300,
+                        help="Frames per case (default 300 = 10500 steps).")
     parser.add_argument(
-        "--resolution", default="Validation (700 x 400)",
+        "--resolution", default="Standard (320 x 80)",
         choices=[
             "Standard (320 x 80)",
             "Detailed (960 x 240)",
             "Validation (700 x 400)",
         ],
-        help="Grid preset. Default 'Validation (700 x 400)' is low-blockage "
-             "(B = 0.05) so the Allen-Vincenti correction is ~10 % rather "
-             "than the ~65 % at Standard. Use this for headline numbers.",
+        help="Grid preset. Default 'Standard (320 x 80)' is the same preset "
+             "the interactive UI uses (B = 0.35, Allen-Vincenti corrected). "
+             "'Validation (700 x 400)' is the low-blockage cross-check "
+             "(B = 0.05, see VALIDATION.md section 3.4 for the trade-off).",
     )
     parser.add_argument(
         "--json", default=str(OUTPUT_DIR / "results.json"),

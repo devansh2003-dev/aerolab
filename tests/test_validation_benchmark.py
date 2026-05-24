@@ -80,8 +80,8 @@ VALIDATION_N_FRAMES = 300
 #   Cylinder Cd: K=1.10 Allen-Vincenti recovers Williamson within
 #                median 4.3 % / max 11.6 %  -> 15 % band has headroom
 #   Square Cd:   K=1.00 Allen-Vincenti recovers Okajima within
-#                median 5.4 % / max 21.8 %  -> 25 % band needed for
-#                corner-shed channel coupling at high Re
+#                median 8.9 % / max 21.8 % over Re=150-500 -> 25 %
+#                band needed for corner-shed channel coupling at high Re
 #   Cylinder St: West-Apelt under-corrects channel-resonance shift;
 #                worst measured error 23.4 % at Re=100 -> 35 % band
 #                (still well above noise floor since CI now runs
