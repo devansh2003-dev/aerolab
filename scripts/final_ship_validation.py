@@ -91,7 +91,7 @@ def _check_one(shape: str, re: int, aoa: float, viz: str) -> dict:
         issues.append(f"Cl not finite ({cl!r})")
     # Symmetric bodies at AoA=0: Cl mean should be near zero.
     is_symmetric = (
-        (shape in ("Cylinder", "Square", "Ellipse", "NACA 0012") and abs(aoa) < 0.25)
+        shape in ("Cylinder", "Square", "Ellipse", "NACA 0012") and abs(aoa) < 0.25
     )
     if is_symmetric and abs(cl) > 0.15:
         issues.append(f"Cl too large for symmetric shape ({cl:+.3f})")

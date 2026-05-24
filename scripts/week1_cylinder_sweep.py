@@ -30,7 +30,6 @@ import pandas as pd
 from src.lbm import CS2, equilibrium, step_njit_with_force
 from src.shapes import cylinder_mask, no_bouzidi_q_field
 
-
 # Sweep configurations: a Mach axis at D=20, then a D axis at Ma=0.087.
 # Domain scales so each config has ~4D upstream, ~10D downstream, ~10D side margin.
 CONFIGS = [
@@ -73,8 +72,6 @@ def run_one_config(Nx, Ny, D, U_inflow, target_Re, n_steps, n_average, n_fft, la
     # For Bouzidi-corrected runs see scripts/dev_validate_cfd.py.
     q_field = no_bouzidi_q_field(Nx, Ny)
     f_inflow = equilibrium(1.0, np.array([U_inflow, 0.0]))
-    inflow_dirs = np.array([1, 5, 8], dtype=np.int32)
-    outflow_dirs = np.array([3, 6, 7], dtype=np.int32)
 
     # Initial condition: uniform inflow (kick will break symmetry)
     rho0 = np.ones((Nx, Ny))
@@ -94,7 +91,7 @@ def run_one_config(Nx, Ny, D, U_inflow, target_Re, n_steps, n_average, n_fft, la
 
     t_start = time.perf_counter()
     for step in range(n_steps):
-        f, Fx, Fy = step_njit_with_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs, outflow_dirs)
+        f, Fx, Fy = step_njit_with_force(f, tau, solid_mask, q_field, f_inflow, True, True)
 
         # Transient asymmetry kick
         if KICK_START <= step < KICK_END:

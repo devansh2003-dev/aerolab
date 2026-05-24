@@ -25,6 +25,7 @@ The browser opens automatically at http://localhost:8501.
 # 16 threads contending for 1 vCPU is wasteful but functionally
 # serial; "wasteful" beats "crashed" every time.
 import os
+
 os.environ["NUMBA_NUM_THREADS"] = "16"
 
 import numpy as np
@@ -32,8 +33,6 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
-
-from src.airfoils import analyze_airfoil, get_airfoil
 
 # Register the custom polygon-drawer component at module load. declare_component
 # only actually registers the component (and exposes its iframe URL) when run
@@ -45,6 +44,7 @@ from src.airfoils import analyze_airfoil, get_airfoil
 # into the Real CFD > Custom > Draw tab, and the iframe URL 404s for everyone
 # else (silently producing a broken-looking blank canvas).
 from components import polygon_drawer  # noqa: F401, E402
+from src.airfoils import analyze_airfoil, get_airfoil
 
 # --- Page config (must be the first Streamlit call) ---
 st.set_page_config(page_title="AeroLab", layout="wide")
@@ -364,7 +364,6 @@ if mode == "Real CFD (LBM)":
         RESOLUTION_PRESETS,
         STEPS_PER_FRAME,
         U_INFLOW,
-        simulate_and_render,
     )
 
     # Shape param mappings for share-link query params (?shape=cylinder...).
@@ -557,8 +556,9 @@ if mode == "Real CFD (LBM)":
                     key="lbm_custom_upload",
                 )
                 if uploaded is not None:
-                    from src.custom_shape import extract_silhouette_from_image
                     import hashlib as _hl
+
+                    from src.custom_shape import extract_silhouette_from_image
                     # Detect new-file events: hash the upload bytes and
                     # compare to the last hash we saw. On a fresh file the
                     # flip toggle should reset so a user uploading a
@@ -1532,8 +1532,8 @@ if mode == "Real CFD (LBM)":
             snap_res_short = "Standard" if "Standard" in snap_res else "Detailed"
             if snapshot_is_current:
                 _pin_msg = (
-                    f":material/push_pin: **Pinned: this run.** "
-                    f"Change a parameter and click Run to see side-by-side."
+                    ":material/push_pin: **Pinned: this run.** "
+                    "Change a parameter and click Run to see side-by-side."
                 )
             else:
                 _pin_msg = (

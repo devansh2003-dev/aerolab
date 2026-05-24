@@ -25,7 +25,9 @@ _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
 
 from src.lbm import (  # noqa: E402
-    equilibrium, step_njit_mrt_with_force, step_njit_mrt_no_force,
+    equilibrium,
+    step_njit_mrt_no_force,
+    step_njit_mrt_with_force,
 )
 from src.shapes import cylinder_mask, cylinder_q_field  # noqa: E402
 
@@ -39,8 +41,6 @@ def closed_box_mass_drift(n_steps: int = 5000, Nx: int = 60, Ny: int = 40):
     solid_mask = np.zeros((Nx, Ny), dtype=bool)
     q_field = np.zeros((Nx, Ny, 9))
     f_inflow_dummy = equilibrium(1.0, np.array([0.05, 0.0]))
-    no_in = np.zeros((0,), dtype=np.int64)
-    no_out = np.zeros((0,), dtype=np.int64)
     tau = 0.6
 
     m0 = f.sum()
@@ -50,7 +50,7 @@ def closed_box_mass_drift(n_steps: int = 5000, Nx: int = 60, Ny: int = 40):
     drifts = []
     for step in range(n_steps):
         f = step_njit_mrt_no_force(
-            f, tau, solid_mask, q_field, f_inflow_dummy, no_in, no_out,
+            f, tau, solid_mask, q_field, f_inflow_dummy, False, False,
         )
         if step % 500 == 0 or step == n_steps - 1:
             m = f.sum()
@@ -83,15 +83,13 @@ def open_channel_mass_balance(re: int = 200, n_steps: int = 5000):
     f_inflow_eq = equilibrium(1.0, np.array([U, 0.0]))
     nu = U * D / re
     tau = nu / (1.0 / 3.0) + 0.5
-    INFLOW_DIRS = np.array([1, 5, 8], dtype=np.int64)
-    OUTFLOW_DIRS = np.array([3, 6, 7], dtype=np.int64)
     f_eq_solid = equilibrium(1.0, np.array([0.0, 0.0]))
 
     in_history = []
     out_history = []
     for step in range(n_steps):
         f, _, _ = step_njit_mrt_with_force(
-            f, tau, mask, q_field, f_inflow_eq, INFLOW_DIRS, OUTFLOW_DIRS,
+            f, tau, mask, q_field, f_inflow_eq, True, True,
         )
         f[:, mask] = f_eq_solid[:, None]
         # Sample inflow + outflow flux every 100 steps after the transient.

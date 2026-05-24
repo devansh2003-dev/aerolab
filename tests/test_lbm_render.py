@@ -27,7 +27,6 @@ import pytest
 from PIL import Image
 
 from src.lbm_render import (
-    BODY_OUTLINE_MARGIN,
     RESOLUTION_PRESETS,
     STEPS_PER_FRAME,
     _bilerp,
@@ -35,7 +34,6 @@ from src.lbm_render import (
     expand_outline,
     simulate_and_render,
 )
-
 
 STANDARD = "Standard (320 x 80)"
 STANDARD_CFG = RESOLUTION_PRESETS[STANDARD]

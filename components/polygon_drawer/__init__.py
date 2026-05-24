@@ -27,7 +27,6 @@ A dict with these keys, or ``None`` until the user has interacted:
 from __future__ import annotations
 
 import os
-from typing import Optional
 
 import streamlit.components.v1 as components
 
@@ -47,8 +46,8 @@ _component_func = components.declare_component(
 def polygon_drawer(
     width: int = 400,
     height: int = 200,
-    key: Optional[str] = None,
-) -> Optional[dict]:
+    key: str | None = None,
+) -> dict | None:
     """Render the click-to-place polygon canvas.
 
     Parameters

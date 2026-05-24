@@ -408,8 +408,6 @@ def test_step_njit_matches_pure_numpy_single_step():
     f_init = equilibrium(rho0, u0)
 
     f_inflow = equilibrium(1.0, np.array([U, 0.0]))
-    inflow_dirs = np.array([1, 5, 8], dtype=np.int32)
-    outflow_dirs = np.array([3, 6, 7], dtype=np.int32)
 
     # --- Pure-NumPy reference: collide, force, bounce-back, stream, BCs ---
     f_pure = f_init.copy()
@@ -422,7 +420,7 @@ def test_step_njit_matches_pure_numpy_single_step():
 
     # --- JIT'd fused step ---
     f_jit, Fx_jit, Fy_jit = step_njit_with_force(
-        f_init.copy(), tau, mask, q_field, f_inflow, inflow_dirs, outflow_dirs
+        f_init.copy(), tau, mask, q_field, f_inflow, True, True
     )
 
     # JIT step is compiled with fastmath=True + parallel reduction, which
@@ -438,7 +436,6 @@ def test_step_njit_matches_pure_numpy_single_step():
 def test_step_njit_matches_pure_numpy_after_ten_steps():
     """Same equivalence check, propagated for 10 steps. Catches accumulating
     drift that a single-step test would miss (e.g., subtle BC order bugs)."""
-    from src.forces import momentum_exchange_force
     from src.shapes import cylinder_mask, no_bouzidi_q_field
 
     Nx, Ny = 50, 30
@@ -455,8 +452,6 @@ def test_step_njit_matches_pure_numpy_after_ten_steps():
     f_init = equilibrium(rho0, u0)
 
     f_inflow = equilibrium(1.0, np.array([U, 0.0]))
-    inflow_dirs = np.array([1, 5, 8], dtype=np.int32)
-    outflow_dirs = np.array([3, 6, 7], dtype=np.int32)
 
     # Pure-NumPy: 10 steps
     f_pure = f_init.copy()
@@ -471,7 +466,7 @@ def test_step_njit_matches_pure_numpy_after_ten_steps():
     f_jit = f_init.copy()
     for _ in range(10):
         f_jit, _, _ = step_njit_with_force(
-            f_jit, tau, mask, q_field, f_inflow, inflow_dirs, outflow_dirs
+            f_jit, tau, mask, q_field, f_inflow, True, True
         )
 
     # 10 steps of fastmath round-off can accumulate; we still want the JIT
@@ -510,14 +505,12 @@ def test_step_njit_mrt_no_force_matches_with_force():
     f_init = equilibrium(rho0, u0)
 
     f_inflow = equilibrium(1.0, np.array([U, 0.0]))
-    inflow_dirs = np.array([1, 5, 8], dtype=np.int32)
-    outflow_dirs = np.array([3, 6, 7], dtype=np.int32)
 
     f_with, _Fx, _Fy = step_njit_mrt_with_force(
-        f_init.copy(), tau, mask, q_field, f_inflow, inflow_dirs, outflow_dirs,
+        f_init.copy(), tau, mask, q_field, f_inflow, True, True,
     )
     f_no = step_njit_mrt_no_force(
-        f_init.copy(), tau, mask, q_field, f_inflow, inflow_dirs, outflow_dirs,
+        f_init.copy(), tau, mask, q_field, f_inflow, True, True,
     )
 
     # Both functions are JIT-compiled with fastmath + parallel, so identical
@@ -547,14 +540,13 @@ def test_step_njit_mrt_conserves_mass_closed_box():
     u = rng.normal(0, 0.02, size=(2, Nx, Ny))
     f = equilibrium(rho, u)
 
-    # Empty inflow/outflow direction arrays = closed box (top/bottom walls
+    # apply_inflow=apply_outflow=False = closed box (top/bottom walls
     # bounce back, left/right walls fall back to streaming's periodic).
-    no_dirs = np.empty(0, dtype=np.int32)
     f_inflow_dummy = equilibrium(1.0, np.array([0.0, 0.0]))
 
     mass_pre = float(f.sum())
     f_after = step_njit_mrt_no_force(
-        f, 0.6, mask, q_field, f_inflow_dummy, no_dirs, no_dirs,
+        f, 0.6, mask, q_field, f_inflow_dummy, False, False,
     )
     mass_post = float(f_after.sum())
 
@@ -584,12 +576,9 @@ def test_step_njit_mrt_uniform_freestream_stays_uniform():
     f = equilibrium(rho0, u0)
 
     f_inflow = equilibrium(1.0, np.array([U, 0.0]))
-    inflow_dirs = np.array([1, 5, 8], dtype=np.int32)
-    outflow_dirs = np.array([3, 6, 7], dtype=np.int32)
-
     for _ in range(50):
         f = step_njit_mrt_no_force(
-            f, 0.7, mask, q_field, f_inflow, inflow_dirs, outflow_dirs,
+            f, 0.7, mask, q_field, f_inflow, True, True,
         )
 
     _, u_final = macroscopic(f)
@@ -617,4 +606,42 @@ def test_step_njit_mrt_uniform_freestream_stays_uniform():
     )
     assert np.abs(bulk_uy).max() < 3e-3, (
         f"Bulk u_y not zero: max abs = {np.abs(bulk_uy).max():.4e}"
+    )
+
+
+def test_fastmath_divergence_guard_propagates_nan():
+    """fastmath=True lets LLVM assume no NaN/Inf, which in principle could
+    let the compiler elide NaN-propagating arithmetic. The lbm_render path
+    relies on a post-kernel np.isfinite(f).all() check (called in regular
+    Python, not inside the JIT) to detect divergence. Verify that an
+    injected NaN does survive through the JIT'd kernel so the guard fires.
+
+    If this test ever starts failing, the divergence guard in
+    src/lbm_render.py is silently broken and divergent simulations will
+    render as black GIFs instead of raising a user-actionable error."""
+    from src.shapes import cylinder_mask, cylinder_q_field
+
+    Nx, Ny = 60, 30
+    mask = cylinder_mask(Nx, Ny, cx=20, cy=15, radius=5)
+    q_field = cylinder_q_field(Nx, Ny, cx=20, cy=15, radius=5)
+    rho0 = np.ones((Nx, Ny))
+    u0 = np.zeros((2, Nx, Ny))
+    u0[0] = 0.1
+    f = equilibrium(rho0, u0)
+    f_inflow = equilibrium(1.0, np.array([0.1, 0.0]))
+
+    # Inject NaN at one fluid cell well away from boundaries.
+    f[3, 30, 15] = np.nan
+
+    # Run one MRT step. fastmath=True is on this kernel.
+    f_after, _, _ = step_njit_mrt_with_force(
+        f, 0.6, mask, q_field, f_inflow, True, True,
+    )
+
+    # The post-kernel guard is np.isfinite(f).all() in lbm_render.py.
+    # If fastmath ever started eliding NaN propagation, this fails.
+    assert not np.isfinite(f_after).all(), (
+        "Injected NaN was silently elided by the fastmath-compiled kernel. "
+        "The divergence guard in src/lbm_render.py would not fire on real "
+        "divergence either -- either widen the guard or drop fastmath."
     )

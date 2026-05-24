@@ -24,6 +24,7 @@ visual). Don't bury new tunables inside functions.
 import io
 
 import matplotlib as mpl
+
 # Force the non-interactive Agg backend BEFORE pyplot is imported. Streamlit
 # reads our output as raw GIF/PNG bytes (no interactive window needed), and
 # pytest runs headless (Windows Tk on miniconda is fragile). Setting Agg here
@@ -32,16 +33,23 @@ mpl.use("Agg", force=True)
 import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.colors import LinearSegmentedColormap, ListedColormap, Normalize
+from matplotlib.colors import ListedColormap, Normalize
 from matplotlib.patches import Polygon
 from PIL import Image
 from scipy.ndimage import gaussian_filter
 
 from src.lbm import CS2, equilibrium, macroscopic, step_njit_mrt_with_force
 from src.shapes import (
-    cylinder_mask, cylinder_q_field, ellipse_mask, ellipse_q_field,
-    naca4_airfoil_mask, naca4_outline_xy, naca4_q_field, no_bouzidi_q_field,
-    square_mask, square_q_field,
+    cylinder_mask,
+    cylinder_q_field,
+    ellipse_mask,
+    ellipse_q_field,
+    naca4_airfoil_mask,
+    naca4_outline_xy,
+    naca4_q_field,
+    no_bouzidi_q_field,
+    square_mask,
+    square_q_field,
 )
 
 # Modern system sans-serif for in-figure text. matplotlib picks the first
@@ -89,9 +97,9 @@ U_INFLOW = 0.1
 KICK_START, KICK_END = 30, 200
 KICK_AMPLITUDE = 0.008
 KICK_Y_OFFSET = 2
-# Boundary-condition direction masks (don't touch -- D2Q9 lattice geometry).
-INFLOW_DIRS = np.array([1, 5, 8], dtype=np.int32)
-OUTFLOW_DIRS = np.array([3, 6, 7], dtype=np.int32)
+# Boundary-condition flags. Set both True for the standard channel flow;
+# pass False to disable a given BC (e.g. for closed-box mass-conservation
+# tests where left/right wrap periodically).
 
 # --- Grid presets ---
 # Standard: 320x80, body fills viewport, wake develops within the 5250
@@ -112,6 +120,20 @@ RESOLUTION_PRESETS = {
         ellipse_a=90, ellipse_b=45, chord=170,
         custom_extent=170,
         n_frames=150,
+        gif_palette=96,
+    ),
+    # Validation preset: low blockage (B = 20/400 = 5 %) so the
+    # Allen-Vincenti correction is ~10 % rather than the ~65 % we
+    # carry at Standard. Used by scripts/validate_solver.py to author
+    # the headline VALIDATION.md numbers. Not exposed to the UI --
+    # this grid is too big for interactive use, but ~210 s / case at
+    # n_frames=400 is fine for an offline solver-vs-reference sweep.
+    "Validation (700 x 400)": dict(
+        Nx=700, Ny=400, body_x=120, cy=200,
+        cylinder_D=20, square_side=20,
+        ellipse_a=24, ellipse_b=12, chord=40,
+        custom_extent=40,
+        n_frames=300,
         gif_palette=96,
     ),
     # Body sizes were bumped (~80 % bigger) in the prior release so each
@@ -592,10 +614,16 @@ def solve_lbm(shape_preset, reynolds_target, aoa_deg, res_key,
     # we don't want to pay. Once per frame (every STEPS_PER_FRAME steps) is
     # tight enough that we catch the divergence before NaN propagates through
     # the rendering pipeline, while staying well under 1 % overhead.
+    #
+    # fastmath=True on the kernel allows LLVM to assume no NaN / Inf, which
+    # in principle could let the compiler elide propagation. Verified that
+    # injected NaN does propagate through the JIT'd kernel by
+    # tests/test_lbm.py::test_fastmath_divergence_guard_propagates_nan --
+    # if that test ever fails the guard below is silently broken.
     for frame in range(n_frames_local):
         for _ in range(STEPS_PER_FRAME):
             f, Fx_step, Fy_step = step_njit_mrt_with_force(
-                f, tau, mask, q_field, f_inflow_eq, INFLOW_DIRS, OUTFLOW_DIRS,
+                f, tau, mask, q_field, f_inflow_eq, True, True,
             )
             fx_history[step_counter] = Fx_step
             fy_history[step_counter] = Fy_step
@@ -794,8 +822,6 @@ def render_lbm(solve, *, viz_mode="Vorticity", progress_callback=None):
     _rdbu[:, 3] = VORT_ALPHA_MAX * _alpha_t ** 1.4
     bipolar_cmap = ListedColormap(_rdbu, name="rdbu_alpha70")
     bipolar_cmap.set_bad((0.0, 0.0, 0.0, 0.0))
-    # Alias kept for downstream variable names that still say "vorticity_cmap".
-    vorticity_cmap = bipolar_cmap
 
     # Per-viz-mode calibration. v_clip = colorbar saturation point, vmin/vmax
     # = imshow window. All three modes use the bipolar cmap; only v_clip and

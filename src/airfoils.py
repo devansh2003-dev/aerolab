@@ -4,14 +4,14 @@ The single entry point `analyze_airfoil` wraps NeuralFoil so that the rest of th
 project never has to know about its exact API. Any future change (caching, swapping
 solver, validation) lives here.
 """
-from typing import Union
+from __future__ import annotations
 
 import aerosandbox as asb
 import neuralfoil as nf
 import numpy as np
 
 # Type alias: callers can pass either a NACA-name string or a built AeroSandbox airfoil.
-AirfoilLike = Union[str, asb.Airfoil]
+AirfoilLike = str | asb.Airfoil
 
 
 def get_airfoil(airfoil: AirfoilLike) -> asb.Airfoil:

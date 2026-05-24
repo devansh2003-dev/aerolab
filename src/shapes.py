@@ -510,7 +510,7 @@ def naca4_q_field(
 
         # Loop over wall-link cells (sparse). 200-2000 per direction in practice.
         wall_x, wall_y = np.where(wall_links)
-        for x, y in zip(wall_x, wall_y):
+        for x, y in zip(wall_x, wall_y, strict=True):
             dx_e = x - E1x        # shape (n_edges,)
             dy_e = y - E1y
             # q (link parameter): see derivation comment in the function header.

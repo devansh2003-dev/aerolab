@@ -74,8 +74,6 @@ solid_mask = cylinder_mask(Nx, Ny, cx, cy, D / 2)
 # README. For Bouzidi-corrected production runs see scripts/dev_validate_cfd.py.
 q_field = no_bouzidi_q_field(Nx, Ny)
 f_inflow = equilibrium(1.0, np.array([U_inflow, 0.0]))
-INFLOW_DIRS = np.array([1, 5, 8], dtype=np.int32)
-OUTFLOW_DIRS = np.array([3, 6, 7], dtype=np.int32)
 
 # Initial condition: uniform inflow, no noise (kick will break the symmetry).
 rho0 = np.ones((Nx, Ny))
@@ -93,13 +91,13 @@ cl_history = np.zeros(n_steps)
 # Trigger JIT compile on a throwaway call so the timing below is clean.
 print("  Compiling JIT step function (first call only)...")
 t_jit = time.perf_counter()
-_ = step_njit_with_force(f.copy(), tau, solid_mask, q_field, f_inflow, INFLOW_DIRS, OUTFLOW_DIRS)
+_ = step_njit_with_force(f.copy(), tau, solid_mask, q_field, f_inflow, True, True)
 print(f"  Compile done in {time.perf_counter() - t_jit:.1f} s\n")
 
 # --- Time loop ---
 t_start = time.perf_counter()
 for step in range(n_steps):
-    f, Fx, Fy = step_njit_with_force(f, tau, solid_mask, q_field, f_inflow, INFLOW_DIRS, OUTFLOW_DIRS)
+    f, Fx, Fy = step_njit_with_force(f, tau, solid_mask, q_field, f_inflow, True, True)
 
     # Transient kick: inject +y momentum at one cell behind cylinder.
     # Adding +amp to f[2] (north) and -amp to f[4] (south) shifts the local
@@ -141,7 +139,7 @@ st_err = abs(St - st_ref) / st_ref * 100
 cd_pass = cd_err <= 10
 st_pass = st_err <= 10
 
-print(f"\n=== Phase 1 Week 1 acceptance gate ===")
+print("\n=== Phase 1 Week 1 acceptance gate ===")
 print(f"  Cd time-averaged over last {n_average} steps : {cd_average:7.3f}  (std {cd_std:.4f})")
 print(f"  Cd reference (textbook, Re=100)              : {cd_ref:7.3f}")
 print(f"  Cd error                                     : {cd_err:6.1f} %   {'PASS' if cd_pass else 'FAIL'}")
@@ -217,7 +215,7 @@ pd.DataFrame({"step": steps_arr, "Cd": cd_history, "CL": cl_history}).to_csv(
     out_dir / "cylinder_cd_history.csv", index=False
 )
 
-print(f"\nSaved:")
+print("\nSaved:")
 print(f"  {(out_dir / 'cylinder_wake.png').relative_to(out_dir.parent)}")
 print(f"  {(out_dir / 'cylinder_cd_history.png').relative_to(out_dir.parent)}")
 print(f"  {(out_dir / 'cylinder_cd_history.csv').relative_to(out_dir.parent)}")

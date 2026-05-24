@@ -7,8 +7,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import numpy as np
 
 from src.shapes import (
-    cylinder_mask, cylinder_q_field, ellipse_mask, ellipse_q_field,
-    naca4_airfoil_mask, naca4_q_field, no_bouzidi_q_field, square_mask,
+    cylinder_mask,
+    cylinder_q_field,
+    ellipse_mask,
+    ellipse_q_field,
+    naca4_airfoil_mask,
+    naca4_q_field,
+    no_bouzidi_q_field,
+    square_mask,
     square_q_field,
 )
 
@@ -299,7 +305,8 @@ def test_cylinder_q_field_n_wall_links_scales_with_perimeter():
     Tests that bigger cylinders have proportionally more wall links and
     smaller ones less -- catches a regression where the q-field generator
     forgets to scan some directions."""
-    n_links = lambda r: int((cylinder_q_field(80, 80, cx=40, cy=40, radius=r) > 0).sum())
+    def n_links(r):
+        return int((cylinder_q_field(80, 80, cx=40, cy=40, radius=r) > 0).sum())
     n_small = n_links(5)
     n_large = n_links(20)
     # 4x radius should give roughly 4x links (perimeter scales linearly).

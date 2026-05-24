@@ -39,13 +39,12 @@ jobs:
           pip install -r requirements-dev.txt
           pip install ruff
 
-      # Lint runs informationally for now -- continue-on-error so it
-      # surfaces violations in the action log without blocking merges
-      # while we burn down any pre-existing issues. Flip to blocking
-      # once the codebase is ruff-clean.
+      # Lint is now blocking. Codebase is ruff-clean (autofix + manual
+      # pass on 2026-05-24); flipping continue-on-error: true -> false
+      # means any new violation fails CI. Add explicit # noqa if you
+      # need to suppress a single line.
       - name: Lint with ruff
         run: ruff check .
-        continue-on-error: true
 
       - name: Run pytest
         run: pytest -q

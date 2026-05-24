@@ -93,7 +93,7 @@ interior[BUFFER:-BUFFER, BUFFER:-BUFFER] = True
 u_mag_interior = np.where(interior, u_mag, np.inf)
 ic_x, ic_y = np.unravel_index(np.argmin(u_mag_interior), u_mag_interior.shape)
 print(f"Vortex center (min |u| in interior): (x={ic_x}, y={ic_y})")
-print(f"  Reference for Re=100 (Ghia et al. 1982): approx (61, 74) on a 100x100 grid")
+print("  Reference for Re=100 (Ghia et al. 1982): approx (61, 74) on a 100x100 grid")
 
 # --- Plot velocity magnitude with streamlines overlaid ---
 fig, ax = plt.subplots(figsize=(7, 6.5))

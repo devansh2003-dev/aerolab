@@ -26,7 +26,10 @@ import numpy as np
 
 from src.lbm import CS2, equilibrium, macroscopic, step_njit_with_force
 from src.shapes import (
-    cylinder_mask, ellipse_mask, naca4_airfoil_mask, no_bouzidi_q_field,
+    cylinder_mask,
+    ellipse_mask,
+    naca4_airfoil_mask,
+    no_bouzidi_q_field,
     square_mask,
 )
 
@@ -38,9 +41,6 @@ nu = (tau - 0.5) * CS2          # ~ 0.02
 n_steps = 8_000
 body_x = 80                     # LE / center of every body
 cy_center = Ny // 2             # 50
-
-INFLOW_DIRS = np.array([1, 5, 8], dtype=np.int32)
-OUTFLOW_DIRS = np.array([3, 6, 7], dtype=np.int32)
 
 KICK_START = 100
 KICK_END = 500
@@ -115,7 +115,7 @@ def run_one(label, solid_mask, kick_x):
     t_start = time.perf_counter()
     for step in range(n_steps):
         f, _Fx, _Fy = step_njit_with_force(
-            f, tau, solid_mask, q_field, f_inflow_eq, INFLOW_DIRS, OUTFLOW_DIRS
+            f, tau, solid_mask, q_field, f_inflow_eq, True, True
         )
         if KICK_START <= step < KICK_END:
             f[2, kick_x, kick_y] += KICK_AMPLITUDE
@@ -172,7 +172,7 @@ def main():
     print(f"\nGallery complete in {t_total / 60:.1f} min")
 
     # --- Individual per-shape PNGs (|u| + vorticity) ---
-    print(f"\nSaving individual wake plots:")
+    print("\nSaving individual wake plots:")
     for label, _, u_mag_plot, vorticity_plot in results:
         fig, (ax_u, ax_v) = plt.subplots(2, 1, figsize=(13, 4.5), sharex=True)
 
@@ -207,7 +207,7 @@ def main():
     fig, axes = plt.subplots(n, 1, figsize=(13, 2.0 * n + 1), sharex=True)
     if n == 1:
         axes = [axes]
-    for ax, (label, _, _, vorticity_plot) in zip(axes, results):
+    for ax, (label, _, _, vorticity_plot) in zip(axes, results, strict=True):
         v_max = float(np.nanmax(np.abs(vorticity_plot)))
         mesh = ax.pcolormesh(
             np.arange(Nx), np.arange(Ny), vorticity_plot.T,

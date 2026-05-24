@@ -66,8 +66,6 @@ RE = 100
 U = 0.1
 KICK_START, KICK_END = 30, 200
 KICK_AMPLITUDE = 0.008
-INFLOW_DIRS = np.array([1, 5, 8], dtype=np.int32)
-OUTFLOW_DIRS = np.array([3, 6, 7], dtype=np.int32)
 
 # Textbook references for cylinder at Re=100. We don't expect either preset
 # to hit these exactly (channel blockage + halfway-BB artifacts shift them).
@@ -106,7 +104,7 @@ def run_preset(name: str, cfg: dict) -> dict:
     t0 = time.perf_counter()
     for step in range(n_steps):
         f, Fx, Fy = step_njit_mrt_with_force(
-            f, tau, mask, q_field, f_inflow, INFLOW_DIRS, OUTFLOW_DIRS,
+            f, tau, mask, q_field, f_inflow, True, True,
         )
         if KICK_START <= step < KICK_END:
             f[2, kick_x, kick_y] += KICK_AMPLITUDE
@@ -219,7 +217,7 @@ r = det["D"] / std["D"]
 cd_richardson = det["cd_mean"] + (det["cd_mean"] - std["cd_mean"]) / (r ** 2 - 1)
 st_richardson = det["st"] + (det["st"] - std["st"]) / (r ** 2 - 1)
 print()
-print(f"Richardson extrapolation (assumes 2nd-order convergence in h):")
+print("Richardson extrapolation (assumes 2nd-order convergence in h):")
 print(f"  Cd extrapolated to h -> 0:  {cd_richardson:.3f}  "
       f"(textbook 1.4, ratio {cd_richardson/TEXTBOOK_CD:.2f}x)")
 print(f"  St extrapolated to h -> 0:  {st_richardson:.3f}  "
@@ -228,11 +226,11 @@ print()
 print("Interpretation guide:")
 print(f"  |Cd_std - Cd_det| / Cd_det = {abs(cd_delta_pct):.1f}%")
 print(f"  |St_std - St_det| / St_det = {abs(st_delta_pct):.1f}%")
-print(f"  Industry-standard 'grid-converged' threshold: < 5%")
-print(f"  If either delta > 10%: production Standard preset is undercooked.")
-print(f"  If even Richardson estimate is far from textbook: the leading error")
-print(f"  is NOT discretization -- it's the boundary conditions (halfway BB,")
-print(f"  channel blockage, equilibrium inflow). Those are III-4 and III-5.")
+print("  Industry-standard 'grid-converged' threshold: < 5%")
+print("  If either delta > 10%: production Standard preset is undercooked.")
+print("  If even Richardson estimate is far from textbook: the leading error")
+print("  is NOT discretization -- it's the boundary conditions (halfway BB,")
+print("  channel blockage, equilibrium inflow). Those are III-4 and III-5.")
 print("=" * 78)
 
 # -- Save artifact ---------------------------------------------------------
@@ -242,7 +240,7 @@ out_dir.mkdir(exist_ok=True)
 fig, axes = plt.subplots(
     2, 1, figsize=(11, 6), dpi=100, facecolor="#0a0a0a",
 )
-for ax, name in zip(axes, ("Standard", "Detailed")):
+for ax, name in zip(axes, ("Standard", "Detailed"), strict=True):
     r = results[name]
     u_mag = np.sqrt(r["u_x"] ** 2 + r["u_y"] ** 2)
     u_plot = np.where(r["mask"], np.nan, u_mag)

@@ -51,7 +51,7 @@ import argparse
 import json
 import sys
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
@@ -100,11 +100,14 @@ SQUARE_FREESTREAM = {
     800:   (2.10, 0.130),
 }
 
-# Standard preset's blockage ratio: D_body / Ny_channel.
-# At Standard (Ny=80, D=28): B = 0.350.
-# At Detailed (Ny=240, D=80): B = 0.333.
-STANDARD_BLOCKAGE = 28.0 / 80.0
-DETAILED_BLOCKAGE = 80.0 / 240.0
+# Blockage ratio: D_body / Ny_channel for each resolution preset.
+#   Standard   (Ny=80,  D=28): B = 0.350  -- interactive preset
+#   Detailed   (Ny=240, D=80): B = 0.333  -- interactive preset (high-res)
+#   Validation (Ny=400, D=20): B = 0.050  -- low-blockage validation
+#                                              (correction is ~10 % only)
+STANDARD_BLOCKAGE   = 28.0 / 80.0
+DETAILED_BLOCKAGE   = 80.0 / 240.0
+VALIDATION_BLOCKAGE = 20.0 / 400.0
 
 # Allen-Vincenti shape constants. Fitted to recover Williamson / Okajima
 # free-stream Cd at Standard blockage; consistent with the Barlow-Rae-Pope
@@ -198,8 +201,8 @@ def run_case(
     shape: str,
     re: int,
     aoa_deg: float = 0.0,
-    resolution: str = "Standard (320 x 80)",
-    n_frames: int = 300,
+    resolution: str = "Validation (700 x 400)",
+    n_frames: int = 400,
 ) -> CaseResult:
     """Run the solver, extract Cd / Cl / St on the converged tail, apply
     Allen-Vincenti blockage correction, and compare to published free-stream
@@ -230,6 +233,8 @@ def run_case(
         B = STANDARD_BLOCKAGE
     elif "Detailed" in resolution:
         B = DETAILED_BLOCKAGE
+    elif "Validation" in resolution:
+        B = VALIDATION_BLOCKAGE
     else:
         B = float(out["char_length"]) / float(out["lbm_ny"])
 
@@ -333,6 +338,25 @@ QUICK_SWEEP = [
     ("Square",   500, 0.0),
 ]
 
+# Headline sweep used by VALIDATION.md / README. Smaller than FULL_SWEEP
+# (which runs the long Re tail to characterize correction behavior at
+# Standard's B = 0.35 blockage). At Validation B = 0.05 we don't need
+# to map out high-Re correction trends -- the correction is already
+# small. Six core Re points cover laminar shedding (100), early
+# transition (200, 300), and the upper laminar limit (500-1000) for
+# cylinder; Okajima's canonical broadside square sweep (150-500).
+LOWBLOCKAGE_HEADLINE_SWEEP = [
+    ("Cylinder", 100,  0.0),
+    ("Cylinder", 200,  0.0),
+    ("Cylinder", 300,  0.0),
+    ("Cylinder", 500,  0.0),
+    ("Cylinder", 1000, 0.0),
+    ("Square",   150,  0.0),
+    ("Square",   200,  0.0),
+    ("Square",   300,  0.0),
+    ("Square",   500,  0.0),
+]
+
 # Lookup map for --case <id>.
 CASE_BY_ID = {
     f"{shape.lower()[:3]}-re{re}": (shape, re, aoa)
@@ -431,11 +455,25 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--quick", action="store_true",
                         help="Run 5-case subset (~3 min) instead of full sweep")
+    parser.add_argument("--headline", action="store_true",
+                        help="Run the 9-case low-blockage headline sweep at "
+                             "Validation (700 x 400). Used by VALIDATION.md.")
     parser.add_argument("--case",
                         help=f"Run a single case by id, e.g. cyl-re200. "
                              f"IDs: {sorted(CASE_BY_ID.keys())}")
-    parser.add_argument("--n-frames", type=int, default=300,
-                        help="Frames per case (default 300 = 10500 steps).")
+    parser.add_argument("--n-frames", type=int, default=400,
+                        help="Frames per case (default 400 = 14000 steps).")
+    parser.add_argument(
+        "--resolution", default="Validation (700 x 400)",
+        choices=[
+            "Standard (320 x 80)",
+            "Detailed (960 x 240)",
+            "Validation (700 x 400)",
+        ],
+        help="Grid preset. Default 'Validation (700 x 400)' is low-blockage "
+             "(B = 0.05) so the Allen-Vincenti correction is ~10 % rather "
+             "than the ~65 % at Standard. Use this for headline numbers.",
+    )
     parser.add_argument(
         "--json", default=str(OUTPUT_DIR / "results.json"),
         help="Path to write raw results JSON.",
@@ -453,6 +491,8 @@ def main() -> int:
             print(f"Unknown case {args.case!r}. Available: {sorted(CASE_BY_ID)}")
             return 2
         sweep = [(shape, re, aoa)]
+    elif args.headline:
+        sweep = LOWBLOCKAGE_HEADLINE_SWEEP
     elif args.quick:
         sweep = QUICK_SWEEP
     else:
@@ -465,7 +505,8 @@ def main() -> int:
     for i, (shape, re, aoa) in enumerate(sweep, 1):
         print(f"  [{i}/{len(sweep)}] {shape} Re={re} AoA={aoa}...", end=" ", flush=True)
         try:
-            r = run_case(shape, re, aoa, n_frames=args.n_frames)
+            r = run_case(shape, re, aoa, resolution=args.resolution,
+                         n_frames=args.n_frames)
             results.append(r)
             cd_str = (
                 f"Cd_raw={r.cd_raw:.2f} -> Cd_corr={r.cd_corrected:.2f} "

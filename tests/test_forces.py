@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import numpy as np
 
 from src.forces import momentum_exchange_force
-from src.lbm import LATTICE_VELOCITIES, equilibrium
+from src.lbm import equilibrium
 from src.shapes import cylinder_mask
 
 

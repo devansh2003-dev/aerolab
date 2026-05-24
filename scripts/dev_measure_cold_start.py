@@ -65,7 +65,9 @@ def _import_and_compile():
     print("[cold-start] importing src.lbm + src.shapes (cold)...")
     t = time.perf_counter()
     from src.lbm import (
-        equilibrium, step_njit_mrt_no_force, step_njit_mrt_with_force,
+        equilibrium,
+        step_njit_mrt_no_force,
+        step_njit_mrt_with_force,
         step_njit_with_force,
     )
     from src.shapes import no_bouzidi_q_field
@@ -80,8 +82,6 @@ def _import_and_compile():
     solid = np.zeros((Nx, Ny), dtype=bool)
     q = no_bouzidi_q_field(Nx, Ny)
     f_inflow = f[:, 0, 0].copy()
-    inflow_dirs = np.array([1, 5, 8], dtype=np.int32)
-    outflow_dirs = np.array([3, 6, 7], dtype=np.int32)
     tau = 0.6
 
     variants = [
@@ -92,10 +92,10 @@ def _import_and_compile():
 
     for label, step_fn in variants:
         t = time.perf_counter()
-        step_fn(f.copy(), tau, solid, q, f_inflow, inflow_dirs, outflow_dirs)
+        step_fn(f.copy(), tau, solid, q, f_inflow, True, True)
         cold = time.perf_counter() - t
         t = time.perf_counter()
-        step_fn(f.copy(), tau, solid, q, f_inflow, inflow_dirs, outflow_dirs)
+        step_fn(f.copy(), tau, solid, q, f_inflow, True, True)
         warm = time.perf_counter() - t
         timings[label] = {"cold_s": cold, "warm_ms": warm * 1000.0}
         print(f"[cold-start]   {label}")

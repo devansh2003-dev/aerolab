@@ -16,7 +16,10 @@ scipy==1.17.1
 # silently grab a version that breaks the polar CSV export.
 pandas==3.0.2
 # Pillow used to assemble the LBM-mode animated GIF (quantize + save_all).
-Pillow>=10.0.0
+# Pinned exactly to match the version the test suite + Cloud deploy run
+# against -- a passing test build on 10.x doesn't guarantee a passing build
+# on 12.x if anything in the quantize path changes.
+Pillow==12.2.0
 # scikit-image: silhouette extraction from uploaded PNG/JPG (Otsu threshold,
 # find_contours, Douglas-Peucker polygon approximation). Pulled in with
 # imageio/tifffile/networkx/lazy-loader -- adds ~30 MB to the Cloud cold-start

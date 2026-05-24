@@ -474,8 +474,19 @@ def zou_he_outflow_pressure(f, rho_out=1.0):
 # tests/test_lbm.py -- if you change either, the test must still pass.
 
 @njit(fastmath=True, error_model="numpy")
-def step_njit_with_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs, outflow_dirs):
-    """One fused LBM timestep + momentum-exchange force calculation.
+def step_njit_with_force(f, tau, solid_mask, q_field, f_inflow, apply_inflow, apply_outflow):
+    """One fused LBM timestep + momentum-exchange force calculation (BGK).
+
+    Vertical walls: PERIODIC. Streaming uses `% Ny` and no separate
+    top/bottom bounce-back is applied. This matches the pure-NumPy
+    reference path (`stream` uses `np.roll`), which is what makes
+    JIT-BGK ↔ pure-NumPy-BGK equivalence testable.
+
+    NOTE: the production MRT kernel (`step_njit_mrt_with_force`) does
+    NOT match this -- it adds a no-slip bounce-back at the top/bottom
+    walls after streaming. So this BGK path is a REFERENCE PATH for
+    consistency testing, not a production-equivalent path. Validation
+    runs all go through MRT.
 
     Performs (equivalent to pure-NumPy reference path):
         f_post_coll = collide(f, tau)
@@ -483,7 +494,7 @@ def step_njit_with_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs, out
         f_bounced   = bounce_back(f_post_coll, solid_mask)
         f_new       = stream(f_bounced)
         zou_he_inflow(f_new, ux_in, uy_in)       # mass-conserving left BC
-        f_new[outflow_dirs, -1, :] = f_new[outflow_dirs, -2, :]
+        zou_he_outflow_pressure(f_new, rho=1.0)  # zero-gradient pressure right BC
 
     Compiled with ``fastmath=True`` only -- ``parallel=True`` was stripped after
     Streamlit Cloud's container produced a NUMBA_NUM_THREADS RuntimeError at
@@ -505,10 +516,12 @@ def step_njit_with_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs, out
         True at obstacle cells.
     f_inflow : ndarray of shape (9,), float64
         Equilibrium distribution at the inflow state.
-    inflow_dirs : ndarray of int, e.g. ``np.array([1, 5, 8], dtype=np.int32)``
-        Directions to override at the left boundary (x=0).
-    outflow_dirs : ndarray of int, e.g. ``np.array([3, 6, 7], dtype=np.int32)``
-        Directions to zero-gradient-extrapolate at the right boundary (x=Nx-1).
+    apply_inflow : bool
+        If True, run the Zou-He velocity inflow BC at x=0. Closed-box
+        tests pass False to leave the left boundary periodic via streaming.
+    apply_outflow : bool
+        If True, run the Zou-He pressure outflow BC at x=Nx-1. Closed-box
+        tests pass False to leave the right boundary periodic.
 
     Returns
     -------
@@ -632,10 +645,9 @@ def step_njit_with_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs, out
     # Mass-conserving inflow that exactly enforces the prescribed velocity.
     # ux_in / uy_in are recovered from the f_inflow vector the caller supplied
     # (built as equilibrium(rho=1, u=(U,0)) -- so ux=U, uy=0 in practice).
-    # Gated on inflow_dirs being non-empty so the closed-box test (which passes
-    # empty dirs) still skips inflow entirely. The `inflow_dirs` array's
-    # contents are not used -- the formulas are hardcoded for the left wall.
-    if inflow_dirs.shape[0] > 0:
+    # Gated on apply_inflow so the closed-box test (which passes False) still
+    # skips inflow entirely.
+    if apply_inflow:
         rho_in = (f_inflow[0] + f_inflow[1] + f_inflow[2] + f_inflow[3]
                   + f_inflow[4] + f_inflow[5] + f_inflow[6] + f_inflow[7]
                   + f_inflow[8])
@@ -660,7 +672,7 @@ def step_njit_with_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs, out
     # against the Zou-He velocity inflow above. uy is extrapolated from the
     # interior cell so wake structures pass through instead of reflecting.
     # See zou_he_outflow_pressure docstring at module top for derivation.
-    if outflow_dirs.shape[0] > 0:
+    if apply_outflow:
         for y in range(Ny):
             f0_w = f_new[0, Nx - 1, y]
             f1_w = f_new[1, Nx - 1, y]
@@ -892,12 +904,20 @@ def collide_mrt(f, tau):
 
 
 @njit(fastmath=True, error_model="numpy")
-def step_njit_mrt_with_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs, outflow_dirs):
+def step_njit_mrt_with_force(f, tau, solid_mask, q_field, f_inflow, apply_inflow, apply_outflow):
     """One fused MRT-LBM timestep + momentum-exchange force calculation.
 
-    Drop-in replacement for ``step_njit_with_force`` (BGK) with identical
-    signature and identical kinematic viscosity. Uses MRT collision so the
-    solver stays stable as tau approaches 0.5 (high Re for a given grid).
+    Vertical walls: BOUNCE-BACK (no-slip). After streaming, populations
+    that left the domain through y=0 or y=Ny-1 are reflected at those
+    walls (Step 4.5 below). This is intentionally DIFFERENT from
+    ``step_njit_with_force`` (BGK), which uses periodic vertical walls.
+    BGK is the consistency-testing reference path; MRT is the
+    production path. Validation runs all use MRT.
+
+    Drop-in replacement for ``step_njit_with_force`` (BGK) in terms of
+    signature and kinematic viscosity, but NOT in terms of vertical-
+    wall boundary conditions. Uses MRT collision so the solver stays
+    stable as tau approaches 0.5 (high Re for a given grid).
 
     Inlines the M and M^-1 transforms as explicit per-cell algebra. The
     moments and equilibrium moments are computed cell-by-cell from the 9
@@ -1091,7 +1111,7 @@ def step_njit_mrt_with_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs,
 
     # === Step 5: Zou-He velocity inflow at left boundary (x = 0) ===
     # See step_njit_with_force for the derivation; identical formulas reused.
-    if inflow_dirs.shape[0] > 0:
+    if apply_inflow:
         rho_in = (f_inflow[0] + f_inflow[1] + f_inflow[2] + f_inflow[3]
                   + f_inflow[4] + f_inflow[5] + f_inflow[6] + f_inflow[7]
                   + f_inflow[8])
@@ -1116,7 +1136,7 @@ def step_njit_mrt_with_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs,
     # against the Zou-He velocity inflow above. uy is extrapolated from the
     # interior cell so wake structures pass through instead of reflecting.
     # See zou_he_outflow_pressure docstring at module top for derivation.
-    if outflow_dirs.shape[0] > 0:
+    if apply_outflow:
         for y in range(Ny):
             f0_w = f_new[0, Nx - 1, y]
             f1_w = f_new[1, Nx - 1, y]
@@ -1184,7 +1204,7 @@ def step_njit_mrt_with_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs,
 
 
 @njit(fastmath=True, error_model="numpy")
-def step_njit_mrt_no_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs, outflow_dirs):
+def step_njit_mrt_no_force(f, tau, solid_mask, q_field, f_inflow, apply_inflow, apply_outflow):
     """MRT timestep without the momentum-exchange force calculation.
 
     Drop-in for the Streamlit visualization path (it doesn't consume Fx/Fy).
@@ -1317,9 +1337,9 @@ def step_njit_mrt_no_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs, o
 
     # Zou-He inflow (left, x=0) + zero-gradient outflow (right, x=Nx-1).
     # See step_njit_with_force for the Zou-He derivation; identical formulas
-    # reused. Gated on inflow_dirs being non-empty so the closed-box test
-    # (which passes empty dirs) still skips inflow entirely.
-    if inflow_dirs.shape[0] > 0:
+    # reused. Gated on apply_inflow so the closed-box test (which passes
+    # False) still skips inflow entirely.
+    if apply_inflow:
         rho_in = (f_inflow[0] + f_inflow[1] + f_inflow[2] + f_inflow[3]
                   + f_inflow[4] + f_inflow[5] + f_inflow[6] + f_inflow[7]
                   + f_inflow[8])
@@ -1339,7 +1359,7 @@ def step_njit_mrt_no_force(f, tau, solid_mask, q_field, f_inflow, inflow_dirs, o
             f_new[5, 0, y] = f7_w - 0.5 * (f2_w - f4_w) + (1.0 / 6.0) * rho_w * ux_in + 0.5 * rho_w * uy_in
             f_new[8, 0, y] = f6_w + 0.5 * (f2_w - f4_w) + (1.0 / 6.0) * rho_w * ux_in - 0.5 * rho_w * uy_in
     # Zou-He pressure outflow (rho_w = 1.0) -- see step_njit_with_force for derivation.
-    if outflow_dirs.shape[0] > 0:
+    if apply_outflow:
         for y in range(Ny):
             f0_w = f_new[0, Nx - 1, y]
             f1_w = f_new[1, Nx - 1, y]

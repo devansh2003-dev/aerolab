@@ -39,7 +39,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from src.lbm import (
-    CS2, equilibrium, macroscopic, step_njit_mrt_with_force,
+    CS2,
+    equilibrium,
+    macroscopic,
+    step_njit_mrt_with_force,
 )
 from src.shapes import cylinder_mask, cylinder_q_field
 
@@ -56,8 +59,6 @@ Re_target = 100
 nu = U_INFLOW * D / Re_target
 tau = nu / CS2 + 0.5
 
-INFLOW_DIRS = np.array([1, 5, 8], dtype=np.int32)
-OUTFLOW_DIRS = np.array([3, 6, 7], dtype=np.int32)
 KICK_START, KICK_END = 30, 200
 KICK_AMPLITUDE = 0.008
 
@@ -68,7 +69,7 @@ KICK_AMPLITUDE = 0.008
 N_STEPS = 8000
 
 print("=" * 78)
-print(f"AeroLab CFD validation -- production MRT + Smagorinsky LES")
+print("AeroLab CFD validation -- production MRT + Smagorinsky LES")
 print(f"Geometry: cylinder D={D}, channel {Nx}x{Ny}, blockage = {D/Ny*100:.0f}%")
 print(f"Flow:     Re={Re_target}, U={U_INFLOW}, tau={tau:.4f}")
 print(f"Sim:      {N_STEPS} steps")
@@ -92,7 +93,7 @@ print(f"\nRunning {N_STEPS} steps...")
 t0 = time.perf_counter()
 for step in range(N_STEPS):
     f, Fx, Fy = step_njit_mrt_with_force(
-        f, tau, mask, q_field, f_inflow_eq, INFLOW_DIRS, OUTFLOW_DIRS,
+        f, tau, mask, q_field, f_inflow_eq, True, True,
     )
     if KICK_START <= step < KICK_END:
         f[2, kick_x, kick_y] += KICK_AMPLITUDE
@@ -153,7 +154,7 @@ print(f"  -> {'PASS' if g2 else 'FAIL'} (median < 1e-3)")
 # --- Gate 3: no-slip ---
 ux_solid_mean = float(np.abs(ux[solid]).mean())
 uy_solid_mean = float(np.abs(uy[solid]).mean())
-print(f"\nGate 3 -- no-slip on body cells")
+print("\nGate 3 -- no-slip on body cells")
 print(f"  mean |u_x| inside body: {ux_solid_mean:.2e}  (target << U={U_INFLOW})")
 print(f"  mean |u_y| inside body: {uy_solid_mean:.2e}")
 g3 = ux_solid_mean < 0.1 * U_INFLOW and uy_solid_mean < 0.1 * U_INFLOW
@@ -166,7 +167,7 @@ flux_ref = float(flux_per_x[Nx - 20:Nx - 5].mean())
 flux_variation = float(
     (flux_per_x[20:-20].max() - flux_per_x[20:-20].min()) / abs(flux_ref)
 )
-print(f"\nGate 4 -- mass flux  integral(u_x dy)  across vertical slices")
+print("\nGate 4 -- mass flux  integral(u_x dy)  across vertical slices")
 print(f"  reference flux:                {flux_ref:.4f}  "
       f"(nominal U*Ny = {U_INFLOW * Ny:.2f})")
 print(f"  variation across interior:     {flux_variation:.2%}")
@@ -189,9 +190,9 @@ print(f"\nDiagnostic A -- asymptotic flow at outflow (x = {far_x})")
 print(f"  mean u_x:   {far_ux:.4f}  vs  inflow U = {U_INFLOW:.4f}  "
       f"(deficit {(1 - far_ux / U_INFLOW) * 100:+.1f}%)")
 print(f"  mean |u_y|: {far_uy:.4f}  (should be ~0)")
-print(f"  Note: this is only ~12 D downstream. Free-stream cylinder wake at "
-      f"Re=100 needs 30-50 D")
-print(f"  of channel to fully recover -- we never had that room.")
+print("  Note: this is only ~12 D downstream. Free-stream cylinder wake at "
+      "Re=100 needs 30-50 D")
+print("  of channel to fully recover -- we never had that room.")
 
 # --- Diagnostic B: time-mean drag ---
 transient = N_STEPS // 2
@@ -199,15 +200,15 @@ Fx_steady = Fx_history[transient:]
 Cd = 2.0 * float(Fx_steady.mean()) / (1.0 * U_INFLOW ** 2 * D)
 Fy_steady = Fy_history[transient:]
 Cl_amp = 2.0 * float(Fy_steady.max() - Fy_steady.min()) / (1.0 * U_INFLOW ** 2 * D)
-print(f"\nDiagnostic B -- time-mean drag (after first half as transient)")
+print("\nDiagnostic B -- time-mean drag (after first half as transient)")
 print(f"  measured Cd:           {Cd:.3f}")
-print(f"  textbook Cd at Re=100: 1.4")
+print("  textbook Cd at Re=100: 1.4")
 print(f"  relative error:        {(Cd / 1.4 - 1) * 100:+.0f}%")
 print(f"  measured Cl_amp:       {Cl_amp:.3f}")
-print(f"  Note: high Cd is the documented halfway-bounce-back wall artifact")
-print(f"  (effective wall drifts inward at tau -> 0.5, shrinking effective D")
-print(f"  and inflating Cd against the nominal diameter) PLUS the 20%")
-print(f"  channel-blockage Cd correction.")
+print("  Note: high Cd is the documented halfway-bounce-back wall artifact")
+print("  (effective wall drifts inward at tau -> 0.5, shrinking effective D")
+print("  and inflating Cd against the nominal diameter) PLUS the 20%")
+print("  channel-blockage Cd correction.")
 
 # --- Diagnostic C: Strouhal from FFT of lift ---
 Fy_detrended = Fy_steady - Fy_steady.mean()
@@ -217,17 +218,17 @@ power = np.abs(fft) ** 2
 peak_idx = 1 + int(np.argmax(power[1:]))
 f_peak = float(freqs[peak_idx])
 St = f_peak * D / U_INFLOW
-print(f"\nDiagnostic C -- Strouhal number from lift-force FFT")
+print("\nDiagnostic C -- Strouhal number from lift-force FFT")
 print(f"  peak frequency:     {f_peak:.5f} cycles/step  "
       f"(period {1 / f_peak:.0f} steps)")
 print(f"  measured St:        {St:.4f}")
-print(f"  textbook (Re=100):  0.165")
+print("  textbook (Re=100):  0.165")
 print(f"  ratio:              {St / 0.165:.2f}x textbook")
-print(f"  Note: 20% channel blockage shifts St up ~10-15% in published")
-print(f"  benchmarks. Our larger overshoot reflects (a) the wake may not be")
+print("  Note: 20% channel blockage shifts St up ~10-15% in published")
+print("  benchmarks. Our larger overshoot reflects (a) the wake may not be")
 print(f"  in clean limit cycle in {N_STEPS - transient} steady-state steps,")
 print(f"  (b) FFT bin width is wide here (1/{N_STEPS - transient}), and (c)")
-print(f"  the same wall-position drift that inflates Cd also subtly shifts St.")
+print("  the same wall-position drift that inflates Cd also subtly shifts St.")
 
 # ===========================================================================
 # SUMMARY
@@ -239,7 +240,7 @@ for name, ok in gates_passed:
     print(f"  {'PASS' if ok else 'FAIL'}  {name}")
 print()
 print(f"  Local physics gates:  {n_pass}/{n_total} pass")
-print(f"  Global diagnostics:   reported (see above) -- not gated")
+print("  Global diagnostics:   reported (see above) -- not gated")
 if n_pass == n_total:
     print("\nVerdict: the solver is doing Navier-Stokes correctly cell-by-cell.")
     print("Global flow quantities deviate from free-stream textbook because of")
@@ -269,7 +270,8 @@ ax_u.set_title(
     f"|u| after {N_STEPS} steps (cylinder Re={Re_target}, MRT)",
     color="#f5f5f5", fontsize=10,
 )
-ax_u.set_xticks([]); ax_u.set_yticks([])
+ax_u.set_xticks([])
+ax_u.set_yticks([])
 plt.colorbar(mesh, ax=ax_u, fraction=0.025, pad=0.01).ax.tick_params(
     color="#f5f5f5", labelcolor="#f5f5f5", labelsize=8,
 )
@@ -286,7 +288,8 @@ ax_d.set_title(
     f"div(u)  --  median |div|={median_div:.1e}, p99={p99_div:.1e}",
     color="#f5f5f5", fontsize=10,
 )
-ax_d.set_xticks([]); ax_d.set_yticks([])
+ax_d.set_xticks([])
+ax_d.set_yticks([])
 plt.colorbar(mesh, ax=ax_d, fraction=0.025, pad=0.01).ax.tick_params(
     color="#f5f5f5", labelcolor="#f5f5f5", labelsize=8,
 )

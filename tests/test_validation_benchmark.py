@@ -61,8 +61,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.validate_solver import (  # noqa: E402
-    ALLEN_VINCENTI_K, CYLINDER_FREESTREAM, SQUARE_FREESTREAM,
-    STANDARD_BLOCKAGE, run_case,
+    ALLEN_VINCENTI_K,
+    CYLINDER_FREESTREAM,
+    SQUARE_FREESTREAM,
+    STANDARD_BLOCKAGE,
+    run_case,
 )
 
 # n_frames at this validation level. 300 frames = 10500 lattice steps =

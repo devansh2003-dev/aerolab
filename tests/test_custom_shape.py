@@ -11,13 +11,9 @@ import pytest
 from PIL import Image, ImageDraw
 
 from src.custom_shape import (
-    MAX_AREA_FRAC,
     MAX_IMAGE_DIM,
     MAX_SIMPLIFIED_VERTICES,
-    MIN_AREA_FRAC,
-    MIN_IMAGE_DIM,
     SilhouetteResult,
-    _transform_polygon_to_lattice,
     canvas_image_to_polygon,
     extract_silhouette_from_image,
     polygon_outline_xy,

@@ -20,14 +20,13 @@ from __future__ import annotations
 
 import io
 from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageOps
 from scipy.ndimage import binary_closing, binary_fill_holes, gaussian_filter
 from scipy.ndimage import label as ndimage_label
-from skimage.measure import approximate_polygon, find_contours
 from skimage.filters import threshold_otsu
+from skimage.measure import approximate_polygon, find_contours
 
 # Register HEIF/HEIC opener (iPhone photos default to .heic). Optional --
 # the package needs libheif at runtime, so on stripped-down deploys
@@ -465,7 +464,9 @@ def canvas_image_to_polygon(canvas_image: np.ndarray) -> SilhouetteResult:
 
     from PIL import Image
     from scipy.ndimage import (
-        binary_dilation, binary_erosion, binary_fill_holes,
+        binary_dilation,
+        binary_erosion,
+        binary_fill_holes,
     )
 
     if canvas_image is None:

@@ -49,7 +49,12 @@ What **is** claimed, with quantitative backing:
    - exact analytic force calculations on hand-computable
      configurations,
    - MRT moment-transform inverse to machine precision,
-   - BGK ↔ MRT consistency on freestream-stable flows.
+   - JIT-BGK ↔ pure-NumPy-BGK equivalence (both use periodic vertical
+     walls; production MRT uses no-slip bounce-back vertical walls, so
+     this equivalence does NOT extend to BGK ↔ MRT — the two kernels
+     have intentionally different boundary treatments).
+   - MRT-no-force ↔ MRT-with-force equivalence (both share the
+     no-slip-wall MRT path).
 
    See §3.1 for the conservation diagnostic.
 

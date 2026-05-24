@@ -47,9 +47,6 @@ n_steps = 20_000
 n_average = 6_000        # last N steps for time average
 n_fft = 12_000           # last N steps for FFT (Strouhal estimate)
 
-INFLOW_DIRS = np.array([1, 5, 8], dtype=np.int32)
-OUTFLOW_DIRS = np.array([3, 6, 7], dtype=np.int32)
-
 KICK_START = 100
 KICK_END = 500
 KICK_AMPLITUDE = 0.005
@@ -82,7 +79,7 @@ def run_one_aoa(alpha_deg):
     t0 = time.perf_counter()
     for step in range(n_steps):
         f, Fx, Fy = step_njit_with_force(
-            f, tau, mask, q_field, f_inflow, INFLOW_DIRS, OUTFLOW_DIRS,
+            f, tau, mask, q_field, f_inflow, True, True,
         )
         if KICK_START <= step < KICK_END:
             f[2, kick_x, kick_y] += KICK_AMPLITUDE
