@@ -1006,11 +1006,14 @@ def render_lbm(solve, *, viz_mode="Vorticity", progress_callback=None):
     # viewer should never have to guess which way the flow is going or how
     # big the body actually is.
 
-    # Flow direction arrow, top-left. Length = 12% of grid width. The arrow
-    # is a clear "the air flows this way" cue, paired with a numeric label.
+    # Flow direction arrow, TOP-RIGHT. Length = 12% of grid width. The
+    # arrow is a clear "the air flows this way" cue, paired with a numeric
+    # label. Moved right (was left) so it doesn't overlap the title box
+    # that lives in the top-left at axes-fraction (0.012, 0.93) -- external
+    # review 2026-05-24 flagged the overlap on every render.
     arrow_y = LBM_NY * 0.88
-    arrow_x0 = LBM_NX * 0.04
-    arrow_x1 = LBM_NX * 0.16
+    arrow_x0 = LBM_NX * 0.83
+    arrow_x1 = LBM_NX * 0.95
     ax.annotate(
         "", xy=(arrow_x1, arrow_y), xytext=(arrow_x0, arrow_y),
         arrowprops=dict(
@@ -1026,12 +1029,12 @@ def render_lbm(solve, *, viz_mode="Vorticity", progress_callback=None):
         zorder=25,
     )
 
-    # Body-size scale bar, bottom-right. A horizontal line of length =
-    # char_length, labeled with how many cells that is. Gives the viewer
-    # a concrete sense of the body's pixel-scale.
+    # Body-size scale bar, BOTTOM-LEFT. Was bottom-right; flipped to
+    # balance the now-top-right flow arrow and keep all four corners of
+    # the GIF informative without crowding any single corner.
     sb_y = LBM_NY * 0.08
-    sb_x1 = LBM_NX - max(8, LBM_NX * 0.025)
-    sb_x0 = sb_x1 - char_length
+    sb_x0 = max(8, LBM_NX * 0.025)
+    sb_x1 = sb_x0 + char_length
     ax.plot(
         [sb_x0, sb_x1], [sb_y, sb_y],
         color=TEXT_COLOR, linewidth=1.5, solid_capstyle="butt", zorder=25,

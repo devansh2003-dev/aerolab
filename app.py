@@ -49,6 +49,21 @@ from src.airfoils import analyze_airfoil, get_airfoil
 # --- Page config (must be the first Streamlit call) ---
 st.set_page_config(page_title="AeroLab", layout="wide")
 
+# Hide Streamlit Cloud's "Manage app" / "Hosted with Streamlit" chrome so
+# the GIF doesn't compete with the deploy badge for the bottom-right of
+# the viewport. Streamlit's MainMenu and the footer get class names that
+# are stable enough to target via attribute / data-testid selectors.
+st.markdown(
+    "<style>"
+    "#MainMenu {visibility: hidden;}"
+    "footer {visibility: hidden;}"
+    ".stDeployButton {display: none;}"
+    "[data-testid='stToolbar'] {visibility: hidden; height: 0;}"
+    "[data-testid='stStatusWidget'] {display: none;}"
+    "</style>",
+    unsafe_allow_html=True,
+)
+
 # Subtle wordmark; each mode below sets its own hero title.
 st.markdown(
     "<div style='display:flex;align-items:center;gap:0.6rem;"
@@ -438,9 +453,13 @@ if mode == "Real CFD (LBM)":
             except (TypeError, ValueError):
                 pass
             try:
-                _a = float(_qp.get("aoa", "0"))
+                # rotation_deg is the new canonical name for non-airfoil
+                # shapes (the slider is labelled "Rotation", not "AoA");
+                # aoa stays supported as a backward-compat alias so old
+                # shared links keep working.
+                _a = float(_qp.get("rotation_deg", _qp.get("aoa", "0")))
                 if -45.0 <= _a <= 45.0:
-                    # AoA slider step is 0.5; round.
+                    # AoA / rotation slider step is 0.5; round.
                     st.session_state["lbm_pending_aoa"] = round(_a * 2) / 2
             except (TypeError, ValueError):
                 pass
@@ -481,7 +500,7 @@ if mode == "Real CFD (LBM)":
         "Ellipse  (stretched oval)": "Ellipse",
         "NACA 0012  (symmetric wing)": "NACA 0012",
         "NACA 4412  (curved wing)": "NACA 4412",
-        "Upload your own  (PNG / JPG)": "Custom",
+        "Upload your own  (PNG, JPG, WEBP, etc.)": "Custom",
     }
 
     def regime_label(re):
@@ -726,8 +745,8 @@ if mode == "Real CFD (LBM)":
                 st.session_state.pop("lbm_custom_label", None)
             if custom_polygon is None:
                 st.caption(
-                    ":material/info: Upload an image, or click a sample "
-                    "above to load a built-in silhouette."
+                    ":material/info: Upload an image, draw your own shape, "
+                    "or open the **Sample** tab for a built-in silhouette."
                 )
 
 
@@ -823,9 +842,20 @@ if mode == "Real CFD (LBM)":
         # shape pick with a higher ceiling) into the new range so the
         # slider doesn't raise "value out of range".
         _prev_v = st.session_state.get("lbm_velocity_slider", _default_velocity)
-        st.session_state["lbm_velocity_slider"] = float(
-            np.clip(_prev_v, 0.15, _v_max)
-        )
+        _clamped_v = float(np.clip(_prev_v, 0.15, _v_max))
+        st.session_state["lbm_velocity_slider"] = _clamped_v
+        # If we just silently lowered the user's chosen speed (e.g.
+        # they rotated the square past 5 deg and the cap dropped from
+        # 1.50 to 0.60), tell them. External review flagged this as
+        # "the user's speed just changes under them".
+        if _prev_v > _v_max + 1e-6 and _prev_v > 0.16:
+            st.toast(
+                f":material/speed: Flow speed capped to {_v_max:.2f} m/s "
+                f"(was {_prev_v:.2f}). At {shape_preset}"
+                f"{f' / {_aoa_for_cap:+.0f}' + chr(176) if abs(_aoa_for_cap) >= 5 else ''} "
+                f"the solver stays stable up to Re &le; {_re_cap}.",
+                icon=":material/info:",
+            )
         velocity_mps = st.slider(
             "Flow speed (m/s)",
             min_value=0.15, max_value=_v_max, step=0.1,
@@ -1066,12 +1096,14 @@ if mode == "Real CFD (LBM)":
             st.session_state.get("lbm_last_displayed_config") == _current_config
         )
         if "Standard" in res_display:
-            st.caption(":material/timer: Local: ~40 s warm, ~65 s first cold "
-                       "click. Streamlit Cloud (1-vCPU shared): ~3.3 min. "
+            st.caption(":material/timer: ~30-40 s on your laptop "
+                       "(plus a ~25 s first-time JIT compile). On the "
+                       "free Streamlit Cloud tier expect a few minutes. "
                        "Revisits are instant (cached).")
         else:
-            st.caption(":material/timer: Local: ~100 s warm, ~125 s first cold "
-                       "click. Streamlit Cloud (1-vCPU shared): ~6 min. "
+            st.caption(":material/timer: ~90-100 s on your laptop "
+                       "(plus a ~25 s first-time JIT compile). On the "
+                       "free Streamlit Cloud tier expect ~6 min. "
                        "Revisits are instant (cached).")
 
         # === Reset to defaults ===
@@ -1392,15 +1424,23 @@ if mode == "Real CFD (LBM)":
             snap_shape, snap_re, snap_aoa, snap_res, _snap_poly_key = snapshot
             snap_viz = "Vorticity"
         snap_polygon = st.session_state.get("lbm_snapshot_polygon")
+        # Force the snapshot to re-render in the CURRENT viz_mode so the
+        # two panels share a colormap -- otherwise the snapshot might be
+        # Velocity (orange/yellow) and the current run Vorticity
+        # (red/blue), which can't be visually compared. External review
+        # 2026-05-24 flagged this; we now match viz modes silently and
+        # only warn if the snapshot's other (shape/Re/AoA) params differ
+        # in a way the side-by-side is supposed to show off.
         snap_result = _cached_simulate_and_render(
             snap_shape, snap_re, snap_aoa, snap_res,
-            custom_polygon=snap_polygon, viz_mode=snap_viz,
+            custom_polygon=snap_polygon, viz_mode=viz_mode,
         )
         st.markdown("---")
         st.markdown("### Side-by-side comparison")
         st.caption(
-            "Snapshot is shown on the left, current run on the right. "
-            "Clear the snapshot below to return to single-run view."
+            f"Snapshot on the left, current run on the right -- both "
+            f"rendered in **{viz_mode}** mode so colormaps match. "
+            f"Clear the snapshot below to return to single-run view."
         )
         cmp_cols = st.columns(2)
         with cmp_cols[0]:
@@ -1423,21 +1463,28 @@ if mode == "Real CFD (LBM)":
     # === Display: hero animation, colorbar, plain-English legend ===
     st.markdown("---")
     shape_name = shape_display.split("  (")[0]
-    if shape_preset == "Custom":
-        _rot_part = (
-            f"  ·  rotated {aoa_deg:+.1f} deg" if abs(aoa_deg) > 0.25 else ""
-        )
-        st.markdown(f"### :material/air: Your shape in {reg}{_rot_part}")
-    elif shape_preset in ("NACA 0012", "NACA 4412"):
-        st.markdown(
-            f"### :material/air: {shape_name}, {reg}  ·  "
-            f"wing tilt {aoa_deg:+.1f} deg"
-        )
-    else:
-        st.markdown(f"### :material/air: {shape_name} in {reg}")
+    # When we already showed the side-by-side above, the standalone hero
+    # animation is redundant -- it makes the page a long endless scroll.
+    # Skip the heading + hero GIF; the action row, legend, and metric
+    # strip still render below for both single- and comparison-mode runs.
+    _showing_side_by_side = snapshot is not None and not snapshot_is_current
+    if not _showing_side_by_side:
+        if shape_preset == "Custom":
+            _rot_part = (
+                f"  ·  rotated {aoa_deg:+.1f} deg" if abs(aoa_deg) > 0.25 else ""
+            )
+            st.markdown(f"### :material/air: Your shape in {reg}{_rot_part}")
+        elif shape_preset in ("NACA 0012", "NACA 4412"):
+            st.markdown(
+                f"### :material/air: {shape_name}, {reg}  ·  "
+                f"wing tilt {aoa_deg:+.1f} deg"
+            )
+        else:
+            st.markdown(f"### :material/air: {shape_name} in {reg}")
 
     with st.container(border=True):
-        st.image(gif_bytes, width="stretch")
+        if not _showing_side_by_side:
+            st.image(gif_bytes, width="stretch")
 
         # Action row: download GIF, pin for comparison, clear pin (if set).
         if shape_preset == "Custom":
@@ -1456,7 +1503,7 @@ if mode == "Real CFD (LBM)":
         action_cols = st.columns([1, 1, 1, 1, 2])
         with action_cols[0]:
             st.download_button(
-                ":material/download:  Download GIF",
+                ":material/download:  Save GIF",
                 data=gif_bytes,
                 file_name=_gif_name,
                 mime="image/gif",
@@ -1466,9 +1513,9 @@ if mode == "Real CFD (LBM)":
             )
         with action_cols[1]:
             _pin_label = (
-                ":material/push_pin:  Pinned (change params to compare)"
+                ":material/push_pin:  Pinned"
                 if snapshot_is_current else
-                ":material/push_pin:  Pin for comparison"
+                ":material/push_pin:  Pin"
             )
             if st.button(
                 _pin_label, width="stretch",
@@ -1508,7 +1555,7 @@ if mode == "Real CFD (LBM)":
         with action_cols[2]:
             if snapshot is not None:
                 if st.button(
-                    ":material/close:  Clear snapshot",
+                    ":material/close:  Clear",
                     width="stretch",
                     help="Remove the pinned snapshot and return to single-run view.",
                     key="clear_comparison",
@@ -1533,24 +1580,53 @@ if mode == "Real CFD (LBM)":
                 "that link lands directly on this exact run."
             )
             if st.button(
-                ":material/share:  Share link",
+                ":material/share:  Share",
                 width="stretch",
                 disabled=_share_disabled,
                 help=_share_help,
                 key="share_link_btn",
             ):
+                # Use rotation_deg for square + custom (where the angle is
+                # geometric rotation, not aerodynamic angle of attack).
+                # Backward-compat: still read `aoa` on the receiving end so
+                # old shared links keep working.
+                _is_aerodynamic_aoa = shape_preset in ("NACA 0012", "NACA 4412")
+                _angle_param = "aoa" if _is_aerodynamic_aoa else "rotation_deg"
+                # Clear the other angle param to keep URLs canonical.
+                if _is_aerodynamic_aoa:
+                    if "rotation_deg" in st.query_params:
+                        del st.query_params["rotation_deg"]
+                else:
+                    if "aoa" in st.query_params:
+                        del st.query_params["aoa"]
                 st.query_params["shape"] = _SHAPE_DISPLAY_TO_QP[shape_preset]
                 st.query_params["vel"] = f"{velocity_mps:.2f}"
-                st.query_params["aoa"] = f"{aoa_deg:.1f}"
+                st.query_params[_angle_param] = f"{aoa_deg:.1f}"
                 st.query_params["res"] = (
                     "standard" if "Standard" in res_display else "detailed"
                 )
                 st.query_params["viz"] = viz_mode
-                st.toast(
-                    ":material/share: Link ready -- copy from your "
-                    "browser's address bar.",
-                    icon=":material/share:",
-                )
+                # Stash the click so we render an expandable, copyable URL
+                # block below the action row -- much better than a toast that
+                # tells the user to dig in their address bar.
+                st.session_state["_share_url_just_built"] = True
+
+        # Show a copyable share-link block right after the click. Streamlit
+        # doesn't expose a native clipboard API across hosts, so we render
+        # the URL as a code block: users hit the built-in "copy" icon
+        # st.code adds in the top-right corner of every code block. Much
+        # better than the old toast that told them to dig in the address bar.
+        if st.session_state.get("_share_url_just_built"):
+            _qp_str = "&".join(f"{k}={v}" for k, v in st.query_params.to_dict().items())
+            _share_url = f"https://aerolab-devansh.streamlit.app/?{_qp_str}"
+            st.info(
+                ":material/share: **Share link ready.** Copy and send -- "
+                "opening this link reopens this exact run."
+            )
+            st.code(_share_url, language=None)
+            # One-shot: clear the flag so the next rerun (e.g. slider drag)
+            # doesn't re-render the link block.
+            del st.session_state["_share_url_just_built"]
 
         # Persistent pinned-state caption -- gives the user feedback that
         # something IS pinned, since pinning before changing params has no
@@ -1658,10 +1734,9 @@ if mode == "Real CFD (LBM)":
             unsafe_allow_html=True,
         )
         st.markdown(
-            "Massless smoke tracers carried by the wind, "
-            "**colored by speed** (perceptually uniform plasma colormap): "
-            "dark purple = slow / recirculating, orange = inflow speed, "
-            "yellow = accelerated."
+            "Massless smoke tracers carried by the wind, **colored by "
+            "speed**: dark purple = slow or recirculating, orange = "
+            "freestream speed, yellow = accelerated."
         )
     with leg_cols[3]:
         st.markdown(
@@ -1669,7 +1744,9 @@ if mode == "Real CFD (LBM)":
             unsafe_allow_html=True,
         )
         st.markdown(
-            "The object. Air can't flow through it -- it has to go around."
+            "The object itself. Air can't flow through it, so it has "
+            "to go around -- which is what creates everything you see "
+            "in the wake."
         )
 
     # === Metric strip ===
@@ -1688,16 +1765,20 @@ if mode == "Real CFD (LBM)":
         st.metric(":material/footprint: Simulation steps", f"{actual_n_steps:,}")
     with metric_cols[2]:
         st.metric(":material/movie: Playback",
-                   f"{actual_n_frames} frames @ {round(1000 / GIF_FRAME_MS)} fps")
+                   f"{actual_n_frames}f @ {round(1000 / GIF_FRAME_MS)} fps",
+                   help=f"{actual_n_frames} animation frames played at "
+                        f"{round(1000 / GIF_FRAME_MS)} frames per second. "
+                        f"Loops continuously in the viewer above.")
 
-    # === Measured forces (collapsed by default — for the curious / portfolio
-    # reviewers, not focal for a "see air" viewer) ===
-    # The solver runs a momentum-exchange force calculation on the body every
-    # step. Cd/Cl are means over the last third of the run; Strouhal is the
-    # dominant FFT peak of the Cl history. Cylinder runs get a textbook badge.
+    # === Measured forces ===
+    # Open by default so Cd/Cl/St are visible at a glance -- external
+    # review 2026-05-24 flagged the "inverted hierarchy" of these key
+    # numbers hidden in a collapsed expander while decorative colorbars
+    # were always visible.
     with st.expander(
             ":material/insights: **Forces measured during this run** "
-            "(drag, lift, vortex-shedding frequency)"):
+            "(drag, lift, vortex-shedding frequency)",
+            expanded=True):
         _st_val = sim_result.get("strouhal", float("nan"))
         _cd_raw = float(sim_result["cd_mean"])
         # Compute the Allen-Vincenti corrected estimate so we can lead
@@ -1859,44 +1940,39 @@ if mode == "Real CFD (LBM)":
                 f"section 4.1."
             )
 
-        # Compact textbook-comparison verdict. Green if Strouhal matched
-        # within 25 % (the cleaner physics check, less sensitive to grid
-        # bias than Cd), blue if it didn't (or wasn't computed). Cd-vs-
-        # textbook framing is in the delta chip above, not repeated here.
-        if _show_textbook and _cd_ref is not None:
-            _st_err_pct = (
-                abs(_st_val - _st_ref) / _st_ref * 100
-                if (_st_ref is not None and np.isfinite(_st_val)) else None
-            )
+        # Compact verdict using the BLOCKAGE-CORRECTED Strouhal vs the
+        # free-stream Williamson / Okajima reference. Green if within
+        # 25 %, blue otherwise. This complements the delta chip on the
+        # metric tile above with a plain-English physics interpretation.
+        if _show_textbook and _st_free is not None and _st_corr is not None and np.isfinite(_st_val):
+            _st_err_pct = abs(_st_corr - _st_free) / _st_free * 100
             _bias_text = {
                 "Cylinder": (
-                    "Cd is biased ~50-100 % high (channel confinement "
-                    "+ grid resolution); Strouhal is the cleaner cross-check."
+                    "The corrected Cd above is the apples-to-apples "
+                    "comparison with Williamson 1996; raw channel Cd is "
+                    "elevated by the channel walls accelerating the flow."
                 ),
                 "Square": (
-                    "Square Cd is geometry-locked at the corners, so it's "
-                    "flatter than the cylinder's. Ours still reads high "
-                    "(confinement + halfway bounce-back); Strouhal is the "
-                    "cleaner cross-check."
+                    "Square Cd is geometry-locked at the corners; "
+                    "the corrected value above is the apples-to-apples "
+                    "comparison with Okajima 1982 (within +/- 25 %)."
                 ),
             }[shape_preset]
-            if _st_err_pct is not None and _st_err_pct < 25:
+            if _st_err_pct < 25:
                 st.success(
                     f":material/check_circle: **Shedding physics match** "
-                    f"-- Strouhal within {_st_err_pct:.0f} % of textbook "
-                    f"at Re={int(reynolds_target)}.  {_bias_text}"
+                    f"-- corrected Strouhal within {_st_err_pct:.0f} % of "
+                    f"Williamson / Okajima at Re={int(reynolds_target)}.  "
+                    f"{_bias_text}"
                 )
             else:
                 st.info(
-                    f":material/info: **Textbook reference active** "
-                    f"({shape_preset}, Re={int(reynolds_target)}). "
-                    + (
-                        f"Strouhal is {_st_err_pct:.0f} % off -- try a "
-                        f"longer / Detailed run so the FFT has more "
-                        f"cycles to lock onto. "
-                        if _st_err_pct is not None else ""
-                    )
-                    + _bias_text
+                    f":material/info: **Strouhal is {_st_err_pct:.0f} % "
+                    f"off Williamson / Okajima** at "
+                    f"Re={int(reynolds_target)}. At this blockage the "
+                    f"channel-resonance shedding mode is hard to fully "
+                    f"correct -- try a longer / Detailed run so the FFT "
+                    f"has more cycles to lock onto.  {_bias_text}"
                 )
 
         # Custom shapes use halfway BB everywhere -- the Cd reads ~30-50 % high.
@@ -2276,10 +2352,9 @@ for name in valid_names:
     )
     sweep_results[name] = sweep_polar(name, float(reynolds), nf_model_size)
 
-st.subheader(
-    f"Coefficients at alpha = {alpha:+.2f} deg, Re = {reynolds:.0e}  "
-    f":gray[(model: {nf_model_display})]"
-)
+st.subheader(f"Coefficients at &alpha; = {alpha:+.2f}&deg;, Re = {reynolds:.0e}",
+             anchor=False)
+st.caption(f"NeuralFoil model: **{nf_model_display}**")
 st.dataframe(table_rows, width="stretch", hide_index=True)
 
 # === Section 3: Polar plots ===
