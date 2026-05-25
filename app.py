@@ -69,6 +69,10 @@ st.markdown(
     ".stDeployButton {display: none;}"
     "[data-testid='stToolbar'] {visibility: hidden; height: 0;}"
     "[data-testid='stStatusWidget'] {display: none;}"
+    # Help-icon tooltips need to draw OVER the result GIF / Plotly chart
+    # layers; without an explicit z-index they get occluded by the viz
+    # container's own stacking context (reviewer item #22, 2026-05-25).
+    "[data-baseweb='tooltip'], [role='tooltip'] {z-index: 9999 !important;}"
     "</style>",
     unsafe_allow_html=True,
 )
@@ -814,12 +818,17 @@ if mode == "Real CFD (LBM)":
 
         st.markdown("")
         st.markdown(":material/grid_view: **Resolution**")
-        st.session_state.setdefault(
-            "lbm_res_radio", list(RESOLUTION_PRESETS.keys())[0],
-        )
+        # Validation preset (700 x 400) is for offline validate_solver.py
+        # only -- too big for interactive Streamlit use. Keep it out of
+        # the user-facing radio (its RESOLUTION_PRESETS docstring already
+        # says "Not exposed to the UI" -- this is the enforcement).
+        _ui_res_keys = [
+            k for k in RESOLUTION_PRESETS if not k.startswith("Validation")
+        ]
+        st.session_state.setdefault("lbm_res_radio", _ui_res_keys[0])
         res_display = st.radio(
             "Resolution",
-            list(RESOLUTION_PRESETS.keys()),
+            _ui_res_keys,
             label_visibility="collapsed",
             help=(
                 "How fine the simulation grid is.\n\n"
@@ -930,13 +939,37 @@ if mode == "Real CFD (LBM)":
             shape_preset, int(reynolds_target), float(aoa_deg),
             res_display, _polygon_key, viz_mode,
         )
+
+        def _stash_displayed_inputs():
+            """Cache the inputs that drove the currently-displayed result.
+
+            Stash-then-restore lets the user tweak sidebar widgets WITHOUT
+            destroying the visible result (external review 2026-05-25,
+            item #14). When the new inputs diverge from the stash, the
+            block below restores the stashed values for the simulation
+            call and surfaces a stale banner -- the user retains visual
+            continuity until they click Run again.
+            """
+            st.session_state["lbm_last_displayed_inputs"] = {
+                "shape_preset": shape_preset,
+                "shape_display": shape_display,
+                "reynolds_target": reynolds_target,
+                "aoa_deg": aoa_deg,
+                "res_display": res_display,
+                "custom_polygon": custom_polygon,
+                "viz_mode": viz_mode,
+                "polygon_key": _polygon_key,
+            }
+
         if run_clicked:
             st.session_state["lbm_last_displayed_config"] = _current_config
+            _stash_displayed_inputs()
         # If a gallery card was just clicked, the widget values have been
         # rewritten via session_state and we want the run to display
         # immediately (without the user clicking Run again).
         if st.session_state.pop("lbm_gallery_pending", False):
             st.session_state["lbm_last_displayed_config"] = _current_config
+            _stash_displayed_inputs()
         # Auto-promote viz_mode-only changes: if the user just switched the
         # viz_mode radio while a run was displayed, treat that as "keep
         # showing, just re-render with the new mode" rather than bailing
@@ -952,9 +985,24 @@ if mode == "Real CFD (LBM)":
             and _last_disp[5] != _current_config[5]
         ):
             st.session_state["lbm_last_displayed_config"] = _current_config
+            _stash_displayed_inputs()
         _should_display_run = run_clicked or (
             st.session_state.get("lbm_last_displayed_config") == _current_config
         )
+        # Stale-display fallback: when the user has tweaked sidebar inputs
+        # AFTER a successful run, keep showing the previous result (cache
+        # hit on the stashed config) so they retain visual continuity. A
+        # banner above the run explains the inputs have diverged and that
+        # clicking Run will refresh. Without this, every slider drag
+        # collapses the result back to the gallery -- jarring, and the
+        # reviewer's specific complaint (item #14, 2026-05-25).
+        _stale_display = False
+        if (
+            not _should_display_run
+            and st.session_state.get("lbm_last_displayed_inputs") is not None
+        ):
+            _stale_display = True
+            _should_display_run = True
         if "Standard" in res_display:
             st.caption(":material/timer: ~30-40 s on your laptop "
                        "(plus a ~25 s first-time JIT compile). On the "
@@ -1105,7 +1153,7 @@ if mode == "Real CFD (LBM)":
             # the writes. Instead we stash the values under "pending" keys;
             # the top of the Real CFD block copies pending -> widget on the
             # NEXT rerun, BEFORE the widgets instantiate.
-            shape_disp, vel_mps, aoa, res, viz, *_ = card
+            shape_disp, vel_mps, aoa, res, viz, _title, *_ = card
             st.session_state["lbm_pending_shape"] = shape_disp
             st.session_state["lbm_pending_velocity"] = float(vel_mps)
             st.session_state["lbm_pending_aoa"] = float(aoa)
@@ -1118,6 +1166,18 @@ if mode == "Real CFD (LBM)":
             st.session_state.pop("lbm_snapshot", None)
             st.session_state.pop("lbm_snapshot_polygon", None)
             st.session_state.pop("lbm_snapshot_label", None)
+            # Clear any custom-shape flip toggle so a preset card doesn't
+            # inherit a flip from a prior custom-shape session.
+            st.session_state.pop("lbm_custom_flipped", None)
+            # Immediate toast so the user sees feedback even before the
+            # rerun completes (reviewer item #23, 2026-05-25: clicks on
+            # the gallery cards feel unresponsive on the first interaction
+            # because the JIT compile + rerun cycle has no visible
+            # progress for ~500 ms).
+            st.toast(
+                f":material/play_arrow: Loading: {_title}",
+                icon=":material/play_arrow:",
+            )
 
         st.markdown(
             "### :material/auto_awesome: Try one of these"
@@ -1195,6 +1255,35 @@ if mode == "Real CFD (LBM)":
     # don't want that to dump a Python traceback on a user who just drew
     # a wonky shape; surface a polite "try something less degenerate" hint
     # instead.
+    # Stale-display restore: when the sidebar widgets have drifted from
+    # the displayed result, override the local widget vars with the
+    # stashed inputs so the simulation call hits cache and the result
+    # stays on screen. A banner (rendered just below) tells the user the
+    # inputs have diverged and that Run will refresh.
+    if _stale_display:
+        _stash = st.session_state["lbm_last_displayed_inputs"]
+        shape_preset = _stash["shape_preset"]
+        shape_display = _stash["shape_display"]
+        reynolds_target = _stash["reynolds_target"]
+        aoa_deg = _stash["aoa_deg"]
+        res_display = _stash["res_display"]
+        res_cfg = RESOLUTION_PRESETS[res_display]
+        custom_polygon = _stash.get("custom_polygon")
+        viz_mode = _stash["viz_mode"]
+        _polygon_key = _stash["polygon_key"]
+        # Recompute _current_config from the restored locals so the
+        # downstream Pin / snapshot / share-link blocks (which compare
+        # the snapshot against _current_config) compare against what the
+        # user is ACTUALLY looking at, not the current widget state.
+        _current_config = (
+            shape_preset, int(reynolds_target), float(aoa_deg),
+            res_display, _polygon_key, viz_mode,
+        )
+        st.warning(
+            ":material/sync: **Showing your last run.** The sidebar inputs "
+            "have changed since this result was computed. Click **Run "
+            "simulation** to refresh, or change the sidebar back to match."
+        )
     try:
         sim_result = _cached_simulate_and_render(
             shape_preset, int(reynolds_target), float(aoa_deg), res_display,
@@ -2157,9 +2246,12 @@ geom_fig.update_xaxes(title_text="x/c", row=1, col=2)
 geom_fig.update_yaxes(title_text="t/c (solid),  camber/c (dashed)", row=1, col=2)
 
 geom_fig.update_layout(
-    height=360,
-    margin=dict(t=60, l=50, r=20, b=50),
-    legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="left", x=0),
+    height=400,
+    # Subplot titles sit at y~1.0 in paper coords; the legend has to clear
+    # them, otherwise the "Airfoil shape" caption gets occluded by airfoil
+    # name chips (reviewer-flagged collision, 2026-05-25).
+    margin=dict(t=90, l=50, r=20, b=50),
+    legend=dict(orientation="h", yanchor="bottom", y=1.18, xanchor="left", x=0),
     hovermode="x unified",
 )
 
@@ -2223,9 +2315,9 @@ polar_fig.update_xaxes(title_text="CD", row=1, col=3)
 polar_fig.update_yaxes(title_text="CL", row=1, col=3)
 
 polar_fig.update_layout(
-    height=440,
-    margin=dict(t=60, l=50, r=20, b=50),
-    legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="left", x=0),
+    height=480,
+    margin=dict(t=90, l=50, r=20, b=50),
+    legend=dict(orientation="h", yanchor="bottom", y=1.18, xanchor="left", x=0),
     hovermode="x unified",
 )
 

@@ -249,12 +249,21 @@ SPEED_CMAP = ListedColormap(
 # speed lands at the midpoint and "slower/faster than freestream"
 # reads symmetrically.
 SPEED_CLIP_FACTOR = 2.0
-# Figure: 968x308 px at 88 DPI. Wider aspect matches Nx/Ny ratios of
-# both presets (3.0 each after the Standard shrink). DPI dropped from
-# 100 to 88 in the Cloud-perf pass -- ~22 % fewer pixels per frame,
+# Figure width fixed at 11 in. The HEIGHT is computed per render from
+# the actual LBM_NX / LBM_NY aspect ratio (see ax-figure creation), so
+# `ax.set_aspect("equal")` doesn't letterbox the visualisation inside a
+# dark band (reviewer item #12, 2026-05-25). Standard / Detailed presets
+# are both 4:1, so fig_h works out to ~2.75 in. DPI dropped from 100 to
+# 88 in the Cloud-perf pass -- ~22 % fewer pixels per frame,
 # proportionally faster matplotlib draw + smaller GIF, visually
 # indistinguishable from 100 on a typical display.
-FIG_W_IN, FIG_H_IN, FIG_DPI = 11.0, 3.5, 88
+FIG_W_IN, FIG_DPI = 11.0, 88
+# Min height keeps any future wider-than-4:1 preset readable; max height
+# caps the Validation preset (1.75:1) so its render doesn't balloon to
+# 6+ in tall offline (a few cells of left/right letterbox is acceptable
+# there since that preset doesn't ship to the UI).
+FIG_H_MIN_IN = 2.4
+FIG_H_MAX_IN = 4.0
 # GIF_FRAME_MS 67 -> 15 fps. Browser GIF playback caps at ~20 fps
 # reliably; 15 is the safe choice across Chrome/Firefox/Safari.
 GIF_FRAME_MS = 67
@@ -850,9 +859,16 @@ def render_lbm(solve, *, viz_mode="Vorticity", progress_callback=None):
             "side and carried downstream by the flow."
         )
     elif viz_mode == "Velocity":
-        # Bipolar: speed - U_INFLOW. v_clip = U_INFLOW so blue saturates at
-        # speed=0 (wake) and red saturates at speed=2*U_INFLOW (squeeze).
-        v_clip = U_INFLOW
+        # Bipolar: speed - U_INFLOW. v_clip = 0.55 * U_INFLOW saturates
+        # blue at speed = 0.45 * U_INFLOW (wake / recirc zone clips well
+        # below the wake's true zero, so it reads as a saturated blue
+        # wash, not a faded one) and red at speed = 1.55 * U_INFLOW
+        # (achievable in the squeeze zones around bluff bodies + airfoil
+        # suction-side highlights, which were previously washed out at
+        # the symmetric U_INFLOW clip). Reviewer item #21 (2026-05-25):
+        # the old symmetric clip made Velocity look weak because the red
+        # half rarely saturated.
+        v_clip = 0.55 * U_INFLOW
         bg_cbar_labels = [
             "Stalled (slower than wind)",
             "Inflow speed",
@@ -959,7 +975,20 @@ def render_lbm(solve, *, viz_mode="Vorticity", progress_callback=None):
     wake_ramp_window = max(8.0, wake_arrival_frames * 0.2 + 10.0)
 
     # === Phase 2: render frames into a reused figure ===
-    fig, ax = plt.subplots(figsize=(FIG_W_IN, FIG_H_IN), dpi=FIG_DPI,
+    # Height tracks the data aspect ratio so set_aspect("equal") doesn't
+    # letterbox the visualisation. Standard / Detailed presets are both
+    # 4:1, so fig_h ~ 2.75 in -- gives a tight, no-dark-banding frame.
+    # Validation preset (1.75:1) hits the FIG_H_MIN_IN floor so the scale
+    # bar / caption don't crowd. Account for the ~3 % horizontal margin
+    # from subplots_adjust(left=0.01, right=0.99) so the on-screen data
+    # area is genuinely letterbox-free.
+    _data_aspect = float(LBM_NX) / float(LBM_NY)
+    _usable_w_in = FIG_W_IN * (0.99 - 0.01)
+    fig_h_in = max(
+        FIG_H_MIN_IN,
+        min(FIG_H_MAX_IN, _usable_w_in / _data_aspect / (0.99 - 0.02)),
+    )
+    fig, ax = plt.subplots(figsize=(FIG_W_IN, fig_h_in), dpi=FIG_DPI,
                             facecolor=BG_COLOR)
     fig.subplots_adjust(left=0.01, right=0.99, bottom=0.02, top=0.99)
     ax.set_facecolor(BG_COLOR)
