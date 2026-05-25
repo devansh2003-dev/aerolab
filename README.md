@@ -89,7 +89,12 @@ Phase 1 (solver core, W1–4) shipped Day 5, expanded Days 6–14 with originall
 | 2 — Shape freedom | 5–8 | **Image upload + silhouette extraction**, multi-viz, side-by-side, GIF export, gallery | **Upload ✅**, sample silhouettes ✅, **click-to-draw canvas ✅**, side-by-side ✅, GIF ✅, gallery ✅, multi-viz (vorticity / velocity / pressure) ✅. |
 | 3 — Polish + 3D | 9–12 | NeuralFoil ✅, optional AeroSandbox+AVL 3D, OpenFOAM cross-validation, launch | NeuralFoil + Cloud deploy ✅; 3D + OpenFOAM pending |
 
-## Validation
+## Solver diagnostics
+
+Complementary to the headline validation above -- these are
+solver-correctness checks (conservation laws, regression smoke
+tests) that run alongside the Williamson / Okajima comparison, not
+on top of it.
 
 `scripts/dev_validate_cfd.py` runs 8000 steps of cylinder Re=100 on the MRT + Zou-He + Bouzidi path.
 
@@ -99,9 +104,12 @@ Phase 1 (solver core, W1–4) shipped Day 5, expanded Days 6–14 with originall
 - mass-flux variation across x-slices ≈ 3 % (continuity)
 - mass drift per 1k steps ≈ 0.1 % (Zou-He outflow conservation)
 
-**Global diagnostics (reported, not gated):**
-- Cd ≈ 1.9 (Richardson-extrapolated h→0, vs textbook 1.4 — residual gap is honest 20 % channel blockage)
-- Strouhal grid-converges Standard↔Detailed to ~3 % (was ~240 % pre-Bouzidi)
+**Grid convergence:** Strouhal converges Standard ↔ Detailed to ~3 %
+(was ~240 % pre-Bouzidi). Cylinder Cd at Re = 100 grid-converges
+within a few percent at the Validation preset (D = 20) -- see
+[VALIDATION.md §3.2](VALIDATION.md). The Cd quoted in the headline
+table is from that low-blockage sweep, not from Richardson
+extrapolation of the Standard preset.
 
 **NACA 0012 polar (Re_c=200, 8 angles −5° to +15°):** lift curve is portfolio-grade (CL(0°)=−1e-4, antisymmetric to 4 decimals, slope ~0.048/deg). **Drag curve is non-physical** — chord=40 cells discretization + BGK-τ artifact stack. Use lift only. Trustworthy polar needs chord ≥ 80 cells.
 
@@ -114,7 +122,7 @@ Artifacts in `data/`: `cylinder_convergence.png`, `validation_grid_convergence.p
 Shares the *collision-rule family* (MRT + Smagorinsky LES) with industrial LBM solvers (PowerFLOW, Palabos, waLBerla). That's like sharing "has four wheels" with an F1 car. We don't have:
 
 - GPU acceleration → Re envelope tops at 1500 in 2D (industrial: Re ≥ 10⁶ on GPU clusters)
-- Adaptive mesh refinement → uniform 240×80 or 720×240
+- Adaptive mesh refinement → uniform 320×80 (Standard) or 960×240 (Detailed); offline 700×400 (Validation) and 1200×400 (Resolved)
 - Wall-function turbulence → we resolve the boundary layer directly (only feasible at low Re)
 - Cumulant collision, multi-block, automatic time-stepping, 3D, OpenFOAM/Fluent cross-validation
 - Bouzidi q-field for arbitrary uploaded polygons (built-ins have it; custom uploads use halfway BB)
@@ -152,7 +160,7 @@ aerolab/
 │   ├── naca0012_aoa_polar.py       # 8-angle airfoil polar
 │   ├── dev_validate_cfd.py         # 4 physics gates + 3 diagnostics
 │   └── dev_grid_convergence.py     # Std vs Detailed + Richardson extrapolation
-└── tests/                          # 186 unit tests (incl. Phase 2 W5 gate)
+└── tests/                          # ~200 unit tests + 11 validation-benchmark gates
 ```
 
 ## License

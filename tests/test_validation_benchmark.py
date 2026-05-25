@@ -167,17 +167,19 @@ CYLINDER_SHEDDING_CASES = [
     ids=[f"{s}-Re{r}" for s, r in CYLINDER_SHEDDING_CASES],
 )
 def test_solver_matches_published_strouhal_freestream(shape, re):
-    """Blockage-corrected Strouhal (cylinder only) within +/- 30 %.
+    """Standard-preset Strouhal regression guard (cylinder only): +/- 35 %.
 
-    West-Apelt 1982 channel correction recovers Williamson St within ~23 %
-    at the extremes of the validated Re range. The 30 % tolerance gives
-    headroom for the run-to-run FFT-peak-picking noise at the lower
-    n_frames=200 used for CI.
+    The Strouhal FFT-bin spacing at our record length is wider than
+    Williamson's full 0.166 - 0.210 spread (VALIDATION.md section 3.4),
+    so a percent-error figure here is a regression check on the
+    Standard-preset corrected pipeline, not a validation. The +/- 35 %
+    tolerance is the post-hoc Standard-preset band; it catches gross
+    behaviour change without claiming sub-bin accuracy.
 
-    Square is NOT gated on Strouhal -- the channel-resonance shedding at
-    B = 0.35 produces a near-Re-independent raw St ~ 0.37 that is
-    inherently not recoverable by any single-formula blockage correction.
-    See VALIDATION.md section 4.1 for the full discussion.
+    Square is NOT gated on Strouhal at all -- VALIDATION.md section 4.1
+    retracted the previous 'channel-resonance' explanation, and section
+    3.4 demoted St to a qualitative result across both presets. The
+    raw value is still reported via run_case() but not asserted on.
     """
     _, st_ref = _expected_freestream(shape, re)
     assert st_ref is not None, f"No reference St for {shape} Re={re}"

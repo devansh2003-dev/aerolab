@@ -1785,16 +1785,22 @@ if mode == "Real CFD (LBM)":
                     help=(
                         "**Blockage-corrected drag coefficient.** Allen-"
                         "Vincenti (1944) / Pope-Harper rescale of the raw "
-                        "channel Cd to the free-stream equivalent, so it "
-                        "compares apples-to-apples with Williamson 1996 / "
-                        "Okajima 1982. The raw value (shown below) is "
-                        f"inflated by the {_blockage_pct} %-blocked "
-                        "channel walls accelerating the local flow."
+                        "channel Cd to a free-stream-equivalent estimate. "
+                        "At the Standard interactive preset the channel "
+                        f"is {_blockage_pct} %-blocked, so this rescale "
+                        "is ~ 2.6 x and absorbs both blockage and solver "
+                        "error -- a small delta vs free-stream here is a "
+                        "property of the correction, not a validation. "
+                        "The headline validation runs at a separate "
+                        "low-blockage preset (B = 5 %, see VALIDATION.md "
+                        "section 3.2); the doc's section 3.5 explains "
+                        "this distinction at length."
                     ),
                 )
                 st.caption(
                     f":gray[Raw (channel): **{_cd_raw:.2f}** &nbsp;|&nbsp; "
-                    f"K = {_K:.2f} at B = {_B:.2f}]"
+                    f"K = {_K:.2f} at B = {_B:.2f} &nbsp;|&nbsp; "
+                    f"interactive estimate, not the validation claim]"
                 )
             else:
                 # Shapes without a tabulated K (Custom polygons,
@@ -1841,9 +1847,11 @@ if mode == "Real CFD (LBM)":
                         "Stays around 0.2 for a cylinder no matter the "
                         "wind speed -- which is exactly why telephone "
                         "wires can hum a steady musical note in a breeze. "
-                        "At high blockage the channel-resonance mode "
-                        "biases this number even after correction; see "
-                        "VALIDATION.md section 4.1."
+                        "Treat as a qualitative indicator: at our record "
+                        "length the FFT bin spacing (~ 0.05) is wider "
+                        "than the full Williamson St range, so the value "
+                        "lands on a discrete bin rather than a continuous "
+                        "St(Re) curve. See VALIDATION.md section 3.4."
                     ),
                 )
                 if _st_corr is not None:

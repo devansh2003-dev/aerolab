@@ -161,22 +161,36 @@ This is the same protocol used in published 2D LBM benchmarks.
 
 ### 2.3 Simulation parameters
 
-Every benchmark case uses:
+The validation suite uses two presets. The headline (§3.2) comes from
+the Validation preset; the Standard-preset transparency table (§3.5)
+and the CI regression guard use the smaller Standard preset.
 
-- Resolution: **Standard** (`Nx × Ny = 320 × 80`, body extent 28 cells).
+| Setting               | Validation preset (headline)         | Standard preset (regression guard / interactive UI) |
+|-----------------------|--------------------------------------|------------------------------------------------------|
+| `Nx × Ny`             | 700 × 400                            | 320 × 80                                             |
+| Body diameter `D`     | 20 cells                             | 28 cells                                             |
+| Blockage `B = D/Ny`   | **0.050** (5 %)                      | 0.350 (35 %)                                         |
+| AV correction factor  | (1 − 1.10 · 0.05)² ≈ 0.893 (no-op)   | (1 − 1.10 · 0.35)² ≈ 0.377 (≈ 2.6 × rescale)         |
+| `n_frames`            | 250                                  | 300                                                  |
+| Lattice steps `n × 35`| 8 750                                | 10 500                                               |
+| Where it shows up     | `results_lowblockage.{json,md}`, §3.2 | `results.{json,md}`, §3.5; CI in `test_validation_benchmark.py` |
+
+Common to both presets:
+
 - Solver: **MRT collision + Smagorinsky LES** (`C_smag = 0.17`,
   Lallemand & Luo 2000 *Phys. Rev. E* **61**, 6546 for the moment
-  transform; Hou et al. 1996 for the LES turbulence closure).
+  transform; Hou et al. 1996 for the LES turbulence closure). See §4.4
+  on the LES bias at laminar Re.
 - Wall: **Bouzidi interpolated bounce-back** (Bouzidi-Firdaouss-Lallemand
   2001), q-field computed analytically per shape.
 - Inflow: **Zou-He velocity** (Zou-He 1997).
 - Outflow: **Zou-He pressure** (rho = 1.0 prescribed).
 - Lattice inflow speed: `U = 0.1` (lattice units, Mach ≈ 0.17).
-- Run length: `n_frames = 300` (= 10 500 lattice steps,
-  ≈ 4–7 vortex-shedding periods at Re = 100 – 500).
-- Cd / Cl are time-averaged over the **last third** of the run
-  (post-transient).
-- St is the dominant non-DC FFT peak of the Cl history's last half.
+- Cd / Cl are time-averaged over the **last third** of the lattice-step
+  history (post-transient).
+- St is the dominant non-DC FFT peak computed over the **last half of
+  the per-step Cl history** (≈ 4 375 samples at Validation, ≈ 5 250 at
+  Standard; see §3.4 for the bin-width math).
 
 ### 2.4 Tolerance bands
 
@@ -189,17 +203,36 @@ independent bar.
 
 | Quantity        | Validated band | Independent justification |
 |-----------------|----------------|---------------------------|
-| Cylinder Cd     | Re = 100 – 200 | Mei-Luo-Shyy 1999 report 5 – 10 % cylinder Cd error in 2D LBM at D = 40 with 12 % blockage. At D = 20 / B = 5 % we measure 2.1 % and 13.8 % (Re = 100, 200) -- inside the Mei-Luo-Shyy expectation accounting for our coarser grid. **CI gate: ± 15 % on these two cases.** Re ≥ 300: not gated, 2D + grid-limited (see §3.3). |
-| Square Cd       | Re = 150 – 200 | Sohankar 1998 report < 5 % error for D = 40 free-stream 2D-LBM square. We measure 2.1 % and 2.5 % at D = 20, B = 5 %. **CI gate: ± 10 % on these two cases.** Re ≥ 300: not gated, structural breakdown of channel/wake coupling (see §3.3). |
-| Cylinder St     | Reported only  | Qualitative match: shedding present, dominant FFT peak in the published range. Our solver returns discrete St values quantised by the FFT bin width over a 250-frame record (§3.4). **Not gated as a percent-error metric.** |
+| Cylinder Cd     | Re = 100 – 200 | Mei-Luo-Shyy 1999 report 5 – 10 % cylinder Cd error in 2D LBM at D = 40 with 12 % blockage. At D = 20 / B = 5 % we measure 2.1 % and 13.8 % (Re = 100, 200) -- inside the Mei-Luo-Shyy expectation widened for our coarser grid. **Doc-vs-data gate: ± 15 % on these two cases**, gated by `tests/test_doc_validation_consistency.py` (which compares the doc to the committed `results_lowblockage.json`, not by re-running the solver). Re ≥ 300: not gated, 2D + grid-limited (see §3.3). |
+| Square Cd       | Re = 150 – 200 | Sohankar 1998 report < 5 % error for D = 40 free-stream 2D-LBM square. We measure 2.1 % and 2.5 % at D = 20, B = 5 %. **Doc-vs-data gate: ± 10 % on these two cases**, same `test_doc_validation_consistency.py` mechanism. Re ≥ 300: not gated, structural breakdown of channel/wake coupling (see §3.3). |
+| Cylinder St     | Reported only  | Qualitative match: shedding present, dominant FFT peak in the published range. Our solver returns discrete St values quantised by the FFT bin width over the per-step Cl half-tail (§3.4). **Not gated as a percent-error metric.** |
 | Square St       | Reported only  | Same FFT-bin-width quantisation; ungated. |
 
-The CI gates exercised by `tests/test_validation_benchmark.py` are the
-four "± 15 % / ± 10 %" entries above. We deliberately scope them to
-the cases where the physics, the grid, and the correction are all in
-their respective comfort zones -- as opposed to the previous wider
-bands that included cases the gates passed only because the bands
-were drawn around them.
+Two distinct gates run on every push:
+
+1. **`tests/test_doc_validation_consistency.py`** is the doc-vs-data
+   gate that backs the ± 15 % / ± 10 % entries above. It does NOT
+   re-run the solver -- it asserts the headline numbers in this
+   document and README match the committed
+   `data/validation/results_lowblockage.json`. If the kernel changes
+   and the low-blockage sweep needs re-running, those numbers go
+   stale and the gate trips only when this doc is updated. The
+   refresh ritual is to re-run `python scripts/validate_solver.py
+   --headline` (≈ 60 – 90 min) and commit the resulting JSON.
+
+2. **`tests/test_validation_benchmark.py`** is the CI-fast regression
+   guard that re-runs the solver on every push -- but at the
+   **Standard preset** (320 × 80, B = 0.35) for speed, not at the
+   Validation preset. It uses wider tolerances (± 15 % / ± 25 % / ±
+   35 %) which were drawn around the previously-reported Standard
+   numbers and are therefore close to tautological as a validation
+   claim. They DO catch the case where the corrected-pipeline behaviour
+   shifts unexpectedly, which is the regression-guard purpose.
+
+So CI catches two failure modes: silent doc drift (gate 1) and silent
+Standard-preset behaviour change (gate 2). What CI does NOT do is
+re-measure the low-blockage Cd from scratch on every push; that
+remains an operator action behind the `--headline` sweep.
 
 ---
 
@@ -288,14 +321,46 @@ not claimed:
 
 ### 3.3 Aggregate statistics (validated band only)
 
-- **Cylinder Cd, low-blockage, Re = 100 – 200** (n = 2): median
-  **8.0 %**, max **13.8 %**. Inside the literature-derived ± 15 %
-  bar (Mei-Luo-Shyy 1999 expectation at this D).
-- **Square Cd, low-blockage, Re = 150 – 200** (n = 2): median
-  **2.3 %**, max **2.5 %**. Comfortably inside the ± 10 % bar
-  (Sohankar 1998 expectation).
-- **CI gate: 4 / 4 PASS** on these four cases. The gate is what runs
-  on every push via `tests/test_validation_benchmark.py`.
+- **Cylinder Cd, low-blockage, Re = 100 – 200** (n = 2 -- 2.1 % at
+  Re = 100, 13.8 % at Re = 200): median **8.0 %**, max **13.8 %**.
+  Inside the literature-derived ± 15 % bar (Mei-Luo-Shyy 1999
+  expectation at this D). The Re = 200 point sits about 1.2 percentage
+  points inside the ± 15 % gate -- a tighter ± 10 % literature bar
+  would mark it as failing, so the cylinder gate is honest but not
+  exhaustively independent. See §3.6 for the resolved-D run that would
+  let us narrow the band.
+- **Square Cd, low-blockage, Re = 150 – 200** (n = 2 -- 2.1 % at
+  Re = 150, 2.5 % at Re = 200): median **2.3 %**, max **2.5 %**.
+  Comfortably inside the ± 10 % bar (Sohankar 1998 expectation).
+- The "median" / "max" labels are convenient but at n = 2 they are
+  literally just the smaller / larger of two numbers -- not a
+  distribution. The fuller statement is "across the four validated
+  cases, the worst measurement is 13.8 % (cylinder Re = 200) and the
+  best is 2.1 % (cylinder Re = 100 and square Re = 150)".
+
+**What CI actually does for these four cases**
+
+Two gates run on every push, and neither of them re-runs the
+low-blockage sweep:
+
+1. `tests/test_doc_validation_consistency.py` (≪ 1 s, runs on every
+   push). Compares the headline numbers in this document and README
+   against the committed `data/validation/results_lowblockage.json`.
+   Catches silent doc drift; does NOT catch silent solver drift, since
+   it never invokes the kernel.
+
+2. `tests/test_validation_benchmark.py` (≈ 4 min, runs on every push).
+   Re-runs the solver on a 5-case Standard-preset subset and checks
+   the corrected pipeline against Williamson / Okajima with ± 15 % /
+   ± 25 % tolerances. Catches Standard-preset behaviour change; does
+   NOT catch a kernel change that happens to leave the Standard
+   numbers unchanged while moving the low-blockage numbers.
+
+Refreshing the headline measurement requires the operator action
+`python scripts/validate_solver.py --headline` (≈ 60 – 90 min) plus a
+commit of the new `results_lowblockage.json`. Until that is done, the
+headline numbers are only as fresh as the JSON commit they reference.
+The doc honestly reflects this rather than calling it "continuous".
 
 The "headline" is therefore narrow on purpose. We claim solver
 accuracy where the physics permits a clean comparison (laminar
@@ -304,8 +369,7 @@ everything else for transparency without claiming it.
 
 ### 3.4 Strouhal is a qualitative match, not a percent-error number
 
-The reviewer specifically flagged this. Looking at the raw St column
-in §3.2:
+Looking at the raw St column in §3.2:
 
 - Low-blockage cylinder: St raw = 0.183 for Re = 100 and 200, then
   0.229 for Re = 300, 500, 1000. Two discrete values across a tenfold
@@ -314,21 +378,42 @@ in §3.2:
 - Low-blockage square: 0.183 for Re = 150 – 300, then 0.137 at
   Re = 500. Again, near-constants instead of a curve.
 
-What's happening: the dominant FFT peak of the Cl history is being
-read at the FFT bin spacing of a finite record. With `n_frames = 250`
-(the noise-floor minimum from prior FFT analysis) the bin width is
-`1 / (250 × dt_frame)` -- coarse enough that Williamson's gradual
-0.16 → 0.21 climb lands inside one or two bins for most of the Re
-range. The solver IS resolving shedding, just not as a continuous
-St(Re) curve. The agreement we previously claimed at Re = 300 – 1000
-("recovers Williamson to within 0.1 – 2 %") is mostly coincidence of
-a flat numerical line crossing a nearly-flat reference curve.
+What's happening: the Strouhal FFT in `src/lbm_render.py` runs on the
+**per-lattice-step Cl history**, not on the per-frame downsampled
+record. At the Validation preset, `n_frames = 250` × `STEPS_PER_FRAME
+= 35` gives `n_steps = 8 750` lattice samples; the FFT consumes the
+last-half tail, so `N = 4 375` samples at `dt = 1 step`. The bin
+spacing in cycles-per-step is therefore `Δf = 1 / N ≈ 2.29 × 10⁻⁴`,
+which converts to a Strouhal bin spacing of
+
+```
+Δ St  =  Δf · L / U  =  (1 / N) · char_length / U_INFLOW
+       =  (1 / 4 375) · 20 / 0.1  ≈  0.046
+```
+
+for the Validation preset (`D = 20`, `U = 0.1`). Williamson's
+cylinder St spans **0.166 → 0.210 across Re = 100 – 1000 = 0.044
+total** -- *less than one bin*. So the whole reference curve fits in
+1 – 2 bins of our FFT, and the solver's two-tone output (0.183 and
+0.229) is two adjacent bins. The match against Williamson at the
+high-Re end is the geometric coincidence of a flat numerical line
+crossing a nearly-flat reference curve, not a measurement of St(Re).
+
+The fix is more samples per FFT, not more frames. Doubling `n_steps`
+halves Δ St; reaching `Δ St ≈ 0.005` (10 % of Williamson's full
+spread) would need `N ≈ 40 000`, i.e. `n_frames` near 2 300 at
+STEPS_PER_FRAME = 35 -- another offline-only sweep. We have not run
+that, so we don't quote a percent-error figure on Strouhal anywhere.
 
 We therefore demote Strouhal to a qualitative result throughout this
 document: "vortex shedding is present in the published range." We
 keep the raw numbers in the table for inspection but no longer cite
-them as a percent-error validation result. The CI gate enforces this
-by reporting St rather than gating on it.
+them as a percent-error validation result. Neither CI gate enforces
+a Strouhal percent error: `test_doc_validation_consistency.py`
+checks only Cd headlines, and `test_validation_benchmark.py` still
+runs the Standard-preset St gate as a regression guard (± 35 %, the
+post-hoc Standard-preset band) but does not promote that number to a
+validation claim.
 
 ### 3.5 Standard preset (35 % blockage): interactive convenience, not validation
 
@@ -378,25 +463,99 @@ would not collapse when the channel opens. It was a blockage
 artifact, plus the FFT-bin quantisation flagged in §3.4. §4.1 has
 been retracted accordingly.
 
-### 3.6 The missing data point (in progress)
+### 3.6 Resolved sweep: disentangling grid resolution from 2D physics
 
-The "resolved" run -- D ≥ 40 AND blockage < 10 % simultaneously --
-is the configuration that would disentangle grid resolution from
-blockage in the high-Re tail. The `Resolved (1200 × 400)` preset
-(D = 40, B = 0.10) is registered for it and the sweep is wired up:
+We ran the `Resolved (1200 × 400)` preset (D = 40, blockage B = 0.10)
+to isolate grid resolution from blockage in the high-Re tail. This is
+the configuration the reviewer asked for in 2026-05-26: D ≥ 40 AND
+B < 10 % simultaneously, so the Mei-Luo-Shyy "D = 40 for free-stream
+Cd" guideline is met *while* the Allen-Vincenti correction is still
+small (factor 0.81, not the 2.6 × Standard rescale).
 
-```bash
-python scripts/validate_solver.py --resolved
-```
+Source: `python scripts/validate_solver.py --resolved`, ≈ 90 min
+total. Full data in
+[`data/validation/results_resolved.md`](data/validation/results_resolved.md).
 
-Expected runtime ~ 90 – 150 min for the 5-case `RESOLVED_SWEEP`
-(Cylinder Re = 100, 200, 500; Square Re = 150, 200). Output goes to
-`data/validation/results_resolved.{json,md}`. If the corrected Cd
-tracks Williamson there, the validated band can be widened with
-confidence. If it still shows the +20 % + tail at Re ≥ 300, that
-quantifies the 2D-ceiling contribution definitively, and the
-validated band stays at Re ≤ 200 by physics rather than by
-convention. Either result is a real answer, which is the point.
+| Shape    | Re   | Cd raw | Cd corr | Cd ref | Cd err   | D=20 (B=5%) err | D=28 (B=35%) err |
+|----------|------|--------|---------|--------|----------|-----------------|-------------------|
+| Cylinder |  100 | 1.497  | 1.186   | 1.320  | **−10.2 %** | +2.1 %        | +2.9 %            |
+| Cylinder |  200 | 1.466  | 1.162   | 1.150  | **+1.0 %**  | +13.8 %       | +2.3 %            |
+| Cylinder |  500 | 1.606  | 1.272   | 1.020  | +24.7 %  | +32.9 %       | +6.9 %            |
+| Square   |  150 | 1.609  | 1.304   | 1.550  | −15.9 %  | −2.1 %        | +21.8 %           |
+| Square   |  200 | 1.681  | 1.362   | 1.600  | −14.9 %  | −2.5 %        | +12.5 %           |
+
+**The cylinder Re = 200 result is decisive: +1.0 % at D = 40, vs
++13.8 % at D = 20.** Once the grid resolution meets the literature
+guideline, the corrected Cd matches Williamson within the Mei-Luo-Shyy
+5 – 10 % bar. The previous +13.8 % at D = 20 was a grid effect, not a
+solver inaccuracy. **The validated band Re = 100 – 200 is now genuinely
+backed by a clean data point**, not just by an in-band low-blockage
+measurement.
+
+**The cylinder Re = 500 result is also decisive: +24.7 % at D = 40
+vs +32.9 % at D = 20** -- a small improvement from higher resolution,
+but still wildly outside the literature bar. This is the 2D-ceiling
+result the reviewer predicted: at Re = 500 the real flow has shed
+its energy via 3D Williamson mode-A and mode-B instabilities that a
+2D solver structurally cannot capture. **The Re ≤ 200 upper bound on
+the validated band is therefore not a convention -- it is the highest
+Re at which 2D physics still resembles 3D physics.** Any 2D LBM
+solver in our regime would show the same divergence above this point.
+
+**The cylinder Re = 100 result is surprising: −10.2 % at D = 40 vs
++2.1 % at D = 20.** The direction flipped, suggesting that at higher
+resolution and lower blockage we are now under-predicting drag
+slightly. The candidate causes: (a) the Smagorinsky LES at laminar
+Re = 100 injects a small spurious eddy viscosity that is more
+visible relative to the small physical drag (§4.4); (b) the K = 1.10
+AV correction is fitted at Standard B = 0.35 and a 10 % correction
+at B = 0.10 over-rescales slightly. Either way the magnitude (10 %)
+is inside the literature expectation and our ± 15 % gate; the
+direction flip is the thing to keep an eye on if the kernel changes.
+
+**Square at D = 40 is a known-flaw finding: −15 to −16 %, *worse*
+than at D = 20** (where it was a clean ±2.5 %). This exposes a real
+problem with the fitted-K approach: K = 1.00 was tuned to Okajima at
+B = 0.35, and at B = 0.10 it over-corrects the (already nearly-
+free-stream) raw measurement. The raw square Cd at D = 40 / B = 10 %
+is actually within 3 – 5 % of Okajima before any correction is
+applied; the AV rescale then pulls it 15 % low. Two honest readings:
+
+1. The K-factor is not literature-derived; it is a fit at one
+   blockage. The reviewer was right to flag this. A defensible
+   alternative would be to use a K(B) family rather than a constant,
+   or to skip the AV correction for square at low blockage where it
+   is no longer doing useful work.
+
+2. The square solver itself is doing well at D = 40 -- the
+   measurement problem is the post-processing.
+
+We leave the doc-vs-data gate at ± 10 % for square Cd (§2.4) and let
+this case sit as the documented near-miss. A K-recalibration is
+roadmapped (§6) but out of scope for this revision since it would
+shift the Standard-preset numbers too and require a fresh full sweep.
+
+**Strouhal in the Resolved sweep:** all five cases land at the same
+two FFT bins (St_corr = 0.126 or 0.189), still inside the
+quantisation regime described in §3.4. The cylinder Re = 200 St
+error of −4.1 % is again coincidence of two flat lines, not a
+measurement. Resolution would need ~ 10 × more lattice steps; that
+is not done.
+
+**Summary of what the Resolved sweep changes:**
+
+- Validated band Re = 100 – 200 is now backed by D = 40 evidence,
+  not just D = 20 evidence. The headline numbers in §3.2 still come
+  from `results_lowblockage.json` because that is what
+  `test_doc_validation_consistency.py` gates against; the Resolved
+  data is a corroborating cross-check, not the primary source.
+- The "Re ≥ 300 not validated" claim now has a physics-grounded
+  backing: the failure persists at D = 40, so it is the 2D
+  approximation breaking down, not the grid.
+- The fitted-K caveat from §3.5 has a concrete failure mode at the
+  Resolved Square cases.
+- Strouhal is qualitative across all three presets; there is no
+  resolution-level fix without a much longer record.
 
 ---
 
@@ -613,13 +772,16 @@ mode-A transition) and we no longer claim a validation -- we report
 the numbers without a percent-error tolerance attached.
 
 **Q: Why is Strouhal qualitative now instead of a percent error?**
-A: At our record length (n_frames = 250) the FFT bin width is wide
-enough that the published St(Re) curve lands inside one or two bins
-across most of the Re range. The solver returns shedding in the
-right ballpark, but a percent-error figure on top of a quantised
-measurement against a nearly-flat reference is coincidence of two
-flat lines crossing, not a credible accuracy claim. §3.4 explains in
-detail; the CI gate now reports St rather than gating on it.
+A: The Strouhal FFT runs on the last half of the per-step Cl history
+(N ≈ 4 375 samples at the Validation preset, 5 250 at Standard).
+That gives a Strouhal bin spacing of about 0.046 (Validation) or
+0.053 (Standard) -- wider than Williamson's full 0.044 spread across
+Re = 100 – 1000. The whole reference curve fits in one or two FFT
+bins, so the solver returns two discrete Strouhal values (0.183 and
+0.229) and any "percent agreement" with Williamson at the high-Re
+end is geometric coincidence, not measurement. Resolving the curve
+would need an offline sweep with ~10 × more lattice steps. §3.4
+spells out the math; the CI gates report St rather than gating on it.
 
 **Q: What happens if I push the slider to Re = 1500?**
 A: Cylinder and NACA shapes run cleanly. Square is capped at
@@ -637,33 +799,53 @@ generated by symbolically inverting `M`; the unit test
 inlined inverse matches a fresh `np.linalg.inv` to machine precision.
 
 **Q: Where can I see the validation run in action?**
-A: GitHub Actions runs `tests/test_validation_benchmark.py` on every
-push to `main`. The most recent green run is the live proof of
-validation. The raw timing + Cd / St numbers from the most recent
-local sweep live in [`data/validation/results.md`](data/validation/results.md).
+A: Two artifacts. (1) The headline measurement is committed at
+[`data/validation/results_lowblockage.md`](data/validation/results_lowblockage.md)
+and corroborated by [`data/validation/results_resolved.md`](data/validation/results_resolved.md)
+(the D = 40 sweep). Re-running them requires `--headline` / `--resolved`
+(60 – 150 min each, offline). (2) On every push, GitHub Actions runs
+`tests/test_doc_validation_consistency.py` (asserts the doc matches
+those JSONs) and `tests/test_validation_benchmark.py` (a Standard-preset
+regression guard). Neither CI gate re-measures the low-blockage Cd
+from scratch; that is an operator action, deliberately, because the
+sweeps cost an hour-plus each.
 
-**Q: How would I widen the validated band?**
-A: Three things, in order of leverage:
+**Q: Has the "resolved" data point actually been run?**
+A: Yes -- §3.6 has the results.
+The decisive cylinder point: Re = 200 at D = 40 / B = 10 % lands at
+**+1.0 %** vs Williamson, compared with +13.8 % at D = 20 / B = 5 %.
+So Re = 200 is now genuinely inside the literature accuracy bar
+(Mei-Luo-Shyy 5 – 10 %), and the previous Validation-preset value
+was grid-limited rather than solver-limited. The high-Re tail
+(Re = 500) still fails at D = 40 (+24.7 %), which confirms the
+Re ≤ 200 ceiling is set by the 2D approximation itself, not by grid
+resolution. The square cases at Resolved exposed a separate problem
+with the fitted K-factor at low blockage -- documented in §3.6 as a
+known-flaw finding.
 
-1. **The "resolved" run.** D ≥ 40 AND B < 10 % simultaneously. The
-   `Resolved (1200 × 400)` preset and `--resolved` sweep are wired
-   up (§3.6); running them once would either widen the validated
-   band to higher Re with confidence, or quantify the 2D-ceiling
-   contribution and confirm Re ≤ 200 as the physics-imposed bound.
-   Either result is a real answer. Offline-only.
+**Q: How would I further widen the band or improve the numbers?**
+A: Three things, in roughly descending leverage:
+
+1. **K-factor recalibration for square.** The Resolved Square data
+   (§3.6) shows K = 1.00 over-corrects at B = 0.10. A K(B) family,
+   or skipping the AV correction below some blockage threshold,
+   would fix the Square Re = 150 – 200 over-correction. Requires
+   re-running the Standard sweep too so the §3.5 numbers don't
+   drift; out of scope for this revision.
 
 2. **Quantify the Smagorinsky bias at Re = 100 – 200.** A single
    Smag-off run at the Validation preset would isolate the spurious
-   eddy-viscosity contribution flagged in §4.4. If the delta is
-   < 1 %, the LES-on number stands; if it is several percent the
-   document should acknowledge that explicitly.
+   eddy-viscosity contribution flagged in §4.4. The Resolved
+   cylinder Re = 100 point at −10.2 % (vs +2.1 % at D = 20)
+   suggests the LES adds something real at laminar Re -- but until
+   the Smag-off comparison runs, the magnitude is hand-waved.
 
 3. **3D.** Removes the Williamson mode-A 2D-vs-3D divergence at
    Re ≥ 200 entirely. Out of scope for the 12-week build because it
    cascades through every gallery card, GIF size, render time, and
    Cloud memory budget.
 
-None of the three is "this fix lands tomorrow". They are roadmapped,
+None of the three is "this fix lands tomorrow"; they are roadmapped,
 not promised.
 
 ---
