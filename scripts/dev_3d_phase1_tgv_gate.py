@@ -26,6 +26,7 @@ from src.lbm_3d_trt import (  # noqa: E402
     analytic_tgv_decay_rate,
     fit_decay_rate,
     run_tgv,
+    run_tgv_aos,
 )
 
 
@@ -35,26 +36,30 @@ def main() -> int:
     n_steps = 800
     print(f"# Phase 1 gate: 3D TGV decay rate, N={N}, U={U}, n_steps={n_steps}")
     print(f"# Tolerance: +/-2 % vs analytic 4 nu k^2")
-    print(f"{'scheme':6} {'nu':>8} {'measured':>13} {'analytic':>13} "
+    print(f"{'scheme':8} {'nu':>8} {'measured':>13} {'analytic':>13} "
           f"{'err %':>8} {'time':>8}")
     rows = []
     for nu in (0.005, 0.01, 0.02):
-        for scheme in ("trt", "bgk"):
+        # Production path is AoS layout; SoA kept as comparison.
+        for scheme, runner in (("trt-aos", run_tgv_aos),
+                                ("trt-soa", run_tgv),
+                                ("bgk-aos", run_tgv_aos)):
+            scheme_kind = "bgk" if scheme.startswith("bgk") else "trt"
             t0 = time.time()
-            times, ke, diag = run_tgv(
-                N=N, U=U, nu=nu, n_steps=n_steps, scheme=scheme,
+            times, ke, diag = runner(
+                N=N, U=U, nu=nu, n_steps=n_steps, scheme=scheme_kind,
                 dtype=np.float32,
             )
             elapsed = time.time() - t0
             if diag["diverged"]:
                 rows.append((scheme, nu, float("nan"), float("nan"), True))
-                print(f"{scheme:6} {nu:>8.4f}  DIVERGED")
+                print(f"{scheme:8} {nu:>8.4f}  DIVERGED")
                 continue
             measured = fit_decay_rate(times, ke)
             analytic = analytic_tgv_decay_rate(nu, N)
             err_pct = 100.0 * (measured - analytic) / analytic
             rows.append((scheme, nu, measured, analytic, False, err_pct))
-            print(f"{scheme:6} {nu:>8.4f}  {measured:>13.6e}  "
+            print(f"{scheme:8} {nu:>8.4f}  {measured:>13.6e}  "
                   f"{analytic:>13.6e}  {err_pct:>+7.2f}  {elapsed:>7.1f} s")
 
     print()

@@ -32,8 +32,10 @@ from src.lbm_3d import (  # noqa: E402
 )
 from src.lbm_3d_trt import (  # noqa: E402
     init_tgv,
+    init_tgv_aos,
     omegas_for_trt,
     trt_periodic_step,
+    trt_periodic_step_aos,
 )
 
 
@@ -76,37 +78,59 @@ def time_phase1(N: int, n_warm: int = 5, n_meas: int = 30) -> float:
     return (time.time() - t0) / n_meas
 
 
+def time_phase1_aos(N: int, n_warm: int = 5, n_meas: int = 30) -> float:
+    """AoS-layout TRT kernel — same math as time_phase1 but f shape
+    is (Nx, Ny, Nz, 19) so per-cell reads are unit-stride."""
+    s_plus, s_minus = omegas_for_trt(0.01)
+    s_plus = np.float32(s_plus)
+    s_minus = np.float32(s_minus)
+    vel = LATTICE_VELOCITIES_3D.astype(np.int32)
+    weights = LATTICE_WEIGHTS_3D.astype(np.float32)
+    opp = OPPOSITE_3D.astype(np.int32)
+    f = init_tgv_aos(N, 0.04, dtype=np.float32)
+    f_next = f.copy()
+    trt_periodic_step_aos(f, f_next, s_plus, s_minus, vel, weights, opp)
+    f, f_next = f_next, f
+    for _ in range(n_warm):
+        trt_periodic_step_aos(f, f_next, s_plus, s_minus, vel, weights, opp)
+        f, f_next = f_next, f
+    t0 = time.time()
+    for _ in range(n_meas):
+        trt_periodic_step_aos(f, f_next, s_plus, s_minus, vel, weights, opp)
+        f, f_next = f_next, f
+    return (time.time() - t0) / n_meas
+
+
 def main() -> int:
-    print(f"# Phase 1 throughput: clean periodic TRT kernel vs Phase 0 boundary-laden BGK")
-    print(f"{'N':>5} {'Ph0 ms/step':>12} {'Ph0 Mcell/s':>13} "
-          f"{'Ph1 ms/step':>12} {'Ph1 Mcell/s':>13} {'speedup':>8}")
+    print("# Phase 1 throughput: AoS TRT vs SoA TRT vs Phase 0 BGK (SoA, boundary-laden)")
+    print(f"{'N':>5} {'Ph0 Mcell/s':>13} {'Ph1 SoA':>10} "
+          f"{'Ph1 AoS':>10} {'AoS / SoA':>11} {'AoS / Ph0':>11}")
     target = 20.0
     rows = []
     for N in (48, 64, 96):
         cells = float(N) ** 3
         t0 = time_phase0(N)
-        t1 = time_phase1(N)
+        t1_soa = time_phase1(N)
+        t1_aos = time_phase1_aos(N)
         mc0 = cells * 1e-6 / t0
-        mc1 = cells * 1e-6 / t1
-        speedup = mc1 / mc0
-        rows.append((N, mc0, mc1, speedup))
-        print(f"{N:>5} {t0*1000:>12.2f} {mc0:>13.2f} "
-              f"{t1*1000:>12.2f} {mc1:>13.2f} {speedup:>7.2f}x")
+        mc_soa = cells * 1e-6 / t1_soa
+        mc_aos = cells * 1e-6 / t1_aos
+        rows.append((N, mc0, mc_soa, mc_aos))
+        print(f"{N:>5} {mc0:>13.2f} {mc_soa:>10.2f} {mc_aos:>10.2f} "
+              f"{mc_aos/mc_soa:>10.2f}x {mc_aos/mc0:>10.2f}x")
     print()
     r96 = next(r for r in rows if r[0] == 96)
-    print(f"[verdict] Phase 1 96^3 throughput = {r96[2]:.2f} Mcell/s "
+    print(f"[verdict] AoS 96^3 throughput = {r96[3]:.2f} Mcell/s "
           f"(Cloud floor {target:.0f})")
-    if r96[2] >= target:
-        print(f"[PASS] {r96[2]/target:.1f}x the Cloud floor. The proto-3 "
-              "shortfall is closed; Interactive3D at 96^3 is back inside "
-              "the user-tolerated time budget on Cloud (<= ~4 min for "
-              "~5000 steps once the per-cell cost is what proto 3 wanted "
-              "to see).")
+    if r96[3] >= target:
+        print(f"[PASS] {r96[3]/target:.1f}x the Cloud floor. AoS closed "
+              "the proto-3 throughput shortfall. The plan-§3.D-6 fallback "
+              "from SoA to AoS pays off as the doc predicted.")
         return 0
-    print("[PARTIAL] Phase 1 closed some of the gap but did not hit "
-          "the 20 Mcell/s floor. The remaining levers are option B "
-          "(64^3 Interactive) or option C (in-place AA streaming). "
-          "Reconsider in Phase 5.")
+    print(f"[PARTIAL] AoS at 96^3 = {r96[3]:.2f} Mcell/s is still under "
+          f"the 20 Mcell/s floor. The remaining levers are AoS + "
+          f"parallel=True (offline), drop to 64^3 (Interactive3D toy), "
+          f"or AA streaming (Phase 5 reconsider).")
     return 1
 
 

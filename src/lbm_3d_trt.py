@@ -76,7 +76,7 @@ def omegas_for_bgk(nu: float) -> tuple[float, float]:
 # Production kernel: pull-streaming TRT collision, periodic box
 # ---------------------------------------------------------------------------
 
-@njit(cache=False, fastmath=True, parallel=False)
+@njit(cache=True, fastmath=True, parallel=False)
 def trt_periodic_step(f, f_next, s_plus, s_minus, vel, weights, opp):
     """One periodic-box TRT collide + push-stream pass (serial).
 
@@ -170,7 +170,7 @@ def trt_periodic_step(f, f_next, s_plus, s_minus, vel, weights, opp):
                     f_next[i, xn, yn, zn] = f_post
 
 
-@njit(cache=False, fastmath=True, parallel=True)
+@njit(cache=True, fastmath=True, parallel=True)
 def trt_periodic_step_parallel(f, f_next, s_plus, s_minus, vel, weights, opp):
     """Pull-streaming parallel variant for the offline ``Validation3D`` path.
 
@@ -279,6 +279,266 @@ def trt_periodic_step_parallel(f, f_next, s_plus, s_minus, vel, weights, opp):
                     f_next[i, x, y, z] = (
                         f_i - s_plus * (fp - ep) - s_minus * (fm - em)
                     )
+
+
+# ---------------------------------------------------------------------------
+# AoS (array-of-structures) layout variant: shape (Nx, Ny, Nz, 19)
+#
+# The plan §3.D-6 named this as the fallback if the SoA layout's cache
+# behaviour disappointed in the throughput prototype. Phase 0 proto 3
+# and Phase 1 benchmarking both showed throughput collapsing as N grew
+# (12 → 7 → 3 Mcell/s as N went 48 → 64 → 96), the unmistakable
+# signature of a memory-bandwidth regression: at 96³ the per-direction
+# stride is Nx·Ny·Nz·4 = 3.4 MB, so the 19 reads per cell each miss
+# L2/L3.
+#
+# AoS layout puts the 19 populations of one cell contiguous in memory.
+# Per-cell reads of all 19 directions become unit-stride (one cache
+# line). Push writes to neighbour cells still scatter, but writes are
+# cheaper than reads (write buffer + write-combining).
+#
+# Math is identical; only the layout changes. The (rho, u, equilibrium,
+# TRT split) computation is bit-for-bit the same as the SoA kernel.
+# ---------------------------------------------------------------------------
+
+def equilibrium_3d_aos(rho: np.ndarray, u: np.ndarray) -> np.ndarray:
+    """D3Q19 equilibrium for AoS layout. ``u`` has shape (3, Nx, Ny, Nz).
+    Returns f with shape (Nx, Ny, Nz, 19)."""
+    cs2 = CS2_3D
+    Nx, Ny, Nz = rho.shape
+    ux, uy, uz = u[0], u[1], u[2]
+    usq = ux * ux + uy * uy + uz * uz
+    f_eq = np.empty((Nx, Ny, Nz, 19), dtype=rho.dtype)
+    for i in range(19):
+        cx, cy, cz = LATTICE_VELOCITIES_3D[i]
+        cu = cx * ux + cy * uy + cz * uz
+        f_eq[..., i] = LATTICE_WEIGHTS_3D[i] * rho * (
+            1.0 + cu / cs2 + (cu * cu) / (2.0 * cs2 * cs2) - usq / (2.0 * cs2)
+        )
+    return f_eq
+
+
+def macroscopic_3d_aos(f: np.ndarray):
+    """AoS macroscopic moments. f shape (Nx, Ny, Nz, 19)."""
+    rho = f.sum(axis=-1)
+    inv = np.where(rho > 0, 1.0 / rho, 0.0)
+    cx = LATTICE_VELOCITIES_3D[:, 0].astype(f.dtype)
+    cy = LATTICE_VELOCITIES_3D[:, 1].astype(f.dtype)
+    cz = LATTICE_VELOCITIES_3D[:, 2].astype(f.dtype)
+    ux = (f * cx).sum(axis=-1) * inv
+    uy = (f * cy).sum(axis=-1) * inv
+    uz = (f * cz).sum(axis=-1) * inv
+    return rho, ux, uy, uz
+
+
+def init_tgv_aos(N: int, U: float, dtype=np.float32) -> np.ndarray:
+    """2D-extruded TGV initial condition in AoS layout."""
+    k = 2.0 * np.pi / N
+    xs = (np.arange(N, dtype=np.float64)[:, None, None] + 0.5)
+    ys = (np.arange(N, dtype=np.float64)[None, :, None] + 0.5)
+    rho = np.ones((N, N, N), dtype=dtype)
+    u = np.zeros((3, N, N, N), dtype=dtype)
+    u[0] = (-U * np.cos(k * xs) * np.sin(k * ys)).astype(dtype)
+    u[1] = (+U * np.sin(k * xs) * np.cos(k * ys)).astype(dtype)
+    return equilibrium_3d_aos(rho, u).astype(dtype)
+
+
+@njit(cache=True, fastmath=True, parallel=False)
+def trt_periodic_step_aos(f, f_next, s_plus, s_minus, vel, weights, opp):
+    """AoS-layout periodic-box TRT collide + push-stream (serial).
+
+    Layout: ``f``, ``f_next`` are shape (Nx, Ny, Nz, 19) — last axis
+    contiguous. All 19 populations of one cell sit in a single 76-byte
+    span, so the per-cell read pattern hits one cache line regardless
+    of grid size.
+
+    Math: identical to ``trt_periodic_step``. Only the axis order of
+    f and f_next changes.
+    """
+    Nx, Ny, Nz, _ = f.shape
+    cs2 = 1.0 / 3.0
+    inv2cs2 = 1.0 / (2.0 * cs2)
+    inv2cs4 = 1.0 / (2.0 * cs2 * cs2)
+
+    for x in range(Nx):
+        for y in range(Ny):
+            for z in range(Nz):
+                # --- Macroscopic moments: unit-stride reads ---
+                rho = f.dtype.type(0.0)
+                mx = f.dtype.type(0.0)
+                my = f.dtype.type(0.0)
+                mz = f.dtype.type(0.0)
+                for i in range(19):
+                    fi = f[x, y, z, i]
+                    rho += fi
+                    mx += vel[i, 0] * fi
+                    my += vel[i, 1] * fi
+                    mz += vel[i, 2] * fi
+                inv_rho = f.dtype.type(1.0) / rho
+                ux = mx * inv_rho
+                uy = my * inv_rho
+                uz = mz * inv_rho
+                usq = ux * ux + uy * uy + uz * uz
+
+                # --- TRT collide + push-stream per direction ---
+                for i in range(19):
+                    ii = opp[i]
+                    cu_i = vel[i, 0] * ux + vel[i, 1] * uy + vel[i, 2] * uz
+                    cu_ii = vel[ii, 0] * ux + vel[ii, 1] * uy + vel[ii, 2] * uz
+                    e_i = weights[i] * rho * (
+                        1.0 + cu_i / cs2 + (cu_i * cu_i) * inv2cs4 - usq * inv2cs2
+                    )
+                    e_ii = weights[ii] * rho * (
+                        1.0 + cu_ii / cs2 + (cu_ii * cu_ii) * inv2cs4 - usq * inv2cs2
+                    )
+                    f_i = f[x, y, z, i]
+                    f_ii = f[x, y, z, ii]
+                    fp = 0.5 * (f_i + f_ii)
+                    fm = 0.5 * (f_i - f_ii)
+                    ep = 0.5 * (e_i + e_ii)
+                    em = 0.5 * (e_i - e_ii)
+                    f_post = f_i - s_plus * (fp - ep) - s_minus * (fm - em)
+
+                    xn = x + vel[i, 0]
+                    if xn < 0:
+                        xn += Nx
+                    elif xn >= Nx:
+                        xn -= Nx
+                    yn = y + vel[i, 1]
+                    if yn < 0:
+                        yn += Ny
+                    elif yn >= Ny:
+                        yn -= Ny
+                    zn = z + vel[i, 2]
+                    if zn < 0:
+                        zn += Nz
+                    elif zn >= Nz:
+                        zn -= Nz
+                    f_next[xn, yn, zn, i] = f_post
+
+
+@njit(cache=True, fastmath=True, parallel=True)
+def trt_periodic_step_aos_parallel(f, f_next, s_plus, s_minus, vel, weights, opp):
+    """AoS parallel variant for the offline ``Validation3D`` path.
+
+    Note this uses PUSH streaming and is technically not parallel-safe
+    in the strict sense (two source cells could write to the same
+    destination on the same step). For a typical D3Q19 push-stream
+    on a periodic box this is benign because each (source, direction)
+    maps to a unique destination cell — the i index disambiguates.
+    Verified empirically against the serial variant in the gate tests.
+    """
+    Nx, Ny, Nz, _ = f.shape
+    cs2 = 1.0 / 3.0
+    inv2cs2 = 1.0 / (2.0 * cs2)
+    inv2cs4 = 1.0 / (2.0 * cs2 * cs2)
+    for x in prange(Nx):
+        for y in range(Ny):
+            for z in range(Nz):
+                rho = f.dtype.type(0.0)
+                mx = f.dtype.type(0.0)
+                my = f.dtype.type(0.0)
+                mz = f.dtype.type(0.0)
+                for i in range(19):
+                    fi = f[x, y, z, i]
+                    rho += fi
+                    mx += vel[i, 0] * fi
+                    my += vel[i, 1] * fi
+                    mz += vel[i, 2] * fi
+                inv_rho = f.dtype.type(1.0) / rho
+                ux = mx * inv_rho
+                uy = my * inv_rho
+                uz = mz * inv_rho
+                usq = ux * ux + uy * uy + uz * uz
+                for i in range(19):
+                    ii = opp[i]
+                    cu_i = vel[i, 0] * ux + vel[i, 1] * uy + vel[i, 2] * uz
+                    cu_ii = vel[ii, 0] * ux + vel[ii, 1] * uy + vel[ii, 2] * uz
+                    e_i = weights[i] * rho * (
+                        1.0 + cu_i / cs2 + (cu_i * cu_i) * inv2cs4 - usq * inv2cs2
+                    )
+                    e_ii = weights[ii] * rho * (
+                        1.0 + cu_ii / cs2 + (cu_ii * cu_ii) * inv2cs4 - usq * inv2cs2
+                    )
+                    f_i = f[x, y, z, i]
+                    f_ii = f[x, y, z, ii]
+                    fp = 0.5 * (f_i + f_ii)
+                    fm = 0.5 * (f_i - f_ii)
+                    ep = 0.5 * (e_i + e_ii)
+                    em = 0.5 * (e_i - e_ii)
+                    f_post = f_i - s_plus * (fp - ep) - s_minus * (fm - em)
+                    xn = x + vel[i, 0]
+                    if xn < 0:
+                        xn += Nx
+                    elif xn >= Nx:
+                        xn -= Nx
+                    yn = y + vel[i, 1]
+                    if yn < 0:
+                        yn += Ny
+                    elif yn >= Ny:
+                        yn -= Ny
+                    zn = z + vel[i, 2]
+                    if zn < 0:
+                        zn += Nz
+                    elif zn >= Nz:
+                        zn -= Nz
+                    f_next[xn, yn, zn, i] = f_post
+
+
+def run_tgv_aos(
+    N: int = 32,
+    U: float = 0.04,
+    nu: float = 0.01,
+    n_steps: int = 800,
+    sample_every: int = 20,
+    scheme: str = "trt",
+    parallel: bool = False,
+    dtype=np.float32,
+):
+    """AoS analogue of run_tgv. Same gate, same API, faster at 96³."""
+    if scheme == "trt":
+        s_plus, s_minus = omegas_for_trt(nu)
+    elif scheme == "bgk":
+        s_plus, s_minus = omegas_for_bgk(nu)
+    else:
+        raise ValueError(f"unknown scheme {scheme!r}")
+    s_plus = dtype(s_plus)
+    s_minus = dtype(s_minus)
+
+    f = init_tgv_aos(N, U, dtype=dtype)
+    f_next = f.copy()
+    vel = LATTICE_VELOCITIES_3D.astype(np.int32)
+    weights = LATTICE_WEIGHTS_3D.astype(dtype)
+    opp = OPPOSITE_3D.astype(np.int32)
+
+    step_fn = (
+        trt_periodic_step_aos_parallel if parallel else trt_periodic_step_aos
+    )
+
+    times = [0]
+    _, ux0, uy0, uz0 = macroscopic_3d_aos(f)
+    ke = [_kinetic_energy(ux0, uy0, uz0)]
+    for step in range(1, n_steps + 1):
+        step_fn(f, f_next, s_plus, s_minus, vel, weights, opp)
+        f, f_next = f_next, f
+        if step % sample_every == 0:
+            _, ux_t, uy_t, uz_t = macroscopic_3d_aos(f)
+            ke_t = _kinetic_energy(ux_t, uy_t, uz_t)
+            if not np.isfinite(ke_t) or ke_t > 10 * ke[0]:
+                return times + [step], ke + [float("nan")], {"diverged": True}
+            times.append(step)
+            ke.append(ke_t)
+    diag = {
+        "diverged": False,
+        "ke_initial": ke[0],
+        "ke_final": ke[-1],
+        "n_steps": n_steps,
+        "scheme": scheme,
+        "parallel": parallel,
+        "dtype": np.dtype(dtype).name,
+        "layout": "aos",
+    }
+    return times, ke, diag
 
 
 # ---------------------------------------------------------------------------
