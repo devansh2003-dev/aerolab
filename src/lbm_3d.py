@@ -168,7 +168,7 @@ def equilibrium_3d(rho: np.ndarray, u: np.ndarray) -> np.ndarray:
 #   * body[x,y,z] == True: full-way bounce-back (post-stream swap of opposites)
 # ---------------------------------------------------------------------------
 
-@njit(cache=False, fastmath=True)
+@njit(cache=True, fastmath=True)
 def step_bgk_3d(
     f: np.ndarray,
     f_next: np.ndarray,

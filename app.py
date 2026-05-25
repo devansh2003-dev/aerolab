@@ -9,7 +9,7 @@ Run from the project root:
 
 The browser opens automatically at http://localhost:8501.
 """
-# Force NUMBA_NUM_THREADS=16 BEFORE any other import. Diagnosed from a
+# Set NUMBA_NUM_THREADS=16 BEFORE any other import. Diagnosed from a
 # Cloud error log: Cloud's container starts with NUMBA_NUM_THREADS
 # UNSET, numba imports and auto-detects cpu_count=1 (cgroups throttle
 # the container to 1 vCPU) so it launches 1 thread. Then Cloud's
@@ -24,9 +24,17 @@ The browser opens automatically at http://localhost:8501.
 # the start, and Cloud's later assignment is a no-op (already 16). The
 # 16 threads contending for 1 vCPU is wasteful but functionally
 # serial; "wasteful" beats "crashed" every time.
+#
+# Reviewer 2026-05-28 caught one residual case: if a developer has
+# NUMBA_NUM_THREADS already set in their local environment (e.g. via
+# their conda activate script or PowerShell profile) to a value other
+# than 16, this line would override it AFTER numba might already have
+# been launched by some upstream import, triggering the same race
+# in reverse. Use ``setdefault`` so an externally-set value wins; the
+# "16" default still matches what Cloud will pre-empt to.
 import os
 
-os.environ["NUMBA_NUM_THREADS"] = "16"
+os.environ.setdefault("NUMBA_NUM_THREADS", "16")
 
 import numpy as np
 import pandas as pd

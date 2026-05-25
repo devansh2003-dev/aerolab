@@ -349,11 +349,36 @@ def trt_periodic_step_aos(f, f_next, s_plus, s_minus, vel, weights, opp):
 
     Layout: ``f``, ``f_next`` are shape (Nx, Ny, Nz, 19) — last axis
     contiguous. All 19 populations of one cell sit in a single 76-byte
-    span, so the per-cell read pattern hits one cache line regardless
-    of grid size.
+    span, so per-cell reads hit one cache line regardless of N.
 
-    Math: identical to ``trt_periodic_step``. Only the axis order of
-    f and f_next changes.
+    Known-but-deferred optimisation (reviewer 2026-05-28 P1.3):
+    every equilibrium gets computed TWICE in the per-direction loop —
+    once as ``e_i`` when ``i`` is the direction itself, once as
+    ``e_ii`` when ``opp[i]`` points back to it. The math is doubled
+    by construction, so in principle precomputing all 19 equilibria
+    into a buffer once should be faster. In practice on Numba 0.65,
+    the two reasonable buffer choices both backfired:
+
+      * ``np.empty(19, dtype=f.dtype)`` measured ~35 % SLOWER at
+        96^3 (1.19 vs 1.94 Mcell/s). Numba does not stack-allocate
+        this reliably and the heap-allocation cost per cell dwarfs
+        the saved equilibrium work.
+      * Passing a preallocated 19-vector buffer through the kernel
+        signature breaks parallel safety (one buffer, many
+        prange-iterations writing to it).
+
+    The correct fix is 19 named scalars (``e0, e1, ..., e18``),
+    matching what the 2D MRT kernel does. That is ~150 lines per
+    kernel variant × 4 variants = 600 lines of nearly-identical
+    code, and is queued as a focused Phase 1.5 optimisation pass
+    once geometry (Phase 2) is in. Doing it now would mask Phase 2
+    bugs behind a kernel that is hard to debug.
+
+    For Phase 1, the kernel stays in its visually clear form and
+    pays the structural ~2x TRT overhead. Production grid sizes
+    are decided in Phase 5 once the gate-test Cd numbers from
+    Phase 4 reveal whether the wall-placement advantage was worth
+    the throughput cost.
     """
     Nx, Ny, Nz, _ = f.shape
     cs2 = 1.0 / 3.0
@@ -381,6 +406,10 @@ def trt_periodic_step_aos(f, f_next, s_plus, s_minus, vel, weights, opp):
                 usq = ux * ux + uy * uy + uz * uz
 
                 # --- TRT collide + push-stream per direction ---
+                # NOTE: e_i and e_ii are computed fresh each iteration.
+                # Every equilibrium therefore evaluates twice across
+                # the 19-iteration loop. See the docstring for why this
+                # duplication is deferred rather than fixed in place.
                 for i in range(19):
                     ii = opp[i]
                     cu_i = vel[i, 0] * ux + vel[i, 1] * uy + vel[i, 2] * uz
@@ -421,12 +450,33 @@ def trt_periodic_step_aos(f, f_next, s_plus, s_minus, vel, weights, opp):
 def trt_periodic_step_aos_parallel(f, f_next, s_plus, s_minus, vel, weights, opp):
     """AoS parallel variant for the offline ``Validation3D`` path.
 
-    Note this uses PUSH streaming and is technically not parallel-safe
-    in the strict sense (two source cells could write to the same
-    destination on the same step). For a typical D3Q19 push-stream
-    on a periodic box this is benign because each (source, direction)
-    maps to a unique destination cell — the i index disambiguates.
-    Verified empirically against the serial variant in the gate tests.
+    Parallel safety (reviewer 2026-05-28 P5):
+
+        For push streaming on a periodic D3Q19 box the destination
+        is determined by (source_cell, direction_i) via
+        (x + c_i_x, y + c_i_y, z + c_i_z, i) — the direction index
+        is preserved as the destination's last axis. The map
+        (source, i) → (destination, i) is therefore a BIJECTION:
+
+          * Different sources to the same destination would require
+            two source cells (xs1, ys1, zs1) and (xs2, ys2, zs2) with
+            xs1 + c_i_x == xs2 + c_i_x (and analogously y, z) for the
+            SAME direction i — which collapses to xs1 == xs2, ys1 ==
+            ys2, zs1 == zs2. No collision.
+          * Different directions to the same destination would write
+            to different last-axis slots f_next[..., i], so they touch
+            disjoint memory.
+
+        Therefore every f_next entry has exactly one writer per step,
+        regardless of how prange schedules the outer x-loop. This is
+        a structural property of D3Q19 push-streaming on the
+        (Nx, Ny, Nz, 19) layout, not a runtime check; the earlier
+        "verified empirically" claim understated what the lattice
+        algebra already guarantees.
+
+    Cloud must continue to use the serial variant, see
+    [[project_aerolab_3d_phase]] memory entry for the
+    `NUMBA_NUM_THREADS` race-condition rationale.
     """
     Nx, Ny, Nz, _ = f.shape
     cs2 = 1.0 / 3.0
