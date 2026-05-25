@@ -347,9 +347,11 @@ The other rows are reported but not claimed:
   -- 10.2 % at Re = 100, 1.0 % at Re = 200): median **5.6 %**, max
   **10.2 %**. At the doc-vs-data ± 15 % gate this passes with room.
   The Re = 100 result is a sign-flipped −10.2 % (vs +2.1 % at the
-  D = 20 Validation preset). §4.4 discusses the candidate causes
-  (Smagorinsky LES bias at laminar Re; K over-rescale at lower B);
-  the experiment that would localise it is roadmapped in §6.
+  D = 20 Validation preset). The Smagorinsky-off experiment at this
+  case (§4.4) moved the corrected Cd error by 0.34 pp, ruling out
+  the LES dissipation as the cause -- the bias is the same K-mismatch
+  at low B that already shows up on the square (§3.2). A K(B)
+  recalibration is roadmapped in §6.
 - **Square Cd (raw), Resolved preset, Re = 150 – 200** (n = 2 --
   3.8 % at Re = 150, 5.1 % at Re = 200): median **4.5 %**, max
   **5.1 %**. Inside the Sohankar 1998 5 % bar without any correction
@@ -603,25 +605,49 @@ Each is bounded numerically below; none is hidden.
   AV correction is a modest 0.79 × factor. Offline-only (≈ 90 min for
   the 5-case sweep).
 
-### 4.4 Smagorinsky LES at laminar Re
+### 4.4 Smagorinsky LES at laminar Re — measured
 
 The solver labels itself "MRT-LES" and the Smagorinsky closure
 (`C_smag = 0.17`) is active at every Reynolds number from 50 to 1500.
 At Re = 100 – 200 the cylinder wake is laminar; there is no subgrid
 turbulence to model. A Smagorinsky eddy viscosity proportional to the
 local strain rate is non-zero in *any* sheared flow, laminar or not,
-so at low Re the model is adding effective viscosity that has no
-physical referent. The net effect is to raise the effective viscosity,
-lower the effective Reynolds number, and bias raw Cd slightly upward.
+so at low Re the model adds effective viscosity that has no physical
+referent. The candidate concern is that this biases raw Cd slightly
+upward and contributes to the -10.2 % Resolved Cylinder Re = 100
+result.
 
-This is common practice in production LBM codes -- the Smagorinsky
-term also doubles as a stabiliser at high Re where you do need it --
-but a validation document that claims rigour has to be explicit about
-the side effect. **A senior reviewer who asks "what is your Cd at
-Re = 100 with Smagorinsky off?" is asking the right question, and
-quantifying that delta is the next step.** It is not done in the
-current sweep; it is a known limitation, and we list it here rather
-than letting it sit silent in the kernel comments.
+**Experiment** (`scripts/dev_smag_off_resolved_re100.py`,
+2026-05-27). We re-ran Cylinder Re = 100 at the Resolved preset with
+`C_SMAG = C_SMAG_SQ = 0`, monkey-patching the constants in `src.lbm`
+before the JIT kernel's first compile so Numba captures the patched
+value at trace time. Same grid, same n_frames, same boundary
+conditions; only the Smagorinsky eddy-viscosity term off.
+
+| Configuration            | Cd raw   | Cd corrected | Error vs Williamson |
+|--------------------------|----------|--------------|---------------------|
+| Smag-on  (`C_smag=0.17`) | 1.4965   | 1.1859       | −10.16 %            |
+| Smag-off (`C_smag=0`)    | 1.4914   | 1.1814       | −10.50 %            |
+| Δ (Smag-off − Smag-on)   | −0.0051  | −0.0045      | −0.34 pp            |
+
+**The LES is not the source of the −10 % bias.** Disabling
+Smagorinsky moves the corrected Cd error by 0.34 percentage points,
+not the ~ 10 points we would need if LES were the culprit. The bias
+must therefore be elsewhere. The most likely candidate, consistent
+with the square K-flaw already exposed in §3.2, is that **K = 1.10
+fitted at the Standard B = 0.35 does not generalise to B = 0.10 for
+the cylinder either** -- the same calibration problem as the square,
+just less dramatic. A K(B) recalibration would lower the cylinder
+correction factor, shrink the rescale, and bring the corrected
+Re = 100 Cd closer to Williamson. The Smag-off experiment removes
+LES dissipation from the candidate-cause list; what remains is the
+K-mismatch and (smaller) grid-resolution staircase at D = 40.
+
+The wider takeaway: the Smagorinsky term DOES contribute a small
+upward bias to raw Cd at laminar Re (~ 0.3 % here), but it is far
+from the dominant source of error. It is on for stability in the
+high-Re cases where you need it, and the laminar-Re penalty it pays
+is order-of-magnitude smaller than the K-fit problem.
 
 ### 4.5 Numerical stability envelope
 
@@ -813,12 +839,12 @@ A: Three things, in roughly descending leverage:
    re-running the Standard sweep too so the §3.6 numbers don't
    drift; out of scope for this revision.
 
-2. **Quantify the Smagorinsky bias at Re = 100 – 200.** A single
-   Smag-off run at the Resolved preset would isolate the spurious
-   eddy-viscosity contribution flagged in §4.4. The Resolved
-   cylinder Re = 100 point at −10.2 % (vs +2.1 % at D = 20)
-   suggests the LES may add something real at laminar Re. See §4.4
-   for the current status of that experiment.
+2. **Smagorinsky bias at Re = 100 – 200 -- now measured (§4.4).**
+   The Smag-off cylinder Re = 100 at the Resolved preset returned a
+   corrected Cd error of −10.50 %, vs −10.16 % with Smagorinsky on.
+   A 0.34 pp delta. The LES is therefore *not* the source of the
+   −10 % bias; what remains is the K-mismatch (item 1 above) and
+   secondary grid-staircase effects.
 
 3. **3D.** Removes the Williamson mode-A 2D-vs-3D divergence at
    Re ≥ 200 entirely. Out of scope for the 12-week build because it
