@@ -104,6 +104,221 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# --- 2D / 3D switcher (sidebar, very top) -----------------------------------
+# AeroLab ships the validated 2D D2Q9 solver online. The 3D D3Q19 scaffold
+# lives behind this toggle as a LOCAL-ONLY development bench -- D3Q19
+# populations are ~150 MB at modest grids, well beyond Streamlit Cloud's
+# 1 GB process cap, and the kernel is BGK-only with bounce-back boundaries
+# (no Bouzidi, no MRT yet). The 2D tab is the default and runs the same
+# code path as before this toggle existed.
+with st.sidebar:
+    st.markdown("### :material/grid_view: Solver tab")
+    view = st.radio(
+        "Solver dimensionality",
+        ["2D playground (validated)", "3D (local, in development)"],
+        index=0,
+        label_visibility="collapsed",
+        help=(
+            "**2D**: the shipped D2Q9 LBM solver. Validated against "
+            "Williamson 1996 (cylinder) and Okajima 1982 (square) to "
+            "single-digit percent up to Re ~ 200. See VALIDATION.md.\n\n"
+            "**3D**: D3Q19 BGK scaffold. WIP, runs locally only. Channel "
+            "flow + sphere bounce-back so far; no cylinder validation yet."
+        ),
+    )
+    st.divider()
+
+if view == "3D (local, in development)":
+    st.markdown("# AeroLab 3D &mdash; *local development bench*")
+    st.markdown(
+        "<div style='color:#94a3b8;font-size:0.92rem;line-height:1.5;'>"
+        "This tab drives the <b>D3Q19 BGK</b> scaffold in "
+        "<code>src/lbm_3d.py</code>. It is NOT the shipped playground "
+        "&mdash; the 2D solver in <code>src/lbm.py</code> is. The 3D "
+        "kernel runs a channel-flow smoke and prints diagnostics. No "
+        "GIF rendering yet, no Cd validation, no MRT, no Bouzidi q-fields. "
+        "The point of this bench is to make every increment of 3D solver "
+        "work visible while it is still developing locally."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown("")  # spacer
+
+    with st.expander(":material/check_circle: &nbsp; **What works today**",
+                     expanded=False):
+        st.markdown(
+            "- D3Q19 lattice constants verified (weights sum to 1, "
+            "second-moment matches `cs² = 1/3`, OPPOSITE is an involution, "
+            "all velocities unique).\n"
+            "- BGK collision + push-streaming compiled by Numba.\n"
+            "- Plane-channel boundaries: equilibrium inflow at x=0, "
+            "zero-gradient outflow at x=Nx-1, bounce-back at y=0/Ny-1, "
+            "periodic in z.\n"
+            "- Optional sphere body via full-way bounce-back.\n"
+            "- Channel smoke produces a symmetric parabolic ux(y) profile "
+            "(plane Poiseuille shape) with `mass_drift_rel < 1 %` over "
+            "400 steps."
+        )
+
+    with st.expander(":material/build: &nbsp; **What is queued**",
+                     expanded=False):
+        st.markdown(
+            "- Bouzidi q-fields for off-lattice body geometry (the 2D "
+            "solver's third-order correction).\n"
+            "- MRT collision (D3Q19 moment basis from d'Humières 2002) "
+            "to replace BGK at moderate Re.\n"
+            "- 3D cylinder Cd validation against Williamson 1996 at "
+            "Re = 100 to 200 (the headline 3D check).\n"
+            "- Slice rendering as an animated GIF (mirror the 2D path).\n"
+            "- A 3D version of `validate_solver.py` so the same gate "
+            "test discipline applies."
+        )
+
+    st.divider()
+    st.markdown("### Channel-flow smoke")
+    st.markdown(
+        "Pick a grid, hit **Run smoke**. Returns the centerline y-profile "
+        "(should be parabolic between bounce-back walls), peak velocity, "
+        "and mass drift. Grid sizes are kept small enough to finish in "
+        "under a minute on a laptop."
+    )
+
+    col_a, col_b, col_c, col_d = st.columns(4)
+    with col_a:
+        nx = st.select_slider("Nx (streamwise)", options=[32, 48, 64, 96],
+                              value=64)
+    with col_b:
+        ny = st.select_slider("Ny (wall-normal)", options=[16, 24, 32],
+                              value=24)
+    with col_c:
+        nz = st.select_slider("Nz (spanwise)", options=[16, 24, 32],
+                              value=24)
+    with col_d:
+        n_steps = st.select_slider("Steps", options=[200, 400, 800, 1600],
+                                   value=400)
+
+    u_in = st.slider("Inflow u (lattice units, Ma ≲ 0.1)",
+                     min_value=0.01, max_value=0.10, value=0.04, step=0.01)
+    nu = st.slider("Kinematic viscosity ν (lattice units)",
+                   min_value=0.005, max_value=0.10, value=0.02, step=0.005)
+    re_est = u_in * ny / nu if nu > 0 else float("nan")
+    st.caption(
+        f"Re estimate ≈ u_in · Ny / ν = "
+        f"{u_in:.2f} · {ny} / {nu:.3f} ≈ **{re_est:.1f}** (channel "
+        f"Reynolds, low-Re smoke regime)."
+    )
+
+    if st.button(":material/play_arrow: &nbsp; Run smoke",
+                 use_container_width=True):
+        import time as _time
+        from src.lbm_3d import run_channel_smoke
+        progress = st.progress(0.0, text="Compiling kernel + streaming...")
+        try:
+            def _cb(frac, text):
+                progress.progress(frac, text=text)
+            _t0 = _time.time()
+            rho, ux, uy, uz, diag = run_channel_smoke(
+                Nx=nx, Ny=ny, Nz=nz, u_in=u_in, nu=nu, n_steps=n_steps,
+                progress_callback=_cb,
+            )
+            elapsed = _time.time() - _t0
+        finally:
+            progress.empty()
+
+        diag_table = pd.DataFrame(
+            [
+                ("Grid",            f"{nx} × {ny} × {nz}"),
+                ("Steps",           f"{n_steps}"),
+                ("Wall time",       f"{elapsed:.2f} s "
+                                    f"({n_steps/elapsed:.1f} steps/s)"),
+                ("u_peak",          f"{diag['u_peak']:.5f}"),
+                ("u_mean",          f"{diag['u_mean']:.5f}"),
+                ("Centerline ratio (≈1.5 fully developed)",
+                                    f"{diag['centerline_ratio']:.3f}"),
+                ("Mass drift (rel)",
+                                    f"{diag['mass_drift_rel']*100:+.3f} %"),
+            ],
+            columns=["Metric", "Value"],
+        )
+        st.dataframe(diag_table, hide_index=True, use_container_width=True)
+
+        # Midplane slice (z = Nz/2) of ux. Plotly heatmap is fast and
+        # works without matplotlib; the 2D playground already pulls
+        # plotly so no new dep.
+        mid_z = nz // 2
+        slice_ux = ux[:, :, mid_z].T  # rows = y, cols = x
+        fig = go.Figure(
+            data=go.Heatmap(
+                z=slice_ux,
+                colorscale="Viridis",
+                colorbar={"title": "u<sub>x</sub>"},
+                zmin=0.0, zmax=float(diag["u_peak"]) * 1.05,
+            )
+        )
+        fig.update_layout(
+            title=f"Midplane slice ux(x, y) at z = {mid_z}",
+            xaxis_title="x (streamwise)",
+            yaxis_title="y (wall-normal)",
+            height=380,
+            margin=dict(l=40, r=20, t=50, b=40),
+        )
+        fig.update_yaxes(scaleanchor="x", scaleratio=1)
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Centerline y-profile vs the analytic plane-Poiseuille parabola.
+        mid_x = nx // 2
+        y_profile = ux[mid_x, :, mid_z]
+        ys = np.arange(ny)
+        # Fit a parabola u_fit = u_peak * (1 - ((y - y_c) / h)^2),
+        # h = (Ny - 1) / 2, y_c = (Ny - 1) / 2.
+        y_c = (ny - 1) / 2
+        h = (ny - 1) / 2
+        u_peak = float(diag["u_peak"])
+        u_parabolic = u_peak * (1.0 - ((ys - y_c) / h) ** 2)
+        prof_fig = go.Figure()
+        prof_fig.add_scatter(x=ys, y=y_profile, mode="lines+markers",
+                              name="measured")
+        prof_fig.add_scatter(x=ys, y=u_parabolic, mode="lines",
+                              name="analytic Poiseuille",
+                              line=dict(dash="dash"))
+        prof_fig.update_layout(
+            title="Wall-normal profile ux(y) at midchannel x, mid z",
+            xaxis_title="y",
+            yaxis_title="u<sub>x</sub>",
+            height=300,
+            margin=dict(l=40, r=20, t=50, b=40),
+        )
+        st.plotly_chart(prof_fig, use_container_width=True)
+
+        if abs(diag["mass_drift_rel"]) > 0.05:
+            st.warning(
+                f"Mass drifted {diag['mass_drift_rel']*100:+.2f} % &mdash; "
+                "the streaming or boundary code is leaking mass. Investigate "
+                "before reading the velocity profile as physical."
+            )
+        elif diag["centerline_ratio"] < 1.0 or diag["centerline_ratio"] > 1.7:
+            st.info(
+                f"Centerline ratio {diag['centerline_ratio']:.2f} is outside "
+                "the fully-developed Poiseuille band [1.0, 1.7]. Either the "
+                "flow has not converged yet (try more steps) or the "
+                "boundary code has a subtle bias."
+            )
+        else:
+            st.success(
+                "Smoke clean: parabolic profile, mass conserved to "
+                "within 5 %, centerline ratio in the Poiseuille band."
+            )
+
+    st.divider()
+    st.caption(
+        "Source: [src/lbm_3d.py](https://github.com/devansh2003-dev/aerolab/"
+        "blob/main/src/lbm_3d.py) &middot; "
+        "Tests: [tests/test_lbm_3d_smoke.py](https://github.com/"
+        "devansh2003-dev/aerolab/blob/main/tests/test_lbm_3d_smoke.py)"
+    )
+    st.stop()
+
+
 # --- Mode toggle (sidebar, top) ---
 with st.sidebar:
     st.markdown("### :material/tune: Mode")
