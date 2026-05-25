@@ -55,7 +55,7 @@ across the full Re range is reported only as a qualitative match
 record length.
 
 **The 35 % Standard preset is an interactive convenience, not a
-validation.** Its corrected Cd headlines (4.3 % median etc., §3.5)
+validation.** Its corrected Cd headlines (4.3 % median etc., §3.6)
 look excellent because the large rescale absorbs solver error. We
 keep those numbers in the doc for transparency, but a senior reviewer
 should read them as a property of the correction, not of the solver.
