@@ -15,7 +15,7 @@ near-no-op, shows the underlying error is only small for Re ≤ 200.
 This document has been re-scoped to match that finding.
 
 **Headline result** (low-blockage cross-check, Validation preset
-B = 5 %, see §3.3):
+B = 5 %; full table in §3.2, aggregate in §3.3):
 
 | Quantity                       | Re band      | Median error | Max error | Reference  |
 |--------------------------------|--------------|--------------|-----------|------------|
@@ -54,13 +54,17 @@ look excellent because the large rescale absorbs solver error. We
 keep those numbers in the doc for transparency, but a senior reviewer
 should read them as a property of the correction, not of the solver.
 
-Continuous validation runs on every commit via CI
-(`tests/test_validation_benchmark.py`); the low-blockage sweep is in
+The headline data lives in
 [`data/validation/results_lowblockage.md`](data/validation/results_lowblockage.md)
 (reproducible via `python scripts/validate_solver.py --headline`).
-Mass conservation diagnostics verify the lattice operators close to
-**machine precision** in a closed box (drift ≈ 3 × 10⁻¹³ over 5 000
-steps) and to **0.84 %** of throughflow in the open channel.
+The CI gate `tests/test_doc_validation_consistency.py` ties this doc
+and README to that JSON so the numbers cannot silently drift; a
+faster regression guard in `tests/test_validation_benchmark.py` runs
+on every push to catch changes in the Standard-preset corrected
+pipeline. Mass conservation diagnostics verify the lattice operators
+close to **machine precision** in a closed box (drift ≈ 3 × 10⁻¹³
+over 5 000 steps) and to **0.84 %** of throughflow in the open
+channel.
 
 ---
 
