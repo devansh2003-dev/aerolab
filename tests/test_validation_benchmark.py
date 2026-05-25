@@ -1,54 +1,40 @@
-"""Industry-validation benchmark: solver vs published 2D bluff-body data.
+"""Regression guard for the Standard-preset corrected pipeline.
 
-Locks in the validation result so a future refactor can't silently degrade
-solver accuracy without CI screaming. Each case here corresponds to a row
-in VALIDATION.md.
+What this file IS: a CI-fast regression guard. It runs the Standard
+preset (B = 0.35), applies the fitted Allen-Vincenti / West-Apelt
+correction, and asserts the corrected estimate still lands inside the
+documented bands. If a future refactor breaks the correction pipeline
+or shifts raw Cd, this gate trips.
 
-Methodology
------------
-For each (shape, Re) case:
+What this file is NOT: the validation claim. The 2026-05-26 senior CFD
+review made clear that at B = 0.35 the Allen-Vincenti correction is a
+2.6 x rescale fitted (K = 1.10) to recover Williamson -- so a small
+corrected error here is a property of the correction at this blockage,
+not of the solver. The actual validation claim lives in VALIDATION.md
+section 3.2, is anchored to the low-blockage Validation preset
+(B = 5 %, near-no-op correction), and is enforced by
+tests/test_doc_validation_consistency.py against
+data/validation/results_lowblockage.json. THIS file is here to make
+sure the corrected pipeline doesn't silently drift -- not to validate
+the solver.
 
-  1. Run the solver in its default Standard configuration
-     (320 x 80 grid, body D = 28 cells -> blockage B = 0.35).
-  2. Apply the Allen-Vincenti / Pope-Harper 2D-bluff-body blockage
-     correction to Cd, and the West-Apelt 1982 channel correction to St:
-        Cd_corrected = Cd_raw * (1 - K * B)^2
-        St_corrected = St_raw / (1 + 2 * B + B^2)
-     where B = D/H is the lateral blockage ratio (= 0.35 on Standard)
-     and K is a shape constant (1.10 for cylinder, 1.00 for square),
-     fitted within the Barlow-Rae-Pope literature range [0.5, 1.5] to
-     recover free-stream Cd. NOTE: at B = 0.35 these formulae are an
-     order of magnitude outside their derivation regime (small-blockage
-     wind tunnels at a few percent); the corrected numbers are best
-     read as "blockage-corrected estimate of free-stream Cd", not a
-     direct measurement. See VALIDATION.md sections 2.3 and 4 for the
-     full honest discussion.
-  3. Compare corrected estimate to published free-stream reference:
-        Cylinder: Williamson 1996 ARFM, Norberg 1994 JFM
-        Square:   Okajima 1982 JFM, Sohankar 1998 IJNMF
+Bands carried over from the previous post-hoc fits (cylinder Cd
++/- 15 %, square Cd +/- 25 %, cylinder St +/- 35 %, square St
+ungated). Those bands were drawn around the maximum measured errors
+in the Standard-preset sweep, so this gate is close to tautological
+when read as "validation" but is still useful as "did anything change
+since the last measurement?". The headline validation tolerance bands
+(literature-derived, scoped to Re <= 200) are in VALIDATION.md
+section 2.4.
+
+Methodology (unchanged from previous rev):
+  1. Run the solver at Standard (320 x 80, D = 28 -> B = 0.35).
+  2. Apply Cd_corrected = Cd_raw * (1 - K * B)^2 and
+            St_corrected = St_raw / (1 + 2 * B + B^2).
+  3. Compare against Williamson 1996 (cylinder) / Okajima 1982 (square).
   4. Pass if abs(error) <= tolerance.
 
-Per-shape tolerance bands (from the documented spread in the local
-14-case validation sweep):
-    Cylinder Cd:  +/- 15 %   (K = 1.10 recovers Williamson within
-                              median 4.3 % / max 11.6 %)
-    Square Cd:    +/- 25 %   (K = 1.00 recovers Okajima within
-                              median 5.4 % / max 21.8 %; corner-shed
-                              channel coupling widens the spread)
-    Cylinder St:  +/- 35 %   (West-Apelt under-corrects; max measured
-                              error 23.4 % at n_frames=200)
-    Square St:    not gated  (channel-resonance shedding at B = 0.35
-                              is structurally not recoverable by any
-                              single-formula correction -- see
-                              VALIDATION.md section 4.1)
-
-These are NOT the bands you'd accept from a 3D Fluent / OpenFOAM run.
-They ARE the bands an educational 2D LBM at this resolution + blockage
-can support. Documented at length in VALIDATION.md.
-
-Runtime: each case takes ~50 s at n_frames=300 (the level our
-validate_solver.py docstring documents as above the FFT noise floor).
-CI uses the same n_frames=300 so the gate matches the headline numbers.
+Runtime: each case ~50 s at n_frames=300 (FFT noise-floor minimum).
 """
 from __future__ import annotations
 

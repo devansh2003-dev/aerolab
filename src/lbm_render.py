@@ -136,6 +136,25 @@ RESOLUTION_PRESETS = {
         n_frames=300,
         gif_palette=96,
     ),
+    # Resolved preset: D = 40 (twice Validation), B = 10 % (still well
+    # below the 35 % Standard preset). Addresses the senior-CFD-reviewer
+    # critique (2026-05-26) that the existing Validation preset is
+    # confounded -- D=20 is below the Mei-Luo-Shyy "D >= 40 for free-
+    # stream-quality Cd" guideline, so the +22 to +37 % high-Re Cd
+    # error at low blockage cannot be cleanly attributed to physics vs
+    # grid. This preset disentangles them: at D=40, B=10 % BOTH the
+    # correction and the staircase voxelisation are reduced, so the
+    # residual Cd error is the solver's intrinsic accuracy. Offline-only
+    # (~ 18-30 min per case), gated to scripts/validate_solver.py via
+    # --resolved. Like Validation, hidden from the UI.
+    "Resolved (1200 x 400)": dict(
+        Nx=1200, Ny=400, body_x=200, cy=200,
+        cylinder_D=40, square_side=40,
+        ellipse_a=48, ellipse_b=24, chord=80,
+        custom_extent=80,
+        n_frames=300,
+        gif_palette=96,
+    ),
     # Body sizes were bumped (~80 % bigger) in the prior release so each
     # shape fills the channel visibly. To keep the wake from running off
     # the right edge, Nx was then extended: Standard 240 -> 320 (wake

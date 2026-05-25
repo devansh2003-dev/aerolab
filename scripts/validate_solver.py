@@ -108,6 +108,7 @@ SQUARE_FREESTREAM = {
 STANDARD_BLOCKAGE   = 28.0 / 80.0
 DETAILED_BLOCKAGE   = 80.0 / 240.0
 VALIDATION_BLOCKAGE = 20.0 / 400.0
+RESOLVED_BLOCKAGE   = 40.0 / 400.0   # D=40 + low B: the "missing data point"
 
 # Allen-Vincenti shape constants. Fitted to recover Williamson / Okajima
 # free-stream Cd at Standard blockage; consistent with the Barlow-Rae-Pope
@@ -235,6 +236,8 @@ def run_case(
         B = DETAILED_BLOCKAGE
     elif "Validation" in resolution:
         B = VALIDATION_BLOCKAGE
+    elif "Resolved" in resolution:
+        B = RESOLVED_BLOCKAGE
     else:
         B = float(out["char_length"]) / float(out["lbm_ny"])
 
@@ -357,6 +360,22 @@ LOWBLOCKAGE_HEADLINE_SWEEP = [
     ("Square",   500,  0.0),
 ]
 
+# Resolved sweep: the "missing data point" the senior-CFD review
+# (2026-05-26) called out. D=40 AND B=10 % simultaneously
+# disentangle grid resolution from blockage. We scope to the
+# regimes the headline validation actually claims, i.e. the
+# laminar shedding band Re=100-200 for cylinder and Okajima's
+# broadside square 150-200. Above Re~200 the 2D approximation
+# itself breaks down (Williamson mode-A 3D instability at Re~190),
+# so we report but don't claim those.
+RESOLVED_SWEEP = [
+    ("Cylinder", 100, 0.0),
+    ("Cylinder", 200, 0.0),
+    ("Cylinder", 500, 0.0),   # included to show the 2D-limited tail
+    ("Square",   150, 0.0),
+    ("Square",   200, 0.0),
+]
+
 # Lookup map for --case <id>.
 CASE_BY_ID = {
     f"{shape.lower()[:3]}-re{re}": (shape, re, aoa)
@@ -458,6 +477,13 @@ def main() -> int:
     parser.add_argument("--headline", action="store_true",
                         help="Run the 9-case low-blockage headline sweep at "
                              "Validation (700 x 400). Used by VALIDATION.md.")
+    parser.add_argument("--resolved", action="store_true",
+                        help="Run the 5-case 'missing data point' sweep at "
+                             "Resolved (1200 x 400): D=40 AND B=10 % "
+                             "simultaneously. Used by VALIDATION.md to "
+                             "disentangle grid resolution from blockage in "
+                             "the headline accuracy claim. Offline-only "
+                             "(~ 90-150 min total).")
     parser.add_argument("--case",
                         help=f"Run a single case by id, e.g. cyl-re200. "
                              f"IDs: {sorted(CASE_BY_ID.keys())}")
@@ -469,11 +495,14 @@ def main() -> int:
             "Standard (320 x 80)",
             "Detailed (960 x 240)",
             "Validation (700 x 400)",
+            "Resolved (1200 x 400)",
         ],
         help="Grid preset. Default 'Standard (320 x 80)' is the same preset "
              "the interactive UI uses (B = 0.35, Allen-Vincenti corrected). "
              "'Validation (700 x 400)' is the low-blockage cross-check "
-             "(B = 0.05, see VALIDATION.md section 3.4 for the trade-off).",
+             "(B = 0.05). 'Resolved (1200 x 400)' adds D >= 40 alongside "
+             "low blockage to disentangle grid resolution from channel "
+             "confinement (see VALIDATION.md section 3.4 for the rationale).",
     )
     parser.add_argument(
         "--json", default=str(OUTPUT_DIR / "results.json"),
@@ -492,6 +521,13 @@ def main() -> int:
             print(f"Unknown case {args.case!r}. Available: {sorted(CASE_BY_ID)}")
             return 2
         sweep = [(shape, re, aoa)]
+    elif args.resolved:
+        sweep = RESOLVED_SWEEP
+        # Resolved sweep ONLY makes sense at the Resolved preset; force it
+        # so the user can't accidentally run the missing-data-point sweep
+        # at Standard / Detailed / Validation.
+        if args.resolution != "Resolved (1200 x 400)":
+            args.resolution = "Resolved (1200 x 400)"
     elif args.headline:
         sweep = LOWBLOCKAGE_HEADLINE_SWEEP
     elif args.quick:

@@ -18,19 +18,20 @@ CPU-only, free to use, mobile-friendly.
 [![tests](https://github.com/devansh2003-dev/aerolab/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/devansh2003-dev/aerolab/actions/workflows/tests.yml)
 [![benchmarks](https://img.shields.io/badge/benchmarks-Williamson%201996%20%2B%20Okajima%201982-success)](VALIDATION.md)
 
-The 2D D2Q9 MRT-LES solver has been benchmarked against published experimental data from peer-reviewed fluid-dynamics literature. The Standard interactive preset runs in a 35 %-blocked channel (chosen for solve speed + GIF size); raw drag is inflated ~2.5–3× by wall acceleration, and an Allen-Vincenti / West-Apelt blockage correction is applied before comparison to the free-stream reference. **The "validation" is therefore of the corrected estimate, not the raw solver output.** Full 14-case sweep (Re 100 – 1000):
+The 2D D2Q9 MRT-LES solver has been benchmarked against Williamson 1996 (cylinder) and Okajima 1982 (square). A senior CFD review (2026-05-26) re-scoped what we call "validated" to the regime where the comparison is honest -- i.e. low blockage, so the Allen-Vincenti correction is a near-no-op rather than a 2.6 × rescale that absorbs solver error. The current headline (low-blockage Validation preset, B = 5 %):
 
-| Quantity     | Median error | Max error | Tolerance band | Reference source                          |
-|--------------|--------------|-----------|----------------|-------------------------------------------|
-| Cylinder Cd  | **4.3 %**    | **11.6 %**| ± 15 %         | Williamson 1996 ARFM 28; Norberg 1994     |
-| Square Cd    | **8.9 %**    | **21.8 %**| ± 25 %         | Okajima 1982 JFM 123; Sohankar 1998       |
-| Cylinder St  | **15.2 %**   | **23.4 %**| ± 35 % †       | Williamson 1996                           |
+| Quantity     | Re band       | Median error | Max error | Independent reference                    |
+|--------------|---------------|--------------|-----------|------------------------------------------|
+| Cylinder Cd  | 100 – 200     | **8.0 %**    | **13.8 %**| Williamson 1996 ARFM 28                  |
+| Square Cd    | 150 – 200     | **2.3 %**    | **2.5 %** | Okajima 1982 JFM 123; Sohankar 1998      |
 
-† **Cylinder St is qualitative, not parallel-quality.** Vortex shedding is present in the right ballpark — the dominant FFT peak is within ~15–25 % of Williamson 1996 across Re = 100 – 1000. At 35 % blockage the confined-channel shedding mode flattens the raw St(Re) curve far more than any single-formula correction (West-Apelt 1982 applied here) can recover, so we report it as a sanity check, not a validation row on a par with the Cd numbers. Square St is **not** quoted at all for the same reason. See [VALIDATION.md §4.1](VALIDATION.md) for the full caveat.
+Re = 200 is the Williamson mode-A 3D-instability threshold -- above it a 2D solver is structurally a different problem, not "the same problem at higher Re", so the band boundary is set by physics. Above Re = 200 we report numbers without claiming them: at low blockage the cylinder Cd error rises to +22 % (Re = 300) and +37 % (Re = 1000), which the 2D-vs-3D + grid-resolution combination explains and which a 3D solver would not show. Strouhal is reported as a qualitative match across the full Re range (raw FFT peak in the published ballpark) but **not** as a percent-error result -- the FFT bin width at our record length is wide enough that a percent-error figure on a near-flat reference is coincidence, not measurement. See [VALIDATION.md §3.4](VALIDATION.md) for the detail.
 
-Mass conservation is at **machine precision** (drift ≈ 3 × 10⁻¹³ over 5000 steps in a closed box) and **0.84 %** of throughflow in the open channel — this 0.84 % is the documented Zou-He tradeoff (prescribed velocity OR exact mass conservation, not both), not a "leak" to be hidden. Continuous validation runs on every commit via `tests/test_validation_benchmark.py`.
+The Standard interactive preset (35 % blockage) is the user-facing convenience; its corrected Cd numbers look excellent (4.3 % cyl / 8.9 % sq median across Re 100 – 1000) because the 2.6 × Allen-Vincenti rescale absorbs both blockage and any other systematic the solver carries. We keep those numbers in the doc for transparency, but a senior reader should read them as a property of the correction, not of the solver -- the validation claim is anchored to the low-blockage sweep above. See [VALIDATION.md §3.5](VALIDATION.md).
 
-See [VALIDATION.md](VALIDATION.md) for full methodology, results table, limitations, and 14 academic citations.
+Mass conservation: **machine precision** in a closed box (drift ≈ 3 × 10⁻¹³ over 5000 steps), **0.84 %** of throughflow in the open channel (the documented Zou-He BC tradeoff, not a leak). Continuous validation runs on every push via `tests/test_validation_benchmark.py`.
+
+See [VALIDATION.md](VALIDATION.md) for the full methodology, the retraction of the previous "channel-resonance" Strouhal story, the LES-bias-at-low-Re note, the in-progress "resolved" run (D = 40, B = 10 %) that would widen the validated band, and 14 academic citations.
 
 ## Performance
 

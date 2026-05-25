@@ -1,19 +1,27 @@
 """Single-source-of-truth gate for headline validation numbers.
 
-Validation numbers appear in three places:
-  * data/validation/results.json -- machine-readable, authored by
-    `scripts/validate_solver.py`. This is the source of truth.
-  * README.md headline table
-  * VALIDATION.md tolerance + per-case tables
+The headline validation moved from the Standard preset (B = 0.35,
+2.6 x Allen-Vincenti rescale) to the low-blockage Validation preset
+(B = 0.05, near-no-op correction) after the 2026-05-26 senior CFD
+review. The reviewer pointed out that a fitted correction at the
+Standard size absorbs solver error along with the blockage, so the
+small corrected error there is a property of the correction, not of
+the solver. The new headline is anchored to results_lowblockage.json,
+scoped to the laminar-shedding band where 2D physics is still a
+faithful representation (Cylinder Re = 100 - 200, Square Re = 150 -
+200, both below the Williamson mode-A 3D transition at Re ~ 190).
 
-This test recomputes the headline aggregate stats (median / max abs
-percent error per shape) from results.json and asserts that they
-match the numbers quoted in README and VALIDATION. If they drift,
-the test fails with the exact substitution needed -- so re-running
-the validation sweep automatically gates README freshness.
+This gate prevents drift between three sources of truth:
 
-External reviewer flagged this on 2026-05-24 as the highest-leverage
-fix: prevents future "stale headline numbers" drift permanently.
+  * data/validation/results_lowblockage.json -- the headline source
+    of truth (low-blockage Validation preset).
+  * data/validation/results.json -- the Standard preset full sweep
+    (kept as the transparency table in VALIDATION.md section 3.5).
+  * README.md + VALIDATION.md headline tables and section 3.5
+    transparency table.
+
+If any of those drift, the relevant test fails with the exact
+substitution needed.
 """
 from __future__ import annotations
 
@@ -26,195 +34,196 @@ from statistics import median
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-RESULTS_JSON = ROOT / "data" / "validation" / "results.json"
-README = ROOT / "README.md"
+RESULTS_JSON            = ROOT / "data" / "validation" / "results.json"
+RESULTS_LOWBLOCKAGE_JSON = ROOT / "data" / "validation" / "results_lowblockage.json"
+README     = ROOT / "README.md"
 VALIDATION = ROOT / "VALIDATION.md"
 
 
-# Documented validated-band cutoffs (VALIDATION.md §3.3).
-# Cases below these Re values are at the shedding-onset boundary where
-# the Allen-Vincenti correction over-corrects (wake still attached or
-# weakly shedding) -- they appear in the per-case table but are
-# excluded from the headline aggregate so the median isn't dragged by
-# an out-of-regime correction artifact.
-VALIDATED_BAND_RE_MIN = {"Cylinder": 100, "Square": 150}
+# Validated band per shape, set by physics (Williamson mode-A 3D
+# transition at Re ~ 190) and by literature (Mei-Luo-Shyy 1999 D >= 40
+# guideline, which we approach but don't meet at D = 20). See
+# VALIDATION.md section 2.4 for the full justification.
+HEADLINE_BAND = {
+    "Cylinder": (100, 200),
+    "Square":   (150, 200),
+}
+
+# Standard-preset transparency block keeps the previously-cited full-Re
+# bands -- they ARE the data, just demoted from "validation result" to
+# "what the correction can fit at this blockage".
+TRANSPARENCY_BAND = {
+    "Cylinder": (100, 1000),
+    "Square":   (150, 500),
+}
 
 
-def _abs_errs(results, shape, key):
-    """Sorted abs(percent error) list for one shape + metric, restricted
-    to the documented validated band per shape."""
-    re_min = VALIDATED_BAND_RE_MIN[shape]
+def _abs_errs(results, shape, key, re_min, re_max):
+    """Sorted abs(percent error) list, restricted to [re_min, re_max]."""
     return sorted(
         abs(r[key]) for r in results
         if r["shape"] == shape
-        and r["re"] >= re_min
+        and re_min <= r["re"] <= re_max
         and r.get(key) is not None
     )
 
 
 def _stats(errs):
-    """Return (median, max) of abs error list, both as floats."""
     if not errs:
         return float("nan"), float("nan")
     return float(median(errs)), float(max(errs))
 
 
 def _round1(x):
-    """Match the 1-decimal display format used in README / VALIDATION."""
     return round(x, 1)
 
 
-def _load_stats():
-    """Recompute headline aggregates from results.json."""
-    data = json.loads(RESULTS_JSON.read_text(encoding="utf-8"))
+def _aggregate(json_path, band):
+    """Recompute (median, max) Cd error per shape from a results.json."""
+    if not json_path.exists():
+        return None
+    data = json.loads(json_path.read_text(encoding="utf-8"))
     results = data["results"]
-    cyl_cd_med, cyl_cd_max = _stats(_abs_errs(results, "Cylinder", "cd_error_pct"))
-    sqr_cd_med, sqr_cd_max = _stats(_abs_errs(results, "Square", "cd_error_pct"))
-    cyl_st_med, cyl_st_max = _stats(_abs_errs(results, "Cylinder", "st_error_pct"))
-    return {
-        "cylinder_cd_median": _round1(cyl_cd_med),
-        "cylinder_cd_max":    _round1(cyl_cd_max),
-        "square_cd_median":   _round1(sqr_cd_med),
-        "square_cd_max":      _round1(sqr_cd_max),
-        "cylinder_st_median": _round1(cyl_st_med),
-        "cylinder_st_max":    _round1(cyl_st_max),
-    }
+    out = {}
+    for shape, (re_min, re_max) in band.items():
+        med, mx = _stats(_abs_errs(results, shape, "cd_error_pct", re_min, re_max))
+        out[f"{shape.lower()}_cd_median"] = _round1(med)
+        out[f"{shape.lower()}_cd_max"]    = _round1(mx)
+    return out
 
 
-# Headline row regex: matches the markdown table cells in README /
-# VALIDATION. Captures (median, max) as floats. The label cell may
-# carry a trailing qualifier (e.g. `| Cylinder St (Re = 100 - 1000) |`
-# in VALIDATION.md, vs the bare `| Cylinder St |` in README) -- the
-# `[^|]*` after the label absorbs that without consuming the cell
-# separator. The tolerance band cell is allowed but not consumed --
-# it lives further along the row and is audited separately via the
-# tolerance-band tests in tests/test_validation_benchmark.py.
+# Headline row regex: matches a markdown table cell labelled e.g.
+# "Cylinder Cd", optionally followed by qualifier cells, with the
+# next two NUMERIC cells captured as (median, max). Handles both:
+#
+#   README/old format:  | Cylinder Cd | **8.0 %** | **13.8 %** | ... |
+#   new VALIDATION:     | Cylinder Cd (laminar shedding) | 100 - 200 | **8.0 %** | **13.8 %** | ... |
+#
+# The "[^%|\n]*\|" cell-skip absorbs any non-numeric intermediate
+# cells (Re band, blank, etc.) without consuming the median cell
+# (which contains the `%` character).
 _ROW = re.compile(
-    r"\|\s*{label}\s*[^|]*\|"             # row label (+ optional qualifier)
+    r"\|\s*{label}\s*[^|]*\|"             # label cell  (incl. any qualifier)
+    r"(?:\s*[^%|\n]*\|)*"                 # zero or more non-numeric cells
     r"\s*\**\s*(\d+\.\d+)\s*%\**\s*\|"    # median %
     r"\s*\**\s*(\d+\.\d+)\s*%\**\s*\|",   # max %
 )
 
 
 def _find_row(text, label):
-    """Return (median, max) declared in a markdown table row labelled
-    ``label`` (e.g. 'Cylinder Cd'). Raises AssertionError if not
-    found -- means the headline table is missing or mis-formatted."""
     rx = re.compile(_ROW.pattern.format(label=re.escape(label)))
     m = rx.search(text)
     assert m, (
         f"Could not parse {label!r} headline row. Expected a markdown row "
-        f"like `| {label} | **X.Y %** | **Z.W %** |...`."
+        f"like `| {label} | ... | **X.Y %** | **Z.W %** |`."
     )
     return float(m.group(1)), float(m.group(2))
 
 
 def _assert_match(declared, computed, where, label, kind, tol=0.2):
-    """Allow 0.2 pp slack for rounding (results.json holds full precision,
-    README shows one decimal -- so 11.55 -> 11.6 vs 11.54 -> 11.5 should
-    not trip an error)."""
     assert abs(declared - computed) <= tol, (
-        f"{where} declares {label} {kind} = {declared} %, but "
-        f"data/validation/results.json computes {computed} %. "
-        f"Re-run `python scripts/validate_solver.py` and update "
+        f"{where} declares {label} {kind} = {declared} %, but the "
+        f"underlying results.json computes {computed} %. Re-run "
+        f"`python scripts/validate_solver.py [--headline]` and update "
         f"{where} to match, or vice versa."
     )
 
 
-def test_results_json_exists():
-    """The headline JSON must exist -- everything below depends on it."""
-    assert RESULTS_JSON.exists(), (
-        f"{RESULTS_JSON.relative_to(ROOT)} not found. Re-run "
-        f"`python scripts/validate_solver.py` to regenerate it."
+# ---------------------------------------------------------------------------
+# Headline gates: low-blockage data drives the headline tables
+# in README and VALIDATION.md.
+# ---------------------------------------------------------------------------
+
+def test_lowblockage_results_json_exists():
+    assert RESULTS_LOWBLOCKAGE_JSON.exists(), (
+        f"{RESULTS_LOWBLOCKAGE_JSON.relative_to(ROOT)} not found. Re-run "
+        f"`python scripts/validate_solver.py --headline` to regenerate it."
     )
 
 
-def test_readme_cylinder_cd_matches_results_json():
-    stats = _load_stats()
+def test_readme_headline_cylinder_cd_matches_lowblockage():
+    stats = _aggregate(RESULTS_LOWBLOCKAGE_JSON, HEADLINE_BAND)
+    assert stats is not None
     declared = _find_row(README.read_text(encoding="utf-8"), "Cylinder Cd")
     _assert_match(declared[0], stats["cylinder_cd_median"], "README.md",
-                  "Cylinder Cd", "median")
+                  "Cylinder Cd (headline)", "median")
     _assert_match(declared[1], stats["cylinder_cd_max"], "README.md",
-                  "Cylinder Cd", "max")
+                  "Cylinder Cd (headline)", "max")
 
 
-def test_readme_square_cd_matches_results_json():
-    stats = _load_stats()
+def test_readme_headline_square_cd_matches_lowblockage():
+    stats = _aggregate(RESULTS_LOWBLOCKAGE_JSON, HEADLINE_BAND)
+    assert stats is not None
     declared = _find_row(README.read_text(encoding="utf-8"), "Square Cd")
     _assert_match(declared[0], stats["square_cd_median"], "README.md",
-                  "Square Cd", "median")
+                  "Square Cd (headline)", "median")
     _assert_match(declared[1], stats["square_cd_max"], "README.md",
-                  "Square Cd", "max")
+                  "Square Cd (headline)", "max")
 
 
-def test_readme_cylinder_st_matches_results_json():
-    stats = _load_stats()
-    declared = _find_row(README.read_text(encoding="utf-8"), "Cylinder St")
-    _assert_match(declared[0], stats["cylinder_st_median"], "README.md",
-                  "Cylinder St", "median")
-    _assert_match(declared[1], stats["cylinder_st_max"], "README.md",
-                  "Cylinder St", "max")
-
-
-def test_validation_tolerance_table_matches_results_json():
-    """VALIDATION.md §2.4 quotes the SAME max-error figures as part of
-    its tolerance-band justification. They must match results.json too."""
-    stats = _load_stats()
-    text = VALIDATION.read_text(encoding="utf-8")
-
-    # Each row's justification cell contains the "max measured ..." figure.
-    # Rows are single-line so .*? is bounded; no need for DOTALL.
-    for label, key in (
-        ("Cylinder Cd", "cylinder_cd_max"),
-        ("Square Cd",   "square_cd_max"),
-        ("Cylinder St", "cylinder_st_max"),
-    ):
-        m = re.search(
-            rf"{re.escape(label)}.*?max measured(?: error)?\s*(\d+\.\d+)\s*%",
-            text,
-        )
-        assert m, (
-            f"VALIDATION.md §2.4 {label} row missing 'max measured' figure. "
-            f"Expected something like 'max measured X.Y %'."
-        )
-        _assert_match(float(m.group(1)), stats[key], "VALIDATION.md",
-                      label, "max-measured")
-
-
-# ---------------------------------------------------------------------------
-# Headline-table gate for VALIDATION.md itself (added 2026-05-26).
-#
-# The original drift gate only parsed README's headline table + VALIDATION.md's
-# §2.4 "max measured" prose -- which left a blind spot exactly where the bug
-# bit us: VALIDATION.md's own top-of-file headline table (lines ~13-15) can
-# drift independently of both. Reviewer caught a self-contradicting VALIDATION
-# file (lines 14-15 said 5.4 % / 12.6 %; §3.3 said 8.9 % / 15.2 %; README
-# said 8.9 % / 15.2 %). These three tests close that blind spot by parsing
-# the VALIDATION.md headline rows the same way README's are parsed.
-# ---------------------------------------------------------------------------
-
-def test_validation_headline_cylinder_cd_matches_results_json():
-    stats = _load_stats()
+def test_validation_headline_cylinder_cd_matches_lowblockage():
+    stats = _aggregate(RESULTS_LOWBLOCKAGE_JSON, HEADLINE_BAND)
+    assert stats is not None
     declared = _find_row(VALIDATION.read_text(encoding="utf-8"), "Cylinder Cd")
     _assert_match(declared[0], stats["cylinder_cd_median"], "VALIDATION.md",
-                  "Cylinder Cd", "median")
+                  "Cylinder Cd (headline)", "median")
     _assert_match(declared[1], stats["cylinder_cd_max"], "VALIDATION.md",
-                  "Cylinder Cd", "max")
+                  "Cylinder Cd (headline)", "max")
 
 
-def test_validation_headline_square_cd_matches_results_json():
-    stats = _load_stats()
+def test_validation_headline_square_cd_matches_lowblockage():
+    stats = _aggregate(RESULTS_LOWBLOCKAGE_JSON, HEADLINE_BAND)
+    assert stats is not None
     declared = _find_row(VALIDATION.read_text(encoding="utf-8"), "Square Cd")
     _assert_match(declared[0], stats["square_cd_median"], "VALIDATION.md",
-                  "Square Cd", "median")
+                  "Square Cd (headline)", "median")
     _assert_match(declared[1], stats["square_cd_max"], "VALIDATION.md",
-                  "Square Cd", "max")
+                  "Square Cd (headline)", "max")
 
 
-def test_validation_headline_cylinder_st_matches_results_json():
-    stats = _load_stats()
-    declared = _find_row(VALIDATION.read_text(encoding="utf-8"), "Cylinder St")
-    _assert_match(declared[0], stats["cylinder_st_median"], "VALIDATION.md",
-                  "Cylinder St", "median")
-    _assert_match(declared[1], stats["cylinder_st_max"], "VALIDATION.md",
-                  "Cylinder St", "max")
+# ---------------------------------------------------------------------------
+# Transparency gate: VALIDATION.md section 3.5 quotes the Standard-preset
+# aggregate medians ("4.3 %", "8.9 %", etc.) in prose as a transparency
+# disclosure rather than as a headline validation. Those numbers must
+# still match results.json so the doc doesn't drift silently if the
+# Standard sweep is re-run.
+# ---------------------------------------------------------------------------
+
+def test_validation_sec35_standard_preset_matches_results_json():
+    stats = _aggregate(RESULTS_JSON, TRANSPARENCY_BAND)
+    if stats is None:
+        # results.json may not exist in a sparse checkout; skip rather
+        # than fail when the cause is missing input, not drift.
+        import pytest
+        pytest.skip(f"{RESULTS_JSON.relative_to(ROOT)} not present")
+
+    text = VALIDATION.read_text(encoding="utf-8")
+    # Section 3.5 prose: "median 4.3 % / max 11.6 % for cylinder Cd,
+    # median 8.9 % / max 21.8 % for square Cd".
+    m = re.search(
+        r"median\s+(\d+\.\d+)\s*%\s*/\s*max\s+(\d+\.\d+)\s*%\s*for\s+cylinder\s+Cd",
+        text, re.IGNORECASE,
+    )
+    assert m, (
+        "VALIDATION.md section 3.5 missing the standard-preset transparency "
+        "prose for cylinder Cd. Expected 'median X.Y % / max Z.W % for "
+        "cylinder Cd'."
+    )
+    _assert_match(float(m.group(1)), stats["cylinder_cd_median"],
+                  "VALIDATION.md section 3.5", "Cylinder Cd", "median")
+    _assert_match(float(m.group(2)), stats["cylinder_cd_max"],
+                  "VALIDATION.md section 3.5", "Cylinder Cd", "max")
+
+    m = re.search(
+        r"median\s+(\d+\.\d+)\s*%\s*/\s*max\s+(\d+\.\d+)\s*%\s*for\s+square\s+Cd",
+        text, re.IGNORECASE,
+    )
+    assert m, (
+        "VALIDATION.md section 3.5 missing the standard-preset transparency "
+        "prose for square Cd. Expected 'median X.Y % / max Z.W % for "
+        "square Cd'."
+    )
+    _assert_match(float(m.group(1)), stats["square_cd_median"],
+                  "VALIDATION.md section 3.5", "Square Cd", "median")
+    _assert_match(float(m.group(2)), stats["square_cd_max"],
+                  "VALIDATION.md section 3.5", "Square Cd", "max")
