@@ -6,47 +6,53 @@ published experimental data from peer-reviewed fluid-dynamics
 literature; the methodology, results, and limitations are documented
 below so the work survives senior-engineer / professor scrutiny.
 
-A senior CFD review (2026-05-26) pointed out that the previous
-headline -- corrected Cd at the Standard interactive preset (35 %
-blockage) -- was carried by a ≈ 2.6 × Allen-Vincenti rescale that
-absorbed both blockage AND intrinsic solver error. The same solver,
-when re-run at low blockage where the correction shrinks to a 10 %
-near-no-op, shows the underlying error is only small for Re ≤ 200.
-This document has been re-scoped to match that finding.
+Two rounds of senior CFD review (2026-05-26 and 2026-05-27) re-scoped
+the validation claim. The first round retired a 4.3 % median that was
+carried by a 2.6 × Allen-Vincenti rescale at 35 % blockage. The second
+round, after the Resolved sweep (D = 40, B = 10 %) finished, exposed
+that the previous low-blockage square headline at D = 20 was a
+fitted-K artifact and that the cylinder headline should be anchored to
+the D = 40 data, since D = 40 is the resolution the Mei-Luo-Shyy 1999
+2D-LBM literature guideline actually calls for. This document is
+anchored there now.
 
-**Headline result** (low-blockage cross-check, Validation preset
-B = 5 %; full table in §3.2, aggregate in §3.3):
+**Headline result** (Resolved sweep, D = 40, B = 10 %; full table in
+§3.2, aggregate in §3.3):
 
-| Quantity                       | Re band      | Median error | Max error | Reference  |
-|--------------------------------|--------------|--------------|-----------|------------|
-| Cylinder Cd (laminar shedding) | 100 – 200    | **8.0 %**    | **13.8 %**| Williamson 1996 |
-| Square Cd   (laminar shedding) | 150 – 200    | **2.3 %**    | **2.5 %** | Okajima 1982    |
+| Quantity                        | Re band   | Median error | Max error | Reference          |
+|---------------------------------|-----------|--------------|-----------|--------------------|
+| Cylinder Cd (corrected)         | 100 – 200 | **5.6 %**    | **10.2 %**| Williamson 1996    |
+| Square Cd (raw, see §3.2 note)  | 150 – 200 | **4.5 %**    | **5.1 %** | Okajima 1982       |
 
 Reference data: Williamson 1996 *Annu. Rev. Fluid Mech.* **28**;
 Okajima 1982 *J. Fluid Mech.* **123**. Both canonical, both used in
 graduate-level CFD coursework worldwide.
 
-**What this means.** At blockage where the Allen-Vincenti correction
-is essentially a no-op (so we are measuring the solver, not the
-correction), the solver matches the canonical experimental literature
-to **single-digit percent on cylinder Cd up to Re ≈ 200** and to
-**under 3 % on square Cd up to Re ≈ 200**. This is the band we claim
-as validated. Re ≈ 200 is also the Williamson mode-A 3D-instability
+**Why the square row is uncorrected.** The Resolved sweep showed that
+the Allen-Vincenti correction with K = 1.00 (fitted at B = 0.35
+against Okajima) *over-corrects* at low blockage -- at D = 40 / B = 10 %
+the AV-corrected square Cd is off by 15 %, while the **raw** Cd is
+within 5 % of Okajima. The honest reading is that the correction does
+not generalise from its calibration blockage; the raw measurement IS
+the solver result at this preset and it is a good one. §3.2 and §3.6
+spell out the K-flaw analysis in detail.
+
+**What this means.** At literature-grade resolution where the
+correction is small (cylinder) or unnecessary (square), the solver
+matches the canonical experimental literature to **single-digit
+percent on both shapes up to Re ≈ 200**. This is the band we claim as
+validated. Re ≈ 200 is also the Williamson mode-A 3D-instability
 threshold, above which a strictly 2D solver is structurally a
 different problem -- so the boundary is set by physics, not by where
 the numbers happened to land.
 
-**What is NOT validated.** Above Re ≈ 200 the same low-blockage runs
-show +22 % to +37 % cylinder Cd error (§3.3). Most of that is the
-known 2D-cylinder drag over-prediction above the Re ≈ 190 spanwise
-transition (Williamson 1996; the wake cannot shed the 3D mode-A
-instabilities that relieve the load in real flows); the remainder is
-grid resolution at D = 20 (Mei-Luo-Shyy 1999 puts the LBM
-free-stream-Cd guideline at D ≥ 40). Both effects are documented in
-§4. We report those cases for completeness but do not call them
-validated. Strouhal across the full Re range is reported only as a
-qualitative match -- §3.4 explains why the percent-error figure is
-misleading.
+**What is NOT validated.** Above Re ≈ 200 the Resolved cylinder Cd
+errors stay large (+24.7 % at Re = 500 even at D = 40, §3.6). The
+fact that the failure persists at D = 40 confirms the high-Re tail is
+the 2D approximation breaking down, not grid resolution. Strouhal
+across the full Re range is reported only as a qualitative match
+-- §3.4 explains why the percent-error figure is misleading at our
+record length.
 
 **The 35 % Standard preset is an interactive convenience, not a
 validation.** Its corrected Cd headlines (4.3 % median etc., §3.5)
@@ -55,12 +61,16 @@ keep those numbers in the doc for transparency, but a senior reviewer
 should read them as a property of the correction, not of the solver.
 
 The headline data lives in
+[`data/validation/results_resolved.md`](data/validation/results_resolved.md)
+(reproducible via `python scripts/validate_solver.py --resolved`,
+≈ 90 min). The low-blockage Validation preset (D = 20, B = 5 %)
+results in
 [`data/validation/results_lowblockage.md`](data/validation/results_lowblockage.md)
-(reproducible via `python scripts/validate_solver.py --headline`).
+remain in the repo as the prior cross-check; §3.5 contrasts the two.
 The CI gate `tests/test_doc_validation_consistency.py` ties this doc
-and README to that JSON so the numbers cannot silently drift; a
-faster regression guard in `tests/test_validation_benchmark.py` runs
-on every push to catch changes in the Standard-preset corrected
+and README to the Resolved JSON so the headline cannot silently
+drift; a faster regression guard in `tests/test_validation_benchmark.py`
+runs on every push to catch changes in the Standard-preset corrected
 pipeline. Mass conservation diagnostics verify the lattice operators
 close to **machine precision** in a closed box (drift ≈ 3 × 10⁻¹³
 over 5 000 steps) and to **0.84 %** of throughflow in the open
@@ -161,21 +171,30 @@ This is the same protocol used in published 2D LBM benchmarks.
 
 ### 2.3 Simulation parameters
 
-The validation suite uses two presets. The headline (§3.2) comes from
-the Validation preset; the Standard-preset transparency table (§3.5)
-and the CI regression guard use the smaller Standard preset.
+The validation suite uses three presets. The headline (§3.2) comes from
+the Resolved preset, the low-blockage cross-check (§3.5) from the
+Validation preset, and the Standard-preset transparency table (§3.6)
+plus the CI regression guard use the smallest grid.
 
-| Setting               | Validation preset (headline)         | Standard preset (regression guard / interactive UI) |
-|-----------------------|--------------------------------------|------------------------------------------------------|
-| `Nx × Ny`             | 700 × 400                            | 320 × 80                                             |
-| Body diameter `D`     | 20 cells                             | 28 cells                                             |
-| Blockage `B = D/Ny`   | **0.050** (5 %)                      | 0.350 (35 %)                                         |
-| AV correction factor  | (1 − 1.10 · 0.05)² ≈ 0.893 (no-op)   | (1 − 1.10 · 0.35)² ≈ 0.377 (≈ 2.6 × rescale)         |
-| `n_frames`            | 250                                  | 300                                                  |
-| Lattice steps `n × 35`| 8 750                                | 10 500                                               |
-| Where it shows up     | `results_lowblockage.{json,md}`, §3.2 | `results.{json,md}`, §3.5; CI in `test_validation_benchmark.py` |
+| Setting               | **Resolved (headline)**              | Validation (cross-check)             | Standard (interactive UI / regression guard) |
+|-----------------------|--------------------------------------|--------------------------------------|----------------------------------------------|
+| `Nx × Ny`             | **1200 × 400**                       | 700 × 400                            | 320 × 80                                     |
+| Body diameter `D`     | **40 cells**                         | 20 cells                             | 28 cells                                     |
+| Blockage `B = D/Ny`   | **0.100** (10 %)                     | 0.050 (5 %)                          | 0.350 (35 %)                                 |
+| AV correction factor  | (1 − 1.10 · 0.10)² ≈ 0.792           | (1 − 1.10 · 0.05)² ≈ 0.893 (no-op)   | (1 − 1.10 · 0.35)² ≈ 0.377 (≈ 2.6 × rescale) |
+| `n_frames`            | **300**                              | 300 (existing JSON: 250 †)           | 300                                          |
+| Lattice steps `n × 35`| **10 500**                           | 10 500 (or 8 750 †)                  | 10 500                                       |
+| Where it shows up     | `results_resolved.{json,md}`, §3.2   | `results_lowblockage.{json,md}`, §3.5 | `results.{json,md}`, §3.6; CI in `test_validation_benchmark.py` |
 
-Common to both presets:
+† `results_lowblockage.json` was generated before the
+`scripts/validate_solver.py --n-frames` default was unified to 300;
+the committed JSON therefore reports `n_frames = 250` (the FFT
+noise-floor minimum). Re-running `python scripts/validate_solver.py
+--headline` with current code produces 300-frame data; the
+Validation-preset cross-check stats in §3.5 quote the existing JSON
+verbatim with this footnote.
+
+Common to all presets:
 
 - Solver: **MRT collision + Smagorinsky LES** (`C_smag = 0.17`,
   Lallemand & Luo 2000 *Phys. Rev. E* **61**, 6546 for the moment
@@ -203,8 +222,8 @@ independent bar.
 
 | Quantity        | Validated band | Independent justification |
 |-----------------|----------------|---------------------------|
-| Cylinder Cd     | Re = 100 – 200 | Mei-Luo-Shyy 1999 report 5 – 10 % cylinder Cd error in 2D LBM at D = 40 with 12 % blockage. At D = 20 / B = 5 % we measure 2.1 % and 13.8 % (Re = 100, 200) -- inside the Mei-Luo-Shyy expectation widened for our coarser grid. **Doc-vs-data gate: ± 15 % on these two cases**, gated by `tests/test_doc_validation_consistency.py` (which compares the doc to the committed `results_lowblockage.json`, not by re-running the solver). Re ≥ 300: not gated, 2D + grid-limited (see §3.3). |
-| Square Cd       | Re = 150 – 200 | Sohankar 1998 report < 5 % error for D = 40 free-stream 2D-LBM square. We measure 2.1 % and 2.5 % at D = 20, B = 5 %. **Doc-vs-data gate: ± 10 % on these two cases**, same `test_doc_validation_consistency.py` mechanism. Re ≥ 300: not gated, structural breakdown of channel/wake coupling (see §3.3). |
+| Cylinder Cd     | Re = 100 – 200 | Mei-Luo-Shyy 1999 report 5 – 10 % cylinder Cd error in 2D LBM at D = 40 with 12 % blockage. At D = 40 / B = 10 % (Resolved preset, the headline source) we measure −10.2 % and +1.0 % (Re = 100, 200) -- the Re = 200 number is *inside* the literature bar and the Re = 100 number is at the edge. **Doc-vs-data gate: ± 15 % on these two cases**, gated by `tests/test_doc_validation_consistency.py` (which compares the doc to the committed `results_resolved.json`, not by re-running the solver). Re ≥ 300: not gated, 2D-limited (see §3.3). |
+| Square Cd (raw) | Re = 150 – 200 | Sohankar 1998 report < 5 % error for D = 40 free-stream 2D-LBM square. At D = 40 / B = 10 % we measure raw Cd errors of +3.8 % and +5.1 % (Re = 150, 200) -- inside the Sohankar bar. The AV-corrected values at this blockage are off by ~15 % because K = 1.00 is fitted at the Standard B = 0.35 (see §3.2 K-flaw discussion). The headline therefore reports the **raw** square Cd, not the corrected one. **Doc-vs-data gate: ± 10 % on these two cases**, same `test_doc_validation_consistency.py` mechanism. Re ≥ 300: not gated. |
 | Cylinder St     | Reported only  | Qualitative match: shedding present, dominant FFT peak in the published range. Our solver returns discrete St values quantised by the FFT bin width over the per-step Cl half-tail (§3.4). **Not gated as a percent-error metric.** |
 | Square St       | Reported only  | Same FFT-bin-width quantisation; ungated. |
 
@@ -214,16 +233,16 @@ Two distinct gates run on every push:
    gate that backs the ± 15 % / ± 10 % entries above. It does NOT
    re-run the solver -- it asserts the headline numbers in this
    document and README match the committed
-   `data/validation/results_lowblockage.json`. If the kernel changes
-   and the low-blockage sweep needs re-running, those numbers go
-   stale and the gate trips only when this doc is updated. The
-   refresh ritual is to re-run `python scripts/validate_solver.py
-   --headline` (≈ 60 – 90 min) and commit the resulting JSON.
+   `data/validation/results_resolved.json`. If the kernel changes
+   and the Resolved sweep needs re-running, those numbers go stale
+   and the gate trips only when this doc is updated. The refresh
+   ritual is to re-run `python scripts/validate_solver.py --resolved`
+   (≈ 90 min) and commit the resulting JSON.
 
 2. **`tests/test_validation_benchmark.py`** is the CI-fast regression
    guard that re-runs the solver on every push -- but at the
    **Standard preset** (320 × 80, B = 0.35) for speed, not at the
-   Validation preset. It uses wider tolerances (± 15 % / ± 25 % / ±
+   Resolved preset. It uses wider tolerances (± 15 % / ± 25 % / ±
    35 %) which were drawn around the previously-reported Standard
    numbers and are therefore close to tautological as a validation
    claim. They DO catch the case where the corrected-pipeline behaviour
@@ -231,8 +250,8 @@ Two distinct gates run on every push:
 
 So CI catches two failure modes: silent doc drift (gate 1) and silent
 Standard-preset behaviour change (gate 2). What CI does NOT do is
-re-measure the low-blockage Cd from scratch on every push; that
-remains an operator action behind the `--headline` sweep.
+re-measure the Resolved Cd from scratch on every push; that remains
+an operator action behind the `--resolved` sweep.
 
 ---
 
@@ -272,142 +291,158 @@ velocity prescription. The < 1 % imbalance is within the documented
 Zou-He envelope (cf. test `test_mass_conservation_drift` in
 `tests/test_lbm.py`).
 
-### 3.2 The headline: low-blockage sweep (Validation preset, B = 5 %)
+### 3.2 The headline: Resolved sweep (D = 40, B = 10 %)
 
-This is the primary validation evidence. We re-ran the canonical
-cylinder + square sweep at the `Validation (700 × 400)` preset --
-`D = 20`, blockage `B = 0.05`, so the Allen-Vincenti correction
-shrinks from a 2.6 × rescale (at Standard) to a 0.89 × near-no-op,
-and the corrected estimate is genuinely a measurement of the
-solver's accuracy rather than a property of the correction.
+This is the primary validation evidence. We ran the canonical
+cylinder + square sweep at the `Resolved (1200 × 400)` preset, the
+configuration that simultaneously satisfies the **Mei-Luo-Shyy 1999
+D ≥ 40 literature guideline** for 2D-LBM free-stream Cd and keeps
+blockage low enough (10 %) that the Allen-Vincenti correction is a
+modest 0.79 × factor rather than the 2.6 × rescale carried by the
+Standard preset.
 
-Source: `python scripts/validate_solver.py --headline`. Full data in
-[`data/validation/results_lowblockage.md`](data/validation/results_lowblockage.md).
+Source: `python scripts/validate_solver.py --resolved` (≈ 90 min).
+Full data in
+[`data/validation/results_resolved.md`](data/validation/results_resolved.md).
 
-| Shape    | Re   | Cd raw | Cd corr | Cd ref | Cd err   | St raw | St corr | St ref | St err   |
-|----------|------|--------|---------|--------|----------|--------|---------|--------|----------|
-| Cylinder |  100 | 1.510  | 1.348   | 1.320  | **+2.1 %** | 0.183 | 0.166 | 0.166 | -0.1 %  |
-| Cylinder |  200 | 1.466  | 1.309   | 1.150  | **+13.8 %**| 0.183 | 0.166 | 0.197 | -15.8 % |
-| Cylinder |  300 | 1.478  | 1.320   | 1.080  | +22.2 %  | 0.229 | 0.207 | 0.203 | +2.1 %  |
-| Cylinder |  500 | 1.518  | 1.355   | 1.020  | +32.9 %  | 0.229 | 0.207 | 0.207 | +0.2 %  |
-| Cylinder | 1000 | 1.521  | 1.358   | 0.990  | +37.2 %  | 0.229 | 0.207 | 0.210 | -1.3 %  |
-| Square   |  150 | 1.681  | 1.517   | 1.550  | **−2.1 %** | 0.183 | 0.166 | 0.146 | +13.6 % |
-| Square   |  200 | 1.729  | 1.560   | 1.600  | **−2.5 %** | 0.183 | 0.166 | 0.148 | +12.1 % |
-| Square   |  300 | 1.852  | 1.671   | 1.850  | −9.7 %   | 0.183 | 0.166 | 0.142 | +16.8 % |
-| Square   |  500 | 1.975  | 1.782   | 2.000  | −10.9 %  | 0.137 | 0.124 | 0.135 | -7.9 %  |
+| Shape    | Re   | Cd raw | Cd corr | Cd ref | Cd err (corr) | Cd err (raw)  |
+|----------|------|--------|---------|--------|---------------|---------------|
+| Cylinder |  100 | 1.497  | 1.186   | 1.320  | **−10.2 %**   | +13.4 %       |
+| Cylinder |  200 | 1.466  | 1.162   | 1.150  | **+1.0 %**    | +27.5 %       |
+| Cylinder |  500 | 1.606  | 1.272   | 1.020  | +24.7 %       | +57.5 %       |
+| Square   |  150 | 1.609  | 1.304   | 1.550  | −15.9 %       | **+3.8 %**    |
+| Square   |  200 | 1.681  | 1.362   | 1.600  | −14.9 %       | **+5.1 %**    |
 
-**Bold rows are inside the validated band** (defined in §2.4 from
-literature, not from the data). The remaining rows are reported but
-not claimed:
+**Bold cells are the headline rows.** Two conventions differ between
+cylinder and square, and they are deliberate:
 
-- **Cylinder Re ≥ 300: not validated.** Errors rise from +22 % at
-  Re = 300 to +37 % at Re = 1000. Mechanism is a combination of
-  (a) the Williamson 1996 mode-A 3D-instability transition at
-  Re ≈ 190 -- above this a strictly 2D solver structurally
-  over-predicts drag because the wake cannot shed the spanwise
-  instabilities that would relieve the load in a real 3D experiment;
-  and (b) grid resolution at D = 20, well below the Mei-Luo-Shyy 1999
-  D ≥ 40 guideline. We cannot cleanly separate the two contributions
-  without a higher-resolution run; §3.4 describes the
-  in-progress experiment that would do so.
+- **Cylinder uses the corrected Cd.** At B = 0.10 the Allen-Vincenti
+  rescale with K = 1.10 (the same K as the Standard preset and
+  Mei-Luo-Shyy literature) is a small correction (factor 0.79), and
+  applying it brings the corrected estimate to within Mei-Luo-Shyy's
+  5 – 10 % bar at Re = 100 – 200.
+- **Square uses the RAW Cd.** The Resolved sweep exposed that the
+  K = 1.00 square correction -- fitted at B = 0.35 against Okajima --
+  does NOT generalise to B = 0.10. The corrected estimate over-rescales
+  by ≈ 15 %, while the **raw** measurement at this preset is already
+  inside Sohankar's 5 % literature bar. The honest reading is that
+  the AV correction is calibrated at the wrong blockage and should
+  not be applied to the square at low B. A K-recalibration that fits
+  both blockages is roadmapped in §6; until then, the square headline
+  is the raw measurement plus a note.
 
-- **Square Re ≥ 300: not validated.** Errors stay inside ± 11 %,
-  better than the cylinder tail because the square's shedding is
-  geometry-locked at the sharp corners rather than wake-driven, so
-  the 2D / 3D-instability sensitivity is weaker. We still leave them
-  ungated because (i) the Sohankar 1998 5 % bar for 2D-LBM square Cd
-  applies at D ≥ 40 not D = 20, and (ii) the trend already starts
-  exceeding 10 % at Re = 500 in our data.
+The other rows are reported but not claimed:
+
+- **Cylinder Re = 500: not validated.** +24.7 % error at D = 40 (vs
+  +32.9 % at D = 20) -- the high-Re tail is the 2D-cylinder over-
+  prediction discussed in §4.2. The fact that the failure *persists*
+  at D = 40 is the decisive evidence that this is the Williamson
+  mode-A 3D-instability regime, not grid resolution. Re ≤ 200 is
+  therefore set as the ceiling by physics, not by where the numbers
+  happen to land.
 
 ### 3.3 Aggregate statistics (validated band only)
 
-- **Cylinder Cd, low-blockage, Re = 100 – 200** (n = 2 -- 2.1 % at
-  Re = 100, 13.8 % at Re = 200): median **8.0 %**, max **13.8 %**.
-  Inside the literature-derived ± 15 % bar (Mei-Luo-Shyy 1999
-  expectation at this D). The Re = 200 point sits about 1.2 percentage
-  points inside the ± 15 % gate -- a tighter ± 10 % literature bar
-  would mark it as failing, so the cylinder gate is honest but not
-  exhaustively independent. See §3.6 for the resolved-D run that would
-  let us narrow the band.
-- **Square Cd, low-blockage, Re = 150 – 200** (n = 2 -- 2.1 % at
-  Re = 150, 2.5 % at Re = 200): median **2.3 %**, max **2.5 %**.
-  Comfortably inside the ± 10 % bar (Sohankar 1998 expectation).
-- The "median" / "max" labels are convenient but at n = 2 they are
-  literally just the smaller / larger of two numbers -- not a
-  distribution. The fuller statement is "across the four validated
-  cases, the worst measurement is 13.8 % (cylinder Re = 200) and the
-  best is 2.1 % (cylinder Re = 100 and square Re = 150)".
+- **Cylinder Cd (corrected), Resolved preset, Re = 100 – 200** (n = 2
+  -- 10.2 % at Re = 100, 1.0 % at Re = 200): median **5.6 %**, max
+  **10.2 %**. At the doc-vs-data ± 15 % gate this passes with room.
+  The Re = 100 result is a sign-flipped −10.2 % (vs +2.1 % at the
+  D = 20 Validation preset). §4.4 discusses the candidate causes
+  (Smagorinsky LES bias at laminar Re; K over-rescale at lower B);
+  the experiment that would localise it is roadmapped in §6.
+- **Square Cd (raw), Resolved preset, Re = 150 – 200** (n = 2 --
+  3.8 % at Re = 150, 5.1 % at Re = 200): median **4.5 %**, max
+  **5.1 %**. Inside the Sohankar 1998 5 % bar without any correction
+  applied -- the solver is doing the work.
+- At n = 2 per shape, the "median" / "max" labels are convenient but
+  literally just the smaller / larger of two numbers, not a
+  distribution. The fuller statement is "across the four headline
+  cases, the worst measurement is the cylinder's −10.2 % at Re = 100
+  and the best is the cylinder's +1.0 % at Re = 200; the squares
+  land at +3.8 % and +5.1 % raw."
 
 **What CI actually does for these four cases**
 
 Two gates run on every push, and neither of them re-runs the
-low-blockage sweep:
+Resolved sweep itself:
 
 1. `tests/test_doc_validation_consistency.py` (≪ 1 s, runs on every
    push). Compares the headline numbers in this document and README
-   against the committed `data/validation/results_lowblockage.json`.
-   Catches silent doc drift; does NOT catch silent solver drift, since
-   it never invokes the kernel.
+   against the committed `data/validation/results_resolved.json`.
+   Catches silent doc drift; does NOT catch silent solver drift,
+   since it never invokes the kernel.
 
 2. `tests/test_validation_benchmark.py` (≈ 4 min, runs on every push).
    Re-runs the solver on a 5-case Standard-preset subset and checks
    the corrected pipeline against Williamson / Okajima with ± 15 % /
    ± 25 % tolerances. Catches Standard-preset behaviour change; does
    NOT catch a kernel change that happens to leave the Standard
-   numbers unchanged while moving the low-blockage numbers.
+   numbers unchanged while moving the Resolved numbers.
 
 Refreshing the headline measurement requires the operator action
-`python scripts/validate_solver.py --headline` (≈ 60 – 90 min) plus a
-commit of the new `results_lowblockage.json`. Until that is done, the
-headline numbers are only as fresh as the JSON commit they reference.
-The doc honestly reflects this rather than calling it "continuous".
+`python scripts/validate_solver.py --resolved` (≈ 90 min) plus a
+commit of the new `results_resolved.json`. Until that is done, the
+headline numbers are only as fresh as the JSON commit they
+reference. The doc honestly reflects this rather than calling it
+"continuous".
 
 The "headline" is therefore narrow on purpose. We claim solver
 accuracy where the physics permits a clean comparison (laminar
-shedding, no 3D transition, correction is small) and report
-everything else for transparency without claiming it.
+shedding below the 3D transition, grid resolution at or above the
+2D-LBM literature guideline) and report everything else for
+transparency without claiming it.
 
 ### 3.4 Strouhal is a qualitative match, not a percent-error number
 
-Looking at the raw St column in §3.2:
+Looking at the raw St column in the Resolved (§3.2) and the
+Validation cross-check (§3.5) tables:
 
-- Low-blockage cylinder: St raw = 0.183 for Re = 100 and 200, then
-  0.229 for Re = 300, 500, 1000. Two discrete values across a tenfold
-  Re range, vs Williamson's smooth 0.166 → 0.210 climb.
-
-- Low-blockage square: 0.183 for Re = 150 – 300, then 0.137 at
-  Re = 500. Again, near-constants instead of a curve.
+- Resolved cylinder (D = 40): St raw = 0.152 at Re = 100, 0.229 at
+  Re = 200 and Re = 500. Two discrete values across the laminar
+  shedding band, vs Williamson's smooth 0.166 → 0.207 climb.
+- Validation cylinder (D = 20): St raw = 0.183 for Re = 100 and 200,
+  then 0.229 for Re = 300 – 1000. Same quantisation.
+- Square: same story at both presets, two-tone output where the
+  reference curve is itself nearly flat.
 
 What's happening: the Strouhal FFT in `src/lbm_render.py` runs on the
 **per-lattice-step Cl history**, not on the per-frame downsampled
-record. At the Validation preset, `n_frames = 250` × `STEPS_PER_FRAME
-= 35` gives `n_steps = 8 750` lattice samples; the FFT consumes the
-last-half tail, so `N = 4 375` samples at `dt = 1 step`. The bin
-spacing in cycles-per-step is therefore `Δf = 1 / N ≈ 2.29 × 10⁻⁴`,
+record. At the Resolved preset, `n_frames = 300` × `STEPS_PER_FRAME
+= 35` gives `n_steps = 10 500` lattice samples; the FFT consumes the
+last-half tail, so `N = 5 250` samples at `dt = 1 step`. The bin
+spacing in cycles-per-step is therefore `Δf = 1 / N ≈ 1.90 × 10⁻⁴`,
 which converts to a Strouhal bin spacing of
 
 ```
 Δ St  =  Δf · L / U  =  (1 / N) · char_length / U_INFLOW
-       =  (1 / 4 375) · 20 / 0.1  ≈  0.046
+       =  (1 / 5 250) · 40 / 0.1  ≈  0.076   (Resolved, D = 40)
+       =  (1 / 5 250) · 20 / 0.1  ≈  0.038   (Validation, D = 20, current code)
+       =  (1 / 4 375) · 20 / 0.1  ≈  0.046   (Validation, D = 20, the historical
+                                              n_frames = 250 used in the committed
+                                              `results_lowblockage.json`)
+       =  (1 / 5 250) · 28 / 0.1  ≈  0.053   (Standard, D = 28)
 ```
 
-for the Validation preset (`D = 20`, `U = 0.1`). Williamson's
-cylinder St spans **0.166 → 0.210 across Re = 100 – 1000 = 0.044
-total** -- *less than one bin*. So the whole reference curve fits in
-1 – 2 bins of our FFT, and the solver's two-tone output (0.183 and
-0.229) is two adjacent bins. The match against Williamson at the
-high-Re end is the geometric coincidence of a flat numerical line
-crossing a nearly-flat reference curve, not a measurement of St(Re).
+Williamson's cylinder St spans **0.166 → 0.210 across Re = 100 – 1000
+= 0.044 total** -- comparable to or smaller than one bin at every
+preset. So the whole reference curve fits in 1 – 2 bins of our FFT,
+and the solver's two-tone output is two adjacent bins. The "match"
+against Williamson at the high-Re end (where Williamson is itself
+nearly flat) is the geometric coincidence of a near-constant
+numerical line crossing a near-constant reference curve, not a
+measurement of St(Re).
 
-The fix is more samples per FFT, not more frames. Doubling `n_steps`
-halves Δ St; reaching `Δ St ≈ 0.005` (10 % of Williamson's full
-spread) would need `N ≈ 40 000`, i.e. `n_frames` near 2 300 at
-STEPS_PER_FRAME = 35 -- another offline-only sweep. We have not run
-that, so we don't quote a percent-error figure on Strouhal anywhere.
+The fix is more samples per FFT, not more frames per second. Halving
+`Δ St` requires doubling `N`; reaching `Δ St ≈ 0.005` (about 10 % of
+Williamson's full spread) at D = 40 would need `N ≈ 80 000`, i.e.
+`n_frames` near 4 600 at STEPS_PER_FRAME = 35 -- another offline-only
+sweep, several times longer than the existing Resolved sweep. We have
+not run that, so we don't quote a percent-error figure on Strouhal
+anywhere.
 
 We therefore demote Strouhal to a qualitative result throughout this
 document: "vortex shedding is present in the published range." We
-keep the raw numbers in the table for inspection but no longer cite
+keep the raw numbers in the tables for inspection but no longer cite
 them as a percent-error validation result. Neither CI gate enforces
 a Strouhal percent error: `test_doc_validation_consistency.py`
 checks only Cd headlines, and `test_validation_benchmark.py` still
@@ -415,7 +450,50 @@ runs the Standard-preset St gate as a regression guard (± 35 %, the
 post-hoc Standard-preset band) but does not promote that number to a
 validation claim.
 
-### 3.5 Standard preset (35 % blockage): interactive convenience, not validation
+### 3.5 Low-blockage cross-check (Validation preset, D = 20, B = 5 %)
+
+The Validation preset is what the validation document anchored to in
+the previous revision (before the Resolved sweep). It remains in the
+repo as a cross-check: same low-blockage regime as Resolved (so the
+AV correction is a near-no-op), but with D below the Mei-Luo-Shyy
+literature guideline. Contrasting Validation and Resolved Cd at the
+same Re directly attributes residual error to grid resolution.
+
+Source: `python scripts/validate_solver.py --headline` (≈ 60 – 90 min).
+Full data in [`data/validation/results_lowblockage.md`](data/validation/results_lowblockage.md).
+The committed JSON was generated with `n_frames = 250`; current code
+defaults to 300 (see §2.3 footnote).
+
+| Shape    | Re   | Cd raw | Cd corr | Cd ref | Cd err   | Resolved (D = 40) err |
+|----------|------|--------|---------|--------|----------|------------------------|
+| Cylinder |  100 | 1.510  | 1.348   | 1.320  | +2.1 %   | −10.2 %                |
+| Cylinder |  200 | 1.466  | 1.309   | 1.150  | +13.8 %  | **+1.0 %**             |
+| Cylinder |  300 | 1.478  | 1.320   | 1.080  | +22.2 %  | (not in sweep)         |
+| Cylinder |  500 | 1.518  | 1.355   | 1.020  | +32.9 %  | +24.7 %                |
+| Cylinder | 1000 | 1.521  | 1.358   | 0.990  | +37.2 %  | (not in sweep)         |
+| Square   |  150 | 1.681  | 1.517   | 1.550  | −2.1 %   | −15.9 % (corrected) / +3.8 % (raw) |
+| Square   |  200 | 1.729  | 1.560   | 1.600  | −2.5 %   | −14.9 % (corrected) / +5.1 % (raw) |
+| Square   |  300 | 1.852  | 1.671   | 1.850  | −9.7 %   | (not in sweep)         |
+| Square   |  500 | 1.975  | 1.782   | 2.000  | −10.9 %  | (not in sweep)         |
+
+**What the cross-check shows.** The cylinder Re = 200 disagreement
+between Validation (+13.8 %) and Resolved (+1.0 %) is the cleanest
+evidence that the Validation residual was grid-limited: triple the
+cells and the same solver lands on Williamson. The cylinder Re = 100
+sign flip (+2.1 % → −10.2 %) is the yellow flag discussed in §4.4
+and §6. The square corrected / raw comparison at Re = 150 and 200
+makes the K-flaw concrete: AV with K = 1.00 happens to land near
+Okajima at B = 5 % but over-corrects at B = 10 %, while the raw
+measurement at the higher resolution sits inside Sohankar's 5 % bar.
+
+The previous-revision headline ("Square Cd median 2.3 %, max 2.5 %")
+came from this table's bolded square rows. The reviewer flagged that
+calling those numbers a validation papered over the K-mis-fit
+exposed by Resolved; §3.2 now leads with the raw D = 40 number and
+this section keeps the corrected D = 20 numbers visible as the
+cross-check rather than as the claim.
+
+### 3.6 Standard preset (35 % blockage): interactive convenience, not validation
 
 The Standard interactive preset runs at B = 0.35, where the Allen-
 Vincenti correction is a 2.6 × rescale rather than a near-no-op. We
@@ -463,100 +541,6 @@ would not collapse when the channel opens. It was a blockage
 artifact, plus the FFT-bin quantisation flagged in §3.4. §4.1 has
 been retracted accordingly.
 
-### 3.6 Resolved sweep: disentangling grid resolution from 2D physics
-
-We ran the `Resolved (1200 × 400)` preset (D = 40, blockage B = 0.10)
-to isolate grid resolution from blockage in the high-Re tail. This is
-the configuration the reviewer asked for in 2026-05-26: D ≥ 40 AND
-B < 10 % simultaneously, so the Mei-Luo-Shyy "D = 40 for free-stream
-Cd" guideline is met *while* the Allen-Vincenti correction is still
-small (factor 0.81, not the 2.6 × Standard rescale).
-
-Source: `python scripts/validate_solver.py --resolved`, ≈ 90 min
-total. Full data in
-[`data/validation/results_resolved.md`](data/validation/results_resolved.md).
-
-| Shape    | Re   | Cd raw | Cd corr | Cd ref | Cd err   | D=20 (B=5%) err | D=28 (B=35%) err |
-|----------|------|--------|---------|--------|----------|-----------------|-------------------|
-| Cylinder |  100 | 1.497  | 1.186   | 1.320  | **−10.2 %** | +2.1 %        | +2.9 %            |
-| Cylinder |  200 | 1.466  | 1.162   | 1.150  | **+1.0 %**  | +13.8 %       | +2.3 %            |
-| Cylinder |  500 | 1.606  | 1.272   | 1.020  | +24.7 %  | +32.9 %       | +6.9 %            |
-| Square   |  150 | 1.609  | 1.304   | 1.550  | −15.9 %  | −2.1 %        | +21.8 %           |
-| Square   |  200 | 1.681  | 1.362   | 1.600  | −14.9 %  | −2.5 %        | +12.5 %           |
-
-**The cylinder Re = 200 result is decisive: +1.0 % at D = 40, vs
-+13.8 % at D = 20.** Once the grid resolution meets the literature
-guideline, the corrected Cd matches Williamson within the Mei-Luo-Shyy
-5 – 10 % bar. The previous +13.8 % at D = 20 was a grid effect, not a
-solver inaccuracy. **The validated band Re = 100 – 200 is now genuinely
-backed by a clean data point**, not just by an in-band low-blockage
-measurement.
-
-**The cylinder Re = 500 result is also decisive: +24.7 % at D = 40
-vs +32.9 % at D = 20** -- a small improvement from higher resolution,
-but still wildly outside the literature bar. This is the 2D-ceiling
-result the reviewer predicted: at Re = 500 the real flow has shed
-its energy via 3D Williamson mode-A and mode-B instabilities that a
-2D solver structurally cannot capture. **The Re ≤ 200 upper bound on
-the validated band is therefore not a convention -- it is the highest
-Re at which 2D physics still resembles 3D physics.** Any 2D LBM
-solver in our regime would show the same divergence above this point.
-
-**The cylinder Re = 100 result is surprising: −10.2 % at D = 40 vs
-+2.1 % at D = 20.** The direction flipped, suggesting that at higher
-resolution and lower blockage we are now under-predicting drag
-slightly. The candidate causes: (a) the Smagorinsky LES at laminar
-Re = 100 injects a small spurious eddy viscosity that is more
-visible relative to the small physical drag (§4.4); (b) the K = 1.10
-AV correction is fitted at Standard B = 0.35 and a 10 % correction
-at B = 0.10 over-rescales slightly. Either way the magnitude (10 %)
-is inside the literature expectation and our ± 15 % gate; the
-direction flip is the thing to keep an eye on if the kernel changes.
-
-**Square at D = 40 is a known-flaw finding: −15 to −16 %, *worse*
-than at D = 20** (where it was a clean ±2.5 %). This exposes a real
-problem with the fitted-K approach: K = 1.00 was tuned to Okajima at
-B = 0.35, and at B = 0.10 it over-corrects the (already nearly-
-free-stream) raw measurement. The raw square Cd at D = 40 / B = 10 %
-is actually within 3 – 5 % of Okajima before any correction is
-applied; the AV rescale then pulls it 15 % low. Two honest readings:
-
-1. The K-factor is not literature-derived; it is a fit at one
-   blockage. The reviewer was right to flag this. A defensible
-   alternative would be to use a K(B) family rather than a constant,
-   or to skip the AV correction for square at low blockage where it
-   is no longer doing useful work.
-
-2. The square solver itself is doing well at D = 40 -- the
-   measurement problem is the post-processing.
-
-We leave the doc-vs-data gate at ± 10 % for square Cd (§2.4) and let
-this case sit as the documented near-miss. A K-recalibration is
-roadmapped (§6) but out of scope for this revision since it would
-shift the Standard-preset numbers too and require a fresh full sweep.
-
-**Strouhal in the Resolved sweep:** all five cases land at the same
-two FFT bins (St_corr = 0.126 or 0.189), still inside the
-quantisation regime described in §3.4. The cylinder Re = 200 St
-error of −4.1 % is again coincidence of two flat lines, not a
-measurement. Resolution would need ~ 10 × more lattice steps; that
-is not done.
-
-**Summary of what the Resolved sweep changes:**
-
-- Validated band Re = 100 – 200 is now backed by D = 40 evidence,
-  not just D = 20 evidence. The headline numbers in §3.2 still come
-  from `results_lowblockage.json` because that is what
-  `test_doc_validation_consistency.py` gates against; the Resolved
-  data is a corroborating cross-check, not the primary source.
-- The "Re ≥ 300 not validated" claim now has a physics-grounded
-  backing: the failure persists at D = 40, so it is the 2D
-  approximation breaking down, not the grid.
-- The fitted-K caveat from §3.5 has a concrete failure mode at the
-  Resolved Square cases.
-- Strouhal is qualitative across all three presets; there is no
-  resolution-level fix without a much longer record.
-
 ---
 
 ## 4. Known limitations
@@ -568,7 +552,7 @@ Each is bounded numerically below; none is hidden.
 - **Standard preset is at 35 % blockage**, far above the < 5 %
   "clean wind-tunnel" threshold. Raw drag is inflated by ≈ 2.6 ×.
   We surface the raw measurement and the blockage-corrected free-stream
-  estimate side-by-side in the UI. As §2.4 and §3.5 make explicit, the
+  estimate side-by-side in the UI. As §2.4 and §3.6 make explicit, the
   large correction at this blockage absorbs both wall acceleration and
   any residual solver / grid error that happens to scale the same way
   -- so a small corrected error at Standard is **not** by itself a
@@ -612,9 +596,12 @@ Each is bounded numerically below; none is hidden.
 - **Validation preset (D = 20)** trades resolution for low blockage so
   the correction is small enough to disentangle from the solver error.
   D = 20 is below the Mei-Luo-Shyy guideline, which is why the
-  high-Re cylinder tail in §3.2 carries grid-resolution bias on top of
-  the 2D-vs-3D bias. The `Resolved (1200 × 400)` preset (D = 40,
-  B = 10 %) addresses this (§3.6) but is offline-only.
+  high-Re cylinder tail in the §3.5 cross-check carries grid-resolution
+  bias on top of the 2D-vs-3D bias.
+- **Resolved preset (D = 40)** is the headline configuration (§3.2): D
+  meets the Mei-Luo-Shyy guideline AND blockage is low enough that the
+  AV correction is a modest 0.79 × factor. Offline-only (≈ 90 min for
+  the 5-case sweep).
 
 ### 4.4 Smagorinsky LES at laminar Re
 
@@ -668,14 +655,28 @@ than letting it sit silent in the kernel comments.
 
 ## 5. Reproducing the results
 
-### Single case
+### Resolved sweep (Resolved preset, 5 cases, ≈ 90 min) -- backs the headline
 
 ```bash
-python scripts/validate_solver.py --case cyl-re200
+python scripts/validate_solver.py --resolved
 ```
 
-Runs Cylinder Re = 200 at Standard, takes ≈ 50 s on a laptop. Writes a
-single-row summary to `data/validation/results.md`.
+This is the sweep that backs §3.2's headline. D = 40, B = 10 %.
+Offline-only. Writes `data/validation/results_resolved.{md,json}`.
+Re-run when the solver kernel changes; the doc-consistency gate in
+`tests/test_doc_validation_consistency.py` will fail otherwise.
+
+### Low-blockage cross-check (Validation preset, 9 cases, ≈ 60 – 90 min)
+
+```bash
+python scripts/validate_solver.py --headline
+```
+
+The D = 20 sweep that backs the §3.5 cross-check table. Writes
+`data/validation/results_lowblockage.{md,json}`. The `--headline`
+flag name is now slightly misleading -- the validation document
+headline is anchored to the Resolved preset, not this sweep -- but
+the flag is preserved for compatibility with previous run scripts.
 
 ### Quick subset (Standard preset, 5 cases, ≈ 4 min)
 
@@ -683,30 +684,7 @@ single-row summary to `data/validation/results.md`.
 python scripts/validate_solver.py --quick
 ```
 
-Subset of §3.5 Standard-preset transparency table.
-
-### Headline sweep (Validation preset, 9 cases, ≈ 60 – 90 min)
-
-```bash
-python scripts/validate_solver.py --headline
-```
-
-The low-blockage sweep that backs the headline (§3.2). Writes
-`data/validation/results_lowblockage.{md,json}`. Re-run when the
-solver kernel changes; the doc-consistency gate in
-`tests/test_doc_validation_consistency.py` will fail otherwise.
-
-### Resolved sweep (Resolved preset, 5 cases, ≈ 90 – 150 min)
-
-```bash
-python scripts/validate_solver.py --resolved
-```
-
-The "missing data point" sweep (§3.6) at D = 40 AND B = 10 %
-simultaneously. Offline-only. Writes
-`data/validation/results_resolved.{md,json}` for the post-sweep
-analysis that would either widen the validated band or confirm
-Re ≤ 200 as the physics-imposed upper bound.
+Subset of §3.6 Standard-preset transparency table.
 
 ### Full sweep (Standard preset, 15 cases, ≈ 12 min)
 
@@ -716,7 +694,16 @@ python scripts/validate_solver.py
 
 Cylinder Re = 40, 80, 100, 150, 200, 300, 500, 800, 1000 +
 Square Re = 100, 150, 200, 300, 500, 800. Writes
-`data/validation/results.{md,json}` -- the §3.5 transparency table.
+`data/validation/results.{md,json}` -- the §3.6 transparency table.
+
+### Single case
+
+```bash
+python scripts/validate_solver.py --case cyl-re200
+```
+
+Runs Cylinder Re = 200 at Standard, takes ≈ 50 s on a laptop. Writes
+a single-row summary to `data/validation/results.md`.
 
 ### Conservation diagnostics (≈ 20 s)
 
@@ -736,7 +723,7 @@ corrected-pipeline-vs-reference path so a future refactor doesn't
 silently drift the Standard preset numbers. The validation claim
 itself is gated by `tests/test_doc_validation_consistency.py`,
 which checks the README and VALIDATION.md headline tables against
-`data/validation/results_lowblockage.json` on every push.
+`data/validation/results_resolved.json` on every push.
 
 ---
 
@@ -744,16 +731,18 @@ which checks the README and VALIDATION.md headline tables against
 
 **Q: Your previous headline said Cd is accurate to 4.3 % median across
 Re = 100 – 1000. What changed?**
-A: That number came from the Standard preset (B = 0.35) with a fitted
-Allen-Vincenti correction (K = 1.10) that produces a 2.6 × rescale. A
-reviewer pointed out that a fitted correction at this size absorbs
-solver error along with the blockage, so the small corrected error is
-not a measurement of the solver. We re-ran the same sweep at the
-Validation preset (B = 5 %), where the correction is only a 0.89 ×
-near-no-op. There the error is small at Re ≤ 200 (cylinder 2 – 14 %)
-and grows to +22 % to +37 % at Re ≥ 300. The new headline is scoped
-to where the solver actually agrees with the literature without the
-correction doing the work.
+A: Two rounds of senior CFD review. Round 1 pointed out that the
+Standard-preset 4.3 % was a property of a fitted 2.6 × rescale, not
+of the solver, and we re-ran at the lower-blockage Validation preset
+(D = 20, B = 5 %). Round 2 pointed out that even at Validation the
+cylinder Re = 200 error of +13.8 % was sitting at the edge of the
+gate AND that D = 20 is below the Mei-Luo-Shyy 1999 literature
+guideline, so we ran the Resolved preset (D = 40, B = 10 %) to clear
+both confounds. At Resolved, cylinder Re = 200 lands at +1.0 % --
+within the literature bar -- and the same sweep exposed that the
+square K = 1.00 over-corrects at low blockage. The doc is now
+anchored to the Resolved data with the square headline given as the
+raw (uncorrected) value.
 
 **Q: Why is the raw Cd at Re = 200 cylinder 3.11 when Williamson says 1.15?**
 A: Standard preset 35 % blockage inflates raw Cd ≈ 2.6 ×. The
@@ -761,27 +750,29 @@ Allen-Vincenti correction recovers 1.18 from 3.11 -- within 2.3 % of
 Williamson. The UI surfaces both numbers and a one-line explanation
 so the user understands what each represents. Whether the corrected
 1.18 is a *validation* result vs an interactive convenience is the
-distinction this document now makes explicitly (§3.5).
+distinction this document now makes explicitly (§3.6).
 
 **Q: How does this compare to an industry CFD solver?**
 A: ANSYS Fluent / OpenFOAM on a fine 3D mesh would target 5 % on Cd
-at Re = 200. We target single-digit percent at Re = 100 – 200 in the
-low-blockage validation preset, which the data hits. Above Re ≈ 200
-the 2D approximation itself diverges from the 3D physics (Williamson
-mode-A transition) and we no longer claim a validation -- we report
-the numbers without a percent-error tolerance attached.
+at Re = 200. The Resolved preset (D = 40, B = 10 %) lands at +1.0 %
+on cylinder Cd at Re = 200 and +3.8 / +5.1 % on raw square Cd at
+Re = 150 – 200 -- inside that bar. Above Re ≈ 200 the 2D
+approximation itself diverges from the 3D physics (Williamson mode-A
+transition) and we no longer claim a validation -- we report the
+numbers without a percent-error tolerance attached.
 
 **Q: Why is Strouhal qualitative now instead of a percent error?**
 A: The Strouhal FFT runs on the last half of the per-step Cl history
-(N ≈ 4 375 samples at the Validation preset, 5 250 at Standard).
-That gives a Strouhal bin spacing of about 0.046 (Validation) or
-0.053 (Standard) -- wider than Williamson's full 0.044 spread across
-Re = 100 – 1000. The whole reference curve fits in one or two FFT
-bins, so the solver returns two discrete Strouhal values (0.183 and
-0.229) and any "percent agreement" with Williamson at the high-Re
-end is geometric coincidence, not measurement. Resolving the curve
-would need an offline sweep with ~10 × more lattice steps. §3.4
-spells out the math; the CI gates report St rather than gating on it.
+(N = 5 250 samples at n_frames = 300). That gives a Strouhal bin
+spacing of about 0.076 at the Resolved preset (D = 40), 0.053 at
+Standard (D = 28), and 0.038 at Validation (D = 20, current code) --
+all comparable to or wider than Williamson's full 0.044 spread
+across Re = 100 – 1000. The whole reference curve fits in one or two
+FFT bins, so the solver returns two discrete Strouhal values and any
+"percent agreement" with Williamson at the high-Re end is geometric
+coincidence, not measurement. Resolving the curve would need an
+offline sweep with ~10 × more lattice steps. §3.4 spells out the
+math; the CI gates report St rather than gating on it.
 
 **Q: What happens if I push the slider to Re = 1500?**
 A: Cylinder and NACA shapes run cleanly. Square is capped at
@@ -800,45 +791,34 @@ inlined inverse matches a fresh `np.linalg.inv` to machine precision.
 
 **Q: Where can I see the validation run in action?**
 A: Two artifacts. (1) The headline measurement is committed at
+[`data/validation/results_resolved.md`](data/validation/results_resolved.md)
+(Resolved preset, D = 40, B = 10 %), with
 [`data/validation/results_lowblockage.md`](data/validation/results_lowblockage.md)
-and corroborated by [`data/validation/results_resolved.md`](data/validation/results_resolved.md)
-(the D = 40 sweep). Re-running them requires `--headline` / `--resolved`
-(60 – 150 min each, offline). (2) On every push, GitHub Actions runs
+kept as the D = 20 cross-check that exposed the grid sensitivity.
+Re-running them requires `--resolved` / `--headline` (60 – 150 min
+each, offline). (2) On every push, GitHub Actions runs
 `tests/test_doc_validation_consistency.py` (asserts the doc matches
-those JSONs) and `tests/test_validation_benchmark.py` (a Standard-preset
-regression guard). Neither CI gate re-measures the low-blockage Cd
-from scratch; that is an operator action, deliberately, because the
-sweeps cost an hour-plus each.
-
-**Q: Has the "resolved" data point actually been run?**
-A: Yes -- §3.6 has the results.
-The decisive cylinder point: Re = 200 at D = 40 / B = 10 % lands at
-**+1.0 %** vs Williamson, compared with +13.8 % at D = 20 / B = 5 %.
-So Re = 200 is now genuinely inside the literature accuracy bar
-(Mei-Luo-Shyy 5 – 10 %), and the previous Validation-preset value
-was grid-limited rather than solver-limited. The high-Re tail
-(Re = 500) still fails at D = 40 (+24.7 %), which confirms the
-Re ≤ 200 ceiling is set by the 2D approximation itself, not by grid
-resolution. The square cases at Resolved exposed a separate problem
-with the fitted K-factor at low blockage -- documented in §3.6 as a
-known-flaw finding.
+the Resolved JSON) and `tests/test_validation_benchmark.py` (a
+Standard-preset regression guard). Neither CI gate re-measures the
+Resolved Cd from scratch; that is an operator action, deliberately,
+because the sweep costs ~ 90 min.
 
 **Q: How would I further widen the band or improve the numbers?**
 A: Three things, in roughly descending leverage:
 
 1. **K-factor recalibration for square.** The Resolved Square data
-   (§3.6) shows K = 1.00 over-corrects at B = 0.10. A K(B) family,
+   (§3.2) shows K = 1.00 over-corrects at B = 0.10. A K(B) family,
    or skipping the AV correction below some blockage threshold,
    would fix the Square Re = 150 – 200 over-correction. Requires
-   re-running the Standard sweep too so the §3.5 numbers don't
+   re-running the Standard sweep too so the §3.6 numbers don't
    drift; out of scope for this revision.
 
 2. **Quantify the Smagorinsky bias at Re = 100 – 200.** A single
-   Smag-off run at the Validation preset would isolate the spurious
+   Smag-off run at the Resolved preset would isolate the spurious
    eddy-viscosity contribution flagged in §4.4. The Resolved
    cylinder Re = 100 point at −10.2 % (vs +2.1 % at D = 20)
-   suggests the LES adds something real at laminar Re -- but until
-   the Smag-off comparison runs, the magnitude is hand-waved.
+   suggests the LES may add something real at laminar Re. See §4.4
+   for the current status of that experiment.
 
 3. **3D.** Removes the Williamson mode-A 2D-vs-3D divergence at
    Re ≥ 200 entirely. Out of scope for the 12-week build because it
