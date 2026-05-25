@@ -82,12 +82,15 @@ def _load_stats():
 
 
 # Headline row regex: matches the markdown table cells in README /
-# VALIDATION. Captures (median, max) as floats. The tolerance band cell
-# is allowed but not consumed -- it lives further along the row and is
-# audited separately via the tolerance-band tests in
-# tests/test_validation_benchmark.py.
+# VALIDATION. Captures (median, max) as floats. The label cell may
+# carry a trailing qualifier (e.g. `| Cylinder St (Re = 100 - 1000) |`
+# in VALIDATION.md, vs the bare `| Cylinder St |` in README) -- the
+# `[^|]*` after the label absorbs that without consuming the cell
+# separator. The tolerance band cell is allowed but not consumed --
+# it lives further along the row and is audited separately via the
+# tolerance-band tests in tests/test_validation_benchmark.py.
 _ROW = re.compile(
-    r"\|\s*{label}\s*\|"                  # row label
+    r"\|\s*{label}\s*[^|]*\|"             # row label (+ optional qualifier)
     r"\s*\**\s*(\d+\.\d+)\s*%\**\s*\|"    # median %
     r"\s*\**\s*(\d+\.\d+)\s*%\**\s*\|",   # max %
 )
@@ -176,3 +179,42 @@ def test_validation_tolerance_table_matches_results_json():
         )
         _assert_match(float(m.group(1)), stats[key], "VALIDATION.md",
                       label, "max-measured")
+
+
+# ---------------------------------------------------------------------------
+# Headline-table gate for VALIDATION.md itself (added 2026-05-26).
+#
+# The original drift gate only parsed README's headline table + VALIDATION.md's
+# §2.4 "max measured" prose -- which left a blind spot exactly where the bug
+# bit us: VALIDATION.md's own top-of-file headline table (lines ~13-15) can
+# drift independently of both. Reviewer caught a self-contradicting VALIDATION
+# file (lines 14-15 said 5.4 % / 12.6 %; §3.3 said 8.9 % / 15.2 %; README
+# said 8.9 % / 15.2 %). These three tests close that blind spot by parsing
+# the VALIDATION.md headline rows the same way README's are parsed.
+# ---------------------------------------------------------------------------
+
+def test_validation_headline_cylinder_cd_matches_results_json():
+    stats = _load_stats()
+    declared = _find_row(VALIDATION.read_text(encoding="utf-8"), "Cylinder Cd")
+    _assert_match(declared[0], stats["cylinder_cd_median"], "VALIDATION.md",
+                  "Cylinder Cd", "median")
+    _assert_match(declared[1], stats["cylinder_cd_max"], "VALIDATION.md",
+                  "Cylinder Cd", "max")
+
+
+def test_validation_headline_square_cd_matches_results_json():
+    stats = _load_stats()
+    declared = _find_row(VALIDATION.read_text(encoding="utf-8"), "Square Cd")
+    _assert_match(declared[0], stats["square_cd_median"], "VALIDATION.md",
+                  "Square Cd", "median")
+    _assert_match(declared[1], stats["square_cd_max"], "VALIDATION.md",
+                  "Square Cd", "max")
+
+
+def test_validation_headline_cylinder_st_matches_results_json():
+    stats = _load_stats()
+    declared = _find_row(VALIDATION.read_text(encoding="utf-8"), "Cylinder St")
+    _assert_match(declared[0], stats["cylinder_st_median"], "VALIDATION.md",
+                  "Cylinder St", "median")
+    _assert_match(declared[1], stats["cylinder_st_max"], "VALIDATION.md",
+                  "Cylinder St", "max")

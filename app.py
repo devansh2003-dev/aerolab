@@ -1271,6 +1271,14 @@ if mode == "Real CFD (LBM)":
         custom_polygon = _stash.get("custom_polygon")
         viz_mode = _stash["viz_mode"]
         _polygon_key = _stash["polygon_key"]
+        # Regime label was already computed in the sidebar from the
+        # CURRENT (live-widget) reynolds_target. After the override, the
+        # title block below would otherwise render "{shape_name} in
+        # {reg}" with shape_name from the displayed run but reg from
+        # the live slider -- e.g. "Cylinder in fully turbulent flow"
+        # while the actual GIF is the Re=200 transitional run. Recompute
+        # so title + image agree (reviewer follow-up 2026-05-26).
+        reg, reg_feel = regime_label(reynolds_target)
         # Recompute _current_config from the restored locals so the
         # downstream Pin / snapshot / share-link blocks (which compare
         # the snapshot against _current_config) compare against what the

@@ -11,8 +11,8 @@ below so the work survives senior-engineer / professor scrutiny.
 | Quantity                       | Median error | Max error | Tolerance band |
 |--------------------------------|--------------|-----------|----------------|
 | Cylinder Cd (Re = 100 – 1000)  | **4.3 %**    | **11.6 %**| ± 15 %         |
-| Square Cd   (Re = 150 – 500)   | **5.4 %**    | **21.8 %**| ± 25 %         |
-| Cylinder St (Re = 100 – 1000)  | **12.6 %**   | **23.4 %**| ± 35 %         |
+| Square Cd   (Re = 150 – 500)   | **8.9 %**    | **21.8 %**| ± 25 %         |
+| Cylinder St (Re = 100 – 1000)  | **15.2 %**   | **23.4 %**| ± 35 %         |
 
 Reference data: Williamson 1996 *Annu. Rev. Fluid Mech.* **28** (cylinder
 Cd / St); Okajima 1982 *J. Fluid Mech.* **123** (square Cd / St). Both
