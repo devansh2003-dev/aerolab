@@ -9,24 +9,42 @@ Run from the project root:
 
 The browser opens automatically at http://localhost:8501.
 """
-# Force NUMBA_NUM_THREADS=16 BEFORE any other import. Diagnosed from a
-# Cloud error log: Cloud's container starts with NUMBA_NUM_THREADS
-# UNSET, numba imports and auto-detects cpu_count=1 (cgroups throttle
-# the container to 1 vCPU) so it launches 1 thread. Then Cloud's
-# request handling later SETS NUMBA_NUM_THREADS to 16 (the underlying
-# host's logical CPU count). When JIT compile fires, numba's
-# reload_config sees env=16 vs launched=1 and crashes with
-# "RuntimeError: Cannot set NUMBA_NUM_THREADS to a different value
-# once the threads have been launched (currently have 1, trying to set
-# 16)".
+# Set NUMBA_NUM_THREADS BEFORE any other import. Two failure modes to
+# pre-empt, both diagnosed against real crashes:
 #
-# Setting env=16 here pre-empts that: numba launches 16 threads from
-# the start, and Cloud's later assignment is a no-op (already 16). The
-# 16 threads contending for 1 vCPU is wasteful but functionally
-# serial; "wasteful" beats "crashed" every time.
+#   Cloud: container starts with NUMBA_NUM_THREADS UNSET, numba
+#       auto-detects cpu_count=1 (cgroup throttle on the 1-vCPU
+#       container) and launches 1 thread. Cloud's request handler
+#       later SETS NUMBA_NUM_THREADS to 16 (the host's logical CPU
+#       count). The next JIT compile triggers `reload_config`, which
+#       sees env=16 vs launched=1 and raises "Cannot set
+#       NUMBA_NUM_THREADS to a different value once the threads have
+#       been launched (currently 1, trying to set 16)".
+#
+#   Local: container starts with NUMBA_NUM_THREADS UNSET (just like
+#       Cloud), we used to force env=16 here. Numba launched with 16,
+#       and SOMETHING — Streamlit's runner, numba's own
+#       multiprocessing helper, or a transitive C extension — later
+#       clears the env var (no code we own does this; the reviewer
+#       grepped and so did we). At the next JIT, `reload_config`
+#       reads env-empty, falls back to NUMBA_DEFAULT_NUM_THREADS
+#       (= cpu_count = 14 on the dev laptop), and crashes with the
+#       MIRROR error: "currently 16, trying to set 14".
+#
+# The fix that survives BOTH races: pick a value that matches what
+# numba's own auto-detect would land on, so even if env is cleared
+# the fallback equals the launched count. Locally that's cpu_count().
+# On Cloud, cpu_count() = 1 would re-introduce the original 1-vs-16
+# race when Cloud's runtime forces 16; so on Cloud we keep "16",
+# matching Cloud's later assignment. Cloud is detected by the mount
+# point Streamlit Cloud uses, which does not exist locally on any
+# OS.
 import os
+import sys
 
-os.environ["NUMBA_NUM_THREADS"] = "16"
+_IS_STREAMLIT_CLOUD = sys.platform == "linux" and os.path.isdir("/mount/src")
+_NUMBA_THREADS_VALUE = "16" if _IS_STREAMLIT_CLOUD else str(os.cpu_count() or 1)
+os.environ["NUMBA_NUM_THREADS"] = _NUMBA_THREADS_VALUE
 
 import numpy as np
 import pandas as pd
@@ -56,7 +74,15 @@ from src.references import (
 )
 
 # --- Page config (must be the first Streamlit call) ---
-st.set_page_config(page_title="AeroLab", layout="wide")
+st.set_page_config(
+    page_title="AeroLab",
+    layout="wide",
+    # Force the sidebar open on first load. With "auto" Streamlit collapses
+    # it on narrow viewports / after manual close, and the collapse chevron
+    # is easy to miss -- making the 2D/3D solver toggle effectively
+    # undiscoverable for a first-time visitor.
+    initial_sidebar_state="expanded",
+)
 
 # Hide Streamlit Cloud's "Manage app" / "Hosted with Streamlit" chrome so
 # the GIF doesn't compete with the deploy badge for the bottom-right of
@@ -64,41 +90,276 @@ st.set_page_config(page_title="AeroLab", layout="wide")
 # are stable enough to target via attribute / data-testid selectors.
 st.markdown(
     "<style>"
-    "#MainMenu {visibility: hidden;}"
+    # Pull Inter from Google Fonts and apply via the cascade only.
+    # Earlier rev used `[class*='st-'] {font-family: Inter !important}`
+    # which also matched Streamlit's material-icon spans -- overriding
+    # the Material Symbols font and printing icon names as raw text
+    # (e.g. 'keyboard_double_arrow_right') in every :material/...:
+    # shortcode. Setting font-family on html/body only lets Streamlit's
+    # per-element CSS for icon fonts win on the icon elements.
+    "@import url('https://fonts.googleapis.com/css2?"
+    "family=Inter:wght@400;500;600;700&display=swap');"
+    "html, body {font-family: 'Inter', -apple-system, BlinkMacSystemFont, "
+    "'Segoe UI', sans-serif;}"
+    # Hide Streamlit chrome that competes with the GIF/Plotly canvas,
+    # but do NOT blanket-hide [data-testid='stToolbar'] -- in Streamlit
+    # 1.57 the sidebar's expand chevron ([data-testid='stExpandSidebarButton'])
+    # is rendered in the same header region, and hiding the whole bar
+    # took the chevron with it (regression caught 2026-05-26 -- user
+    # reported the sidebar had no expand/collapse control at all).
+    # Instead, hide only the SPECIFIC actions inside the toolbar.
+    "#MainMenu {display: none;}"
     "footer {visibility: hidden;}"
     ".stDeployButton {display: none;}"
-    "[data-testid='stToolbar'] {visibility: hidden; height: 0;}"
+    "[data-testid='stToolbarActions'] {display: none;}"
     "[data-testid='stStatusWidget'] {display: none;}"
+    # Force the sidebar collapse + expand buttons to render with high
+    # z-index and full opacity, so neither our other rules nor Streamlit
+    # cloud chrome can hide them.
+    "[data-testid='stSidebarCollapseButton'], "
+    "[data-testid='stExpandSidebarButton'] {"
+    "display: flex !important; visibility: visible !important;"
+    "opacity: 1 !important; z-index: 1000;}"
     # Help-icon tooltips need to draw OVER the result GIF / Plotly chart
     # layers; without an explicit z-index they get occluded by the viz
     # container's own stacking context (reviewer item #22, 2026-05-25).
     "[data-baseweb='tooltip'], [role='tooltip'] {z-index: 9999 !important;}"
+    # --- Card / panel polish (2026-05-26) ---
+    # Expander frames: rounded, subtle border that picks up the slate
+    # palette instead of Streamlit's default grey. Removes the harsh
+    # box look and unifies them with the new hero block.
+    "[data-testid='stExpander'] {"
+    "background: rgba(17,24,39,0.55); border: 1px solid #1f2937;"
+    "border-radius: 10px; overflow: hidden; "
+    "transition: border-color 0.18s ease, background 0.18s ease;}"
+    "[data-testid='stExpander']:hover {border-color: #334155;}"
+    "[data-testid='stExpander'] summary {padding: 0.55rem 0.85rem;}"
+    # Buttons: rounded, subtle border, emerald accent on hover/active
+    "div.stButton > button {border-radius: 8px; border: 1px solid #1f2937;"
+    "font-weight: 500; transition: all 0.15s ease;}"
+    "div.stButton > button:hover {border-color: #10b981;"
+    "background: rgba(16,185,129,0.08);}"
+    # Sliders: tighten thumb visuals, emerald track
+    "[data-testid='stSlider'] [role='slider'] {"
+    "box-shadow: 0 0 0 3px rgba(16,185,129,0.18); border: 1.5px solid #10b981;}"
+    # Radio + selectbox: rounded options, subtle hover
+    "div[data-baseweb='radio'] label, div[data-baseweb='select'] {"
+    "border-radius: 8px;}"
+    # Images / Plotly: rounded corners and subtle border so the result
+    # canvas reads as a single framed artifact, not a raw png stuck on
+    # the page.
+    "[data-testid='stImage'] img, [data-testid='stPlotlyChart'] {"
+    "border-radius: 10px; border: 1px solid #1f2937;"
+    "box-shadow: 0 2px 8px rgba(0,0,0,0.35);}"
+    # Sidebar section breathing room
+    "section[data-testid='stSidebar'] [data-testid='stMarkdown'] {"
+    "margin-bottom: 0.25rem;}"
+    "section[data-testid='stSidebar'] hr {"
+    "margin: 0.85rem 0; border-color: #1f2937;}"
+    # Code / inline `<code>` reads as monospace tech detail, not as
+    # a default browser style. No !important on font-family -- some
+    # callers wrap icons in <code> for keyboard hints, and forcing the
+    # monospace face would print the icon glyph name as text.
+    "code {background: rgba(16,185,129,0.08);"
+    "color: #6ee7b7; padding: 0.05rem 0.32rem;"
+    "border-radius: 4px; font-size: 0.86em;"
+    "font-family: ui-monospace, 'JetBrains Mono', monospace;}"
+    # Horizontal radios (Simple/Detailed resolution toggle) read as a
+    # segmented control: pill-shaped frame with selected option filled
+    # in emerald. Targets the inner role='radiogroup' so vertical
+    # radios elsewhere on the page (Fast/Real-CFD mode) keep their
+    # default stacked layout.
+    "div[role='radiogroup'][aria-orientation='horizontal'] {"
+    "display: inline-flex; padding: 3px; background: #111827;"
+    "border: 1px solid #1f2937; border-radius: 10px; gap: 2px;}"
+    "div[role='radiogroup'][aria-orientation='horizontal'] label {"
+    "margin: 0 !important; padding: 0.42rem 0.85rem; border-radius: 7px;"
+    "cursor: pointer; transition: all 0.15s ease;"
+    "color: #94a3b8;}"
+    "div[role='radiogroup'][aria-orientation='horizontal'] label:hover {"
+    "color: #f5f5f5; background: rgba(255,255,255,0.03);}"
+    "div[role='radiogroup'][aria-orientation='horizontal'] "
+    "label:has(input:checked) {"
+    "background: rgba(16,185,129,0.16); color: #6ee7b7;"
+    "box-shadow: inset 0 0 0 1px rgba(16,185,129,0.4);}"
+    # Hide the actual radio dot inside the segmented pill -- the fill
+    # state already communicates selection clearly.
+    "div[role='radiogroup'][aria-orientation='horizontal'] label > "
+    "div:first-child {display: none;}"
+    # Tighten slider label spacing and emerald-tint the track.
+    "[data-testid='stSlider'] label p {font-size: 0.92rem; font-weight: 500;}"
+    "[data-testid='stSlider'] [data-baseweb='slider'] > div > div > div {"
+    "background: linear-gradient(90deg, #10b981 0%, #34d399 100%);}"
+    # --- Result panel: give the viz more room, less chrome ---
+    # Bordered st.container (the result frame around the GIF) gets a
+    # subtle slate frame matching the rest of the palette; the global
+    # stImage border is suppressed inside it so we don't double-frame.
+    "[data-testid='stVerticalBlockBorderWrapper'] {"
+    "border-color: #1f2937 !important; border-radius: 12px;"
+    "background: rgba(10,10,10,0.45);"
+    "padding-top: 0.5rem; padding-bottom: 0.5rem;}"
+    "[data-testid='stVerticalBlockBorderWrapper'] "
+    "[data-testid='stImage'] img {"
+    "border: none; box-shadow: none; border-radius: 8px;}"
+    # H3 headings: enough breathing room above so they don't crash into
+    # the element above (the earlier 0.4rem caused visible overlap on
+    # narrow viewports where the bordered container above wrapped).
+    ".stMarkdown h3 {margin-top: 0.95rem !important;"
+    "margin-bottom: 0.55rem !important; font-weight: 600;"
+    "letter-spacing: -0.01em; line-height: 1.3;}"
+    # Subtler horizontal rulers -- the default Streamlit hr is loud.
+    "hr {border: none; border-top: 1px solid #1f2937;"
+    "margin: 1rem 0;}"
+    # Captions: a bit dimmer, less noisy in the result strip.
+    "[data-testid='stCaptionContainer'] {color: #64748b !important;}"
+    # --- Sidebar must always be accessible ---
+    # We force the sidebar to render with display: flex (some browsers
+    # honour display: none from Streamlit's slide-out animation past the
+    # transition); we do NOT pin its width because that would fight the
+    # collapsed-state translateX(-100%). The collapse + expand buttons
+    # are already forced visible up top alongside #MainMenu hiding.
+    "section[data-testid='stSidebar'] {"
+    "visibility: visible !important;}"
+    # --- Motion + depth pass (2026-05-26) ---
+    # Quiet micro-interactions: page fade-in, hover lifts on buttons /
+    # expanders / cards, a barely-there emerald aurora behind the hero,
+    # subtle gradient pan on the validated badge. Goal is "alive but
+    # never competes with the GIF" -- every animation is < 0.3s, easing
+    # is ease-out (decelerates into rest), and there is no perpetual
+    # motion in the main viewport.
+    "@keyframes aerolab-fade-in {"
+    "from {opacity: 0; transform: translateY(4px);}"
+    "to {opacity: 1; transform: translateY(0);}}"
+    "@keyframes aerolab-shimmer {"
+    "0% {background-position: 0% 50%;}"
+    "100% {background-position: 200% 50%;}}"
+    "@keyframes aerolab-pulse-glow {"
+    "0%, 100% {box-shadow: 0 0 0 0 rgba(16,185,129,0.0);}"
+    "50% {box-shadow: 0 0 0 4px rgba(16,185,129,0.18);}}"
+    # Page fade-in: every block stagger-loads in for ~0.5s. Stops on
+    # second-rerun (animation only runs on element creation).
+    "[data-testid='stAppViewContainer'] > .main > .block-container > "
+    "div > [data-testid='stVerticalBlock'] > * {"
+    "animation: aerolab-fade-in 0.45s ease-out backwards;}"
+    # Ambient emerald aurora behind the page -- two soft radial blooms
+    # at the top corners. Read as ambience, not as a visible gradient.
+    "[data-testid='stAppViewContainer']::before {"
+    "content: ''; position: fixed; inset: 0; pointer-events: none;"
+    "background:"
+    "radial-gradient(circle at 12% -5%, rgba(16,185,129,0.10), "
+    "transparent 45%),"
+    "radial-gradient(circle at 92% -8%, rgba(56,189,248,0.06), "
+    "transparent 50%);"
+    "z-index: 0;}"
+    "[data-testid='stAppViewContainer'] > .main {position: relative;"
+    "z-index: 1;}"
+    # Button: lift + emerald glow on hover, soft press on active. The
+    # active-state press uses translateY(1px) to give a real tactile feel.
+    "div.stButton > button {transition: transform 0.18s ease-out, "
+    "box-shadow 0.18s ease-out, border-color 0.18s ease-out, "
+    "background 0.18s ease-out;}"
+    "div.stButton > button:hover {transform: translateY(-1px);"
+    "box-shadow: 0 6px 16px rgba(16,185,129,0.22),"
+    "0 0 0 1px rgba(16,185,129,0.25);}"
+    "div.stButton > button:active {transform: translateY(1px);"
+    "box-shadow: 0 1px 4px rgba(0,0,0,0.4);}"
+    # Primary button (Run simulation, download): get a gentle pulse-glow
+    # at idle so the eye finds them. Pauses on hover so it doesn't
+    # double-animate with the lift.
+    "div.stButton > button[kind='primary'] {"
+    "animation: aerolab-pulse-glow 3.2s ease-in-out infinite;}"
+    "div.stButton > button[kind='primary']:hover {animation: none;}"
+    # Expanders: cursor pointer + slight scale on hover; the summary row
+    # tints emerald when hovered so the user knows it is clickable.
+    "[data-testid='stExpander'] {"
+    "transition: border-color 0.2s ease-out, background 0.2s ease-out,"
+    "transform 0.2s ease-out, box-shadow 0.2s ease-out;}"
+    "[data-testid='stExpander']:hover {transform: translateY(-1px);"
+    "box-shadow: 0 4px 14px rgba(0,0,0,0.30),"
+    "0 0 0 1px rgba(16,185,129,0.25);}"
+    "[data-testid='stExpander'] summary {cursor: pointer;"
+    "transition: color 0.18s ease-out, background 0.18s ease-out;}"
+    "[data-testid='stExpander'] summary:hover {color: #6ee7b7;"
+    "background: rgba(16,185,129,0.04);}"
+    # Bordered st.container (the result frame): lifts on hover so the GIF
+    # frame feels like a tangible artifact, not a static panel.
+    "[data-testid='stVerticalBlockBorderWrapper'] {"
+    "transition: border-color 0.25s ease-out, "
+    "box-shadow 0.25s ease-out, transform 0.25s ease-out;}"
+    "[data-testid='stVerticalBlockBorderWrapper']:hover {"
+    "border-color: #334155 !important;"
+    "box-shadow: 0 6px 24px rgba(0,0,0,0.4),"
+    "0 0 0 1px rgba(16,185,129,0.18);}"
+    # Slider thumb: scale up on hover so the thumb feels grabbable.
+    "[data-testid='stSlider'] [role='slider'] {"
+    "transition: transform 0.16s ease-out,"
+    "box-shadow 0.16s ease-out;}"
+    "[data-testid='stSlider'] [role='slider']:hover {"
+    "transform: scale(1.15);"
+    "box-shadow: 0 0 0 6px rgba(16,185,129,0.22);}"
+    # Validated badge: subtle emerald gradient pan to draw the eye
+    # without being a flashing-billboard.
+    "a[href*='VALIDATION.md'] {"
+    "background-size: 200% 200% !important;"
+    "background-image: linear-gradient(110deg,"
+    "rgba(16,185,129,0.10) 0%,"
+    "rgba(16,185,129,0.18) 45%,"
+    "rgba(16,185,129,0.10) 100%) !important;"
+    "animation: aerolab-shimmer 6s ease-in-out infinite;"
+    "transition: transform 0.18s ease-out, "
+    "border-color 0.18s ease-out;}"
+    "a[href*='VALIDATION.md']:hover {transform: translateY(-1px);"
+    "border-color: rgba(16,185,129,0.7) !important;}"
+    # Segmented-control selection: smooth slide instead of pop.
+    "div[role='radiogroup'][aria-orientation='horizontal'] label {"
+    "transition: all 0.2s ease-out;}"
+    # Images / Plotly inside results: gentle glow ring on hover so the
+    # viz canvas reads as the centerpiece.
+    "[data-testid='stImage'] img {transition: box-shadow 0.25s ease-out;}"
+    "[data-testid='stImage'] img:hover {"
+    "box-shadow: 0 8px 32px rgba(16,185,129,0.18),"
+    "0 4px 12px rgba(0,0,0,0.4);}"
     "</style>",
     unsafe_allow_html=True,
 )
 
-# Subtle wordmark; each mode below sets its own hero title.
+# Hero block. Wordmark + tagline + validated-Cd badge in a single
+# horizontal flex row. The earlier (pre-2026-05-26) "subtle wordmark"
+# left the top of the app reading like a Streamlit default; this hero
+# anchors AeroLab as a product first, then defers to the mode-specific
+# subtitle below.
 st.markdown(
-    "<div style='display:flex;align-items:center;gap:0.6rem;"
-    "padding:0.2rem 0 0.4rem 0;color:#94a3b8;font-size:0.9rem;"
-    "letter-spacing:0.04em;text-transform:uppercase;'>"
-    "<span>AeroLab</span>"
-    "<span style='opacity:0.4'>·</span>"
-    "<span style='opacity:0.7'>browser-based aerodynamics</span>"
-    "<span style='opacity:0.4'>·</span>"
-    "<span style='opacity:0.55;font-size:0.75rem;'>v0.5.0</span>"
-    "<span style='opacity:0.4'>·</span>"
+    "<div style='display:flex;align-items:flex-end;justify-content:space-between;"
+    "gap:1rem;padding:0.5rem 0 0.9rem 0;border-bottom:1px solid #1f2937;"
+    "margin-bottom:1rem;flex-wrap:wrap;'>"
+    # Left: brand + tagline stacked vertically
+    "<div style='display:flex;flex-direction:column;gap:0.15rem;'>"
+    "<div style='display:flex;align-items:baseline;gap:0.6rem;'>"
+    "<span style='font-size:1.85rem;font-weight:700;letter-spacing:-0.02em;"
+    "color:#f5f5f5;line-height:1;'>AeroLab</span>"
+    "<span style='font-size:0.72rem;color:#64748b;font-weight:500;"
+    "letter-spacing:0.05em;'>v0.5.0</span>"
+    "</div>"
+    "<div style='color:#94a3b8;font-size:0.95rem;line-height:1.35;'>"
+    "Watch air move around any shape &mdash; in your browser."
+    "</div>"
+    "</div>"
+    # Right: validated badge as a chip
     "<a href='https://github.com/devansh2003-dev/AeroLab/blob/main/VALIDATION.md' "
-    "target='_blank' style='color:#10b981;text-decoration:none;"
-    "font-size:0.75rem;opacity:0.85;' "
+    "target='_blank' style='display:inline-flex;align-items:center;gap:0.35rem;"
+    "padding:0.32rem 0.7rem;background:rgba(16,185,129,0.10);"
+    "border:1px solid rgba(16,185,129,0.45);border-radius:999px;"
+    "color:#34d399;text-decoration:none;font-size:0.78rem;font-weight:500;"
+    "letter-spacing:0.01em;' "
     "title='Blockage-corrected Cd against Williamson 1996 (cylinder, "
     "median 4 percent, max 12 percent) and Okajima 1982 (square, "
     "median 9 percent, max 22 percent) across Re 100-1000. The Standard "
     "preset runs at 35 percent blockage so the correction is large; click "
     "for the full honest methodology.'>"
-    # U+2713 check mark; the Streamlit :material/X: shortcode doesn't
-    # render inside a raw HTML markdown block, so we use the unicode glyph.
-    "&#10003; validated"
+    # U+2713 check mark; :material/X: shortcodes don't render inside
+    # raw HTML markdown, so we use the unicode glyph.
+    "<span style='font-size:0.85rem;line-height:1;'>&#10003;</span>"
+    "<span>Validated against published Cd</span>"
     "</a>"
     "</div>",
     unsafe_allow_html=True,
@@ -818,18 +1079,23 @@ if mode == "Real CFD (LBM)":
 
         st.markdown("")
         st.markdown(":material/grid_view: **Resolution**")
-        # Validation preset (700 x 400) is for offline validate_solver.py
-        # only -- too big for interactive Streamlit use. Keep it out of
-        # the user-facing radio (its RESOLUTION_PRESETS docstring already
-        # says "Not exposed to the UI" -- this is the enforcement).
+        # Validation (700 x 400) and Resolved (1200 x 400) presets are
+        # offline-only -- many-minute runs that ship via
+        # scripts/validate_solver.py, not interactive Streamlit use. The
+        # consumer scope (re-locked 2026-05-26) demands two presets in
+        # the UI: Standard for first-time visitors, Detailed for the
+        # screenshot run. Anything heavier must NOT leak into the radio.
+        _DEV_ONLY_PRESETS = ("Validation", "Resolved")
         _ui_res_keys = [
-            k for k in RESOLUTION_PRESETS if not k.startswith("Validation")
+            k for k in RESOLUTION_PRESETS
+            if not k.startswith(_DEV_ONLY_PRESETS)
         ]
         st.session_state.setdefault("lbm_res_radio", _ui_res_keys[0])
         res_display = st.radio(
             "Resolution",
             _ui_res_keys,
             label_visibility="collapsed",
+            horizontal=True,
             help=(
                 "How fine the simulation grid is.\n\n"
                 "- **Standard** (320 x 80 cells) — fast, ~40 s on your "

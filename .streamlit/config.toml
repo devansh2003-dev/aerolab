@@ -1,0 +1,17 @@
+[theme]
+# Dark theme that matches the render's palette so the Streamlit chrome
+# stops competing with the GIF/Plotly canvas. Colors chosen to mirror the
+# matplotlib BG_COLOR (#0a0a0a), BODY_COLOR (#1f2937 slate-800) and the
+# existing #10b981 emerald validation badge in app.py.
+base = "dark"
+primaryColor = "#10b981"             # emerald-500 -- buttons, slider tracks
+backgroundColor = "#0a0a0a"          # matches matplotlib BG_COLOR
+secondaryBackgroundColor = "#111827" # gray-900 -- sidebar / inputs
+textColor = "#f5f5f5"                # matches TEXT_COLOR in lbm_render.py
+linkColor = "#34d399"                # emerald-400
+font = "sans-serif"
+
+[server]
+# Keep file-watcher light; the .npz pre-bake artifacts we ship for the 3D
+# replay path can churn during development and otherwise trigger reruns.
+fileWatcherType = "auto"
