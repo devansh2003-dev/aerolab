@@ -833,14 +833,16 @@ if view == "3D dev bench (local)":
             pz = np.empty(0, dtype=np.float64)
             age = np.empty(0, dtype=np.int32)
 
-            # max_age sized so an inflow particle can traverse the
-            # full channel; same lesson as 2D's max_age_local.
-            cross_time_frames = int(nx / max(u_in, 1e-6))
-            max_age = max(60, int(1.2 * cross_time_frames))
-
-            # 60 frames is enough to fill the channel; each frame
-            # advects existing particles by dt=1.0 lattice-time.
-            n_frames_ad = 60
+            # dt MUST scale with u_in so particles actually move
+            # visibly. step_smoke's dt is total advection time per
+            # frame; at dt = 1.0 a particle at u_in = 0.04 advances
+            # 0.04 cells / frame, so the channel takes 800 frames to
+            # cross. We pick dt so the particle covers ~1 cell per
+            # frame: target_cross_frames frames to traverse nx.
+            target_cross_frames = max(40, nx)
+            dt_per_frame = nx / float(target_cross_frames * max(u_in, 1e-6))
+            max_age = int(1.6 * target_cross_frames)
+            n_frames_ad = max(int(1.4 * target_cross_frames), 90)
             for _ in range(n_frames_ad):
                 seed = seed_inflow_particles(
                     n_per_row=1,
@@ -855,7 +857,7 @@ if view == "3D dev bench (local)":
                     uy.astype(np.float32, copy=False),
                     uz.astype(np.float32, copy=False),
                     body_mask=body_mask_3d,
-                    dt=1.0,
+                    dt=dt_per_frame,
                     n_substeps=4,
                     max_age=max_age,
                     inflow_seed_xyz=seed,
@@ -1151,12 +1153,32 @@ if view == "3D gallery (preview)":
     age = np.empty(0, dtype=np.int32)
 
     u_in_meta = float(field.meta.get("u_in", 0.05))
-    cross_time = int(field.Nx / max(u_in_meta, 1e-6))
-    max_age = max(80, int(1.5 * cross_time))
-    n_frames = 90                                          # vs 60 in the dev-bench
-    n_per_row = 2                                          # vs 1 in the dev-bench
+    # IMPORTANT: dt must scale with u_in so particles actually cross
+    # the domain in the render budget. ``step_smoke``'s ``dt`` is the
+    # advection time PER FRAME -- at u_in = 0.04 and dt = 1.0 a
+    # particle moves 0.04 cells per frame, so a 64-cell domain takes
+    # 1600 frames to cross. The fix: pick dt so a particle at u_in
+    # covers ~1 cell per frame.
+    target_cross_frames = max(40, field.Nx)
+    dt_per_frame = field.Nx / float(target_cross_frames * max(u_in_meta, 1e-6))
+    n_frames = max(int(1.4 * target_cross_frames), 90)
+    # ~5000 steady-state particles -- enough density to read as smoke,
+    # comfortable for Plotly Scatter3d's WebGL pipeline.
+    n_per_row = 1
+    max_age = int(1.6 * target_cross_frames)
 
-    for _ in range(n_frames):
+    # Capture snapshots for the animation. Keyframes: ~28 frames of
+    # the advection, ~12 fps playback -> 2.3 s loop. Enough to see the
+    # smoke leave the inflow column, drift through the domain, deflect
+    # around the body, and exit at the outflow. The first snapshot is
+    # captured AFTER target_cross_frames // 4 frames so the smoke is
+    # already partway across the domain when the animation starts --
+    # nothing more boring than watching an empty channel fill.
+    n_keyframes = 28
+    warmup_frames = target_cross_frames // 4
+    snapshot_stride = max(1, (n_frames - warmup_frames) // n_keyframes)
+    snapshots = []                            # list of (px, py, pz, speeds)
+    for i in range(n_frames):
         seed = seed_inflow_particles(
             n_per_row=n_per_row,
             y_rows=y_rows,
@@ -1168,13 +1190,23 @@ if view == "3D gallery (preview)":
             px, py, pz, age,
             field.ux, field.uy, field.uz,
             body_mask=field.body,
-            dt=1.0,
+            dt=dt_per_frame,
             n_substeps=4,
             max_age=max_age,
             inflow_seed_xyz=seed,
         )
+        if i >= warmup_frames and (
+            (i - warmup_frames) % snapshot_stride == 0
+            or i == n_frames - 1
+        ):
+            snap_speeds = trilerp_3d(field.ux, px, py, pz)
+            snapshots.append(
+                (px.copy(), py.copy(), pz.copy(), snap_speeds.copy())
+            )
 
-    speeds = trilerp_3d(field.ux, px, py, pz)
+    # Final (post-warmup, fully-developed) snapshot is what we show
+    # initially; the slider scrubs back into earlier transient states.
+    px, py, pz, speeds = snapshots[-1]
 
     # Q-criterion toggle (reuse the dev-bench pattern).
     q_col1, q_col2 = st.columns([1, 3])
@@ -1285,7 +1317,53 @@ if view == "3D gallery (preview)":
                 )
             )
 
-    fig = go.Figure(data=scene_traces)
+    # Build the per-snapshot frames. The smoke Scatter3d is trace 0
+    # in ``scene_traces``; every frame overrides just that trace via
+    # ``traces=[0]``, leaving sphere + Q-criterion (static across
+    # time, since the velocity field is steady) untouched.
+    smoke_marker_template = dict(
+        size=2.4,
+        colorscale="Plasma",
+        cmin=0.0,
+        cmax=u_in_meta * 1.6,
+        opacity=0.78,
+        colorbar=dict(title="u<sub>x</sub>", thickness=12, len=0.6),
+    )
+    frames = []
+    for k, (snap_px, snap_py, snap_pz, snap_sp) in enumerate(snapshots):
+        frame_marker = dict(smoke_marker_template)
+        frame_marker["color"] = snap_sp
+        frames.append(
+            go.Frame(
+                data=[
+                    go.Scatter3d(
+                        x=snap_px, y=snap_py, z=snap_pz,
+                        mode="markers",
+                        marker=frame_marker,
+                        name="smoke",
+                    )
+                ],
+                name=str(k),
+                traces=[0],
+            )
+        )
+
+    # Auto-play setup. The slider step labels are short integer indices
+    # so the layout doesn't blow up. duration=70 ms gives ~14 fps.
+    slider_steps = [
+        dict(
+            method="animate",
+            args=[[str(k)], dict(
+                mode="immediate",
+                frame=dict(duration=0, redraw=True),
+                transition=dict(duration=0),
+            )],
+            label=str(k),
+        )
+        for k in range(len(frames))
+    ]
+
+    fig = go.Figure(data=scene_traces, frames=frames)
     fig.update_layout(
         scene=dict(
             xaxis=dict(title="x (streamwise)", range=[0, field.Nx]),
@@ -1295,16 +1373,64 @@ if view == "3D gallery (preview)":
             bgcolor="#0a0a0a",
             camera=dict(eye=dict(x=1.5, y=1.15, z=0.9)),
         ),
-        height=560,
-        margin=dict(l=0, r=0, t=20, b=0),
+        height=580,
+        margin=dict(l=0, r=0, t=10, b=60),
         paper_bgcolor="#0a0a0a",
+        updatemenus=[dict(
+            type="buttons",
+            direction="left",
+            x=0.02, y=-0.04, xanchor="left", yanchor="top",
+            pad=dict(t=6, r=6, b=6, l=6),
+            bgcolor="rgba(15,23,42,0.85)",
+            bordercolor="#334155",
+            font=dict(color="#e2e8f0", size=12),
+            buttons=[
+                dict(
+                    label="▶  Play",
+                    method="animate",
+                    args=[None, dict(
+                        mode="immediate",
+                        frame=dict(duration=70, redraw=True),
+                        transition=dict(duration=0),
+                        fromcurrent=True,
+                        loop=True,
+                    )],
+                ),
+                dict(
+                    label="⏸  Pause",
+                    method="animate",
+                    args=[[None], dict(
+                        mode="immediate",
+                        frame=dict(duration=0, redraw=False),
+                        transition=dict(duration=0),
+                    )],
+                ),
+            ],
+        )],
+        sliders=[dict(
+            active=len(frames) - 1,                 # start on the developed snapshot
+            x=0.14, y=-0.04, len=0.82,
+            xanchor="left", yanchor="top",
+            pad=dict(t=6, b=0),
+            bgcolor="rgba(15,23,42,0.7)",
+            bordercolor="#334155",
+            activebgcolor="#22d3ee",
+            font=dict(color="#94a3b8", size=10),
+            currentvalue=dict(
+                visible=True, prefix="frame ",
+                font=dict(color="#e2e8f0", size=11),
+            ),
+            steps=slider_steps,
+        )],
     )
     st.plotly_chart(fig, use_container_width=True)
     st.caption(
-        f"{len(px):,} live particles after {n_frames} frames of RK4 "
-        f"advection (4 substeps / frame) through the loaded field. "
-        f"Particles deflect around solid cells and exit the outflow "
-        f"naturally."
+        f"{len(snapshots)} animation frames over a {n_frames}-step "
+        f"advection at dt = {dt_per_frame:.1f} lattice-time / frame "
+        f"(sized so a particle at u_in covers the domain in "
+        f"~{target_cross_frames} frames). Click **▶ Play** to watch "
+        f"the smoke develop; drag the slider to scrub. Rotation and "
+        f"zoom work mid-playback."
     )
 
     # Manifest expander -- the "show me the receipt" panel.
