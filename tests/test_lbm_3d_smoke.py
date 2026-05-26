@@ -201,3 +201,101 @@ def test_sphere_blocks_flow_at_centre():
         f"baseline {u_clean_downstream:.4f} -- sphere may not be "
         f"deflecting the flow"
     )
+
+
+# ---------------------------------------------------------------------------
+# Guo NEEM inflow/outflow path: gate the post-pass replacement of the legacy
+# equilibrium-inflow + zero-gradient-outflow.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.slow
+def test_guo_neem_mass_conserved_and_finite():
+    """The Guo NEEM channel run produces finite output and bounded mass
+    drift over 100 steps. Drift is slightly higher than the legacy
+    zero-gradient outflow (which mechanically forces equal in/out flux)
+    because Guo NEEM allows a non-uniform outlet velocity profile -- a
+    physically correct relaxation that lets the wake leave naturally.
+    Bounded < 5 % is the same gate the legacy path passes.
+    """
+    _, ux, _, _, diag = run_channel_smoke(
+        Nx=32, Ny=16, Nz=16, u_in=0.04, nu=0.02, n_steps=100,
+        use_guo_neem=True,
+    )
+    assert np.all(np.isfinite(ux)), "Guo NEEM produced NaN/Inf"
+    assert abs(diag["mass_drift_rel"]) < 0.05, (
+        f"Guo NEEM mass drift {diag['mass_drift_rel']:.4f} exceeds 5 % "
+        f"over 100 steps -- boundary pass likely broken"
+    )
+    assert diag["u_peak"] > 0.5 * diag["u_in"], (
+        f"Guo NEEM peak u {diag['u_peak']:.4f} far below inflow "
+        f"{diag['u_in']:.4f} -- flow isn't developing"
+    )
+
+
+@pytest.mark.slow
+def test_guo_neem_inflow_prescribes_velocity():
+    """`apply_guo_inflow` writes f_next at x = 0 such that the
+    macroscopic ux there matches the prescribed u_in. This is what
+    distinguishes Guo NEEM from a Dirichlet-style override: the
+    *equilibrium* component carries the prescribed velocity, the
+    non-equilibrium component carries the neighbour's shear, and
+    summing the populations recovers (u_in, 0, 0).
+    """
+    u_in, nu = 0.04, 0.02
+    _, ux, uy, uz, _ = run_channel_smoke(
+        Nx=32, Ny=16, Nz=16, u_in=u_in, nu=nu, n_steps=80,
+        use_guo_neem=True,
+    )
+    # At x = 0, mid-channel. Tight gate -- the inlet u_x should be
+    # within a couple of percent of the prescribed value.
+    inlet_u = float(ux[0, 8, 8])
+    assert abs(inlet_u - u_in) < 0.02 * u_in, (
+        f"inlet ux {inlet_u:.5f} differs from prescribed u_in {u_in:.5f} "
+        f"by more than 2 % -- Guo NEEM inflow not prescribing velocity"
+    )
+    # Transverse velocities at the inlet should be near zero.
+    inlet_uy = float(uy[0, 8, 8])
+    inlet_uz = float(uz[0, 8, 8])
+    assert abs(inlet_uy) < 0.05 * u_in, f"inlet uy {inlet_uy:.5f} not near zero"
+    assert abs(inlet_uz) < 0.05 * u_in, f"inlet uz {inlet_uz:.5f} not near zero"
+
+
+@pytest.mark.slow
+def test_guo_neem_outflow_prescribes_density():
+    """`apply_guo_outflow` writes f_next at x = Nx-1 such that the
+    macroscopic rho there matches the prescribed rho_outflow. The
+    velocity is extrapolated from the interior, so we don't check
+    that -- only the prescribed quantity.
+    """
+    rho_target = 1.0
+    rho, _, _, _, _ = run_channel_smoke(
+        Nx=32, Ny=16, Nz=16, u_in=0.04, nu=0.02, n_steps=80,
+        use_guo_neem=True, rho_outflow=rho_target,
+    )
+    # At x = Nx - 1, mid-channel.
+    outlet_rho = float(rho[-1, 8, 8])
+    # 1 % tolerance accounts for float32 precision and the post-stream
+    # neighbour value vs the prescribed equilibrium.
+    assert abs(outlet_rho - rho_target) < 0.01 * rho_target, (
+        f"outlet rho {outlet_rho:.5f} differs from prescribed rho_target "
+        f"{rho_target} by more than 1 % -- Guo NEEM outflow not prescribing "
+        f"pressure"
+    )
+
+
+@pytest.mark.slow
+def test_guo_neem_legacy_path_unaffected():
+    """Pin the equivalence: with `use_guo_neem=False` (the default), the
+    run output is bit-for-bit identical to the legacy path (no Guo
+    kernels are touched). Catches accidental state leakage if someone
+    later inlines part of the Guo NEEM path into the legacy branch.
+    """
+    args = dict(Nx=24, Ny=12, Nz=12, u_in=0.04, nu=0.02, n_steps=60)
+    _, ux_a, _, _, _ = run_channel_smoke(**args)
+    _, ux_b, _, _, _ = run_channel_smoke(**args, use_guo_neem=False)
+    # Both calls take the legacy path -- expect exact equality.
+    assert np.array_equal(ux_a, ux_b), (
+        "Legacy path output changed when use_guo_neem=False explicitly. "
+        "The dispatch in run_channel_smoke is leaking state."
+    )

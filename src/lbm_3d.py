@@ -285,6 +285,281 @@ def step_bgk_3d(
 
 
 # ---------------------------------------------------------------------------
+# Guo non-equilibrium extrapolation (NEEM) boundary path
+#
+# References: Guo, Zheng, Shi (2002), "Non-equilibrium extrapolation method
+# for velocity and pressure boundary conditions in the lattice Boltzmann
+# method", Chinese Physics 11(4), 366-374.
+#
+# The classical equilibrium-inflow + zero-gradient-outflow used by
+# ``step_bgk_3d`` is the cheap approximation. Guo NEEM is the principled
+# upgrade: at a boundary node the distribution is decomposed into an
+# equilibrium part (evaluated at the prescribed boundary macros) and a
+# non-equilibrium part (copied from the nearest interior neighbour). The
+# non-equilibrium part is what carries the shear / pressure gradient
+# information across the boundary, so the wake near the outlet stops
+# accumulating spurious reflections.
+#
+# Architectural pattern: TWO post-passes after a pure-bulk collide+stream
+# kernel. Mirrors the Bouzidi correction post-pass design (see
+# ``src/lbm_3d_bouzidi.py``). The interaction with Bouzidi is benign --
+# Bouzidi only writes specific ``f_next[opp, x_f]`` entries; Guo NEEM
+# writes every entry at x=0 / x=Nx-1. When ordered Guo→Bouzidi, Bouzidi
+# wins at wall-link cells (rare overlap, only if the body intersects the
+# inlet or outlet plane, which is not a real geometry).
+# ---------------------------------------------------------------------------
+
+
+@njit(cache=True, fastmath=True)
+def step_bgk_3d_pure_bulk(
+    f: np.ndarray,
+    f_next: np.ndarray,
+    body: np.ndarray,
+    omega: np.float32,
+) -> None:
+    """Same as ``step_bgk_3d`` minus the inflow override and outflow copy.
+
+    Used by the Guo NEEM path: the boundary passes (``apply_guo_inflow``
+    and ``apply_guo_outflow``) override f_next at x=0 / x=Nx-1 after this
+    kernel runs, so any value this kernel writes there is discarded. We
+    skip the inline boundary handling to keep the kernel branch-free at
+    the boundary planes and to make the responsibility clear: this kernel
+    is pure bulk + walls + body, nothing more.
+
+    Channel-wall BB (y boundaries) and body BB (solid neighbours) stay
+    inline because they would otherwise require their own boundary
+    passes for the same per-step coverage.
+    """
+    Nx, Ny, Nz = body.shape
+    cs2 = np.float32(1.0 / 3.0)
+    inv_2cs2 = np.float32(1.0 / (2.0 * 1.0 / 3.0))
+    inv_2cs4 = np.float32(1.0 / (2.0 * (1.0 / 3.0) * (1.0 / 3.0)))
+
+    for x in prange(Nx):
+        for y in range(Ny):
+            for z in range(Nz):
+                if body[x, y, z]:
+                    continue
+
+                # --- macroscopic moments (no inflow override) ---
+                rho = np.float32(0.0)
+                mx = np.float32(0.0)
+                my = np.float32(0.0)
+                mz = np.float32(0.0)
+                for i in range(19):
+                    fi = f[i, x, y, z]
+                    rho += fi
+                    mx += np.float32(LATTICE_VELOCITIES_3D[i, 0]) * fi
+                    my += np.float32(LATTICE_VELOCITIES_3D[i, 1]) * fi
+                    mz += np.float32(LATTICE_VELOCITIES_3D[i, 2]) * fi
+                inv_rho = np.float32(1.0) / rho if rho > 0 else np.float32(0.0)
+                ux = mx * inv_rho
+                uy = my * inv_rho
+                uz = mz * inv_rho
+                usq = ux * ux + uy * uy + uz * uz
+
+                # --- collide + stream ---
+                for i in range(19):
+                    cx = np.float32(LATTICE_VELOCITIES_3D[i, 0])
+                    cy = np.float32(LATTICE_VELOCITIES_3D[i, 1])
+                    cz = np.float32(LATTICE_VELOCITIES_3D[i, 2])
+                    w = np.float32(LATTICE_WEIGHTS_3D[i])
+                    cu = cx * ux + cy * uy + cz * uz
+                    f_eq = w * rho * (
+                        np.float32(1.0)
+                        + cu / cs2
+                        + (cu * cu) * inv_2cs4
+                        - usq * inv_2cs2
+                    )
+                    f_post = f[i, x, y, z] + omega * (f_eq - f[i, x, y, z])
+
+                    xn = x + LATTICE_VELOCITIES_3D[i, 0]
+                    yn = y + LATTICE_VELOCITIES_3D[i, 1]
+                    zn = z + LATTICE_VELOCITIES_3D[i, 2]
+                    if zn < 0:
+                        zn += Nz
+                    elif zn >= Nz:
+                        zn -= Nz
+                    if 0 <= xn < Nx and 0 <= yn < Ny:
+                        if body[xn, yn, zn]:
+                            opp = OPPOSITE_3D[i]
+                            f_next[opp, x, y, z] = f_post
+                        else:
+                            f_next[i, xn, yn, zn] = f_post
+                    elif yn < 0 or yn >= Ny:
+                        # Channel wall: full-way BB.
+                        opp = OPPOSITE_3D[i]
+                        f_next[opp, x, y, z] = f_post
+                    # xn out of domain (x < 0 or x >= Nx): drop the
+                    # population. Guo NEEM will populate the boundary
+                    # cells in their own pass.
+
+
+@njit(cache=True, fastmath=True)
+def apply_guo_inflow(
+    f_next: np.ndarray,
+    body: np.ndarray,
+    u_in: np.float32,
+) -> None:
+    """Guo NEEM inflow at x = 0: prescribed velocity, extrapolated density.
+
+    For each fluid cell at x = 0:
+      1. Compute the interior neighbour's macroscopic moments from
+         f_next[*, 1, y, z] (the post-stream values).
+      2. Set the boundary state: u_b = (u_in, 0, 0), rho_b = rho_neighbor
+         (mass-preserving density extrapolation -- using rho = 1.0
+         instead would force a constant-density inlet which slowly
+         drains mass at finite Re).
+      3. For each direction i:
+            f_next[i, 0, y, z] = f_eq_i(rho_b, u_b)
+                               + (f_next[i, 1, y, z] - f_eq_i(rho_n, u_n))
+
+    The non-equilibrium part (the bracket term) carries the local shear
+    information from the neighbour into the boundary; that is what makes
+    the wake recover cleanly compared to the plain equilibrium-write
+    inflow used by ``step_bgk_3d``.
+    """
+    _, Nx, Ny, Nz = f_next.shape
+    cs2 = np.float32(1.0 / 3.0)
+    inv_2cs2 = np.float32(1.0 / (2.0 * 1.0 / 3.0))
+    inv_2cs4 = np.float32(1.0 / (2.0 * (1.0 / 3.0) * (1.0 / 3.0)))
+
+    for y in range(Ny):
+        for z in range(Nz):
+            if body[0, y, z]:
+                continue
+
+            # Neighbour macroscopic (x = 1) from f_next.
+            rho_n = np.float32(0.0)
+            mx = np.float32(0.0)
+            my = np.float32(0.0)
+            mz = np.float32(0.0)
+            for i in range(19):
+                fi = f_next[i, 1, y, z]
+                rho_n += fi
+                mx += np.float32(LATTICE_VELOCITIES_3D[i, 0]) * fi
+                my += np.float32(LATTICE_VELOCITIES_3D[i, 1]) * fi
+                mz += np.float32(LATTICE_VELOCITIES_3D[i, 2]) * fi
+            if rho_n > np.float32(0.0):
+                inv_rho_n = np.float32(1.0) / rho_n
+            else:
+                inv_rho_n = np.float32(0.0)
+            ux_n = mx * inv_rho_n
+            uy_n = my * inv_rho_n
+            uz_n = mz * inv_rho_n
+            usq_n = ux_n * ux_n + uy_n * uy_n + uz_n * uz_n
+
+            # Boundary state: prescribed velocity, density extrapolated.
+            rho_b = rho_n
+            ux_b = u_in
+            uy_b = np.float32(0.0)
+            uz_b = np.float32(0.0)
+            usq_b = ux_b * ux_b
+
+            for i in range(19):
+                cx = np.float32(LATTICE_VELOCITIES_3D[i, 0])
+                cy = np.float32(LATTICE_VELOCITIES_3D[i, 1])
+                cz = np.float32(LATTICE_VELOCITIES_3D[i, 2])
+                w = np.float32(LATTICE_WEIGHTS_3D[i])
+                cu_n = cx * ux_n + cy * uy_n + cz * uz_n
+                cu_b = cx * ux_b + cy * uy_b + cz * uz_b
+                f_eq_n = w * rho_n * (
+                    np.float32(1.0)
+                    + cu_n / cs2
+                    + (cu_n * cu_n) * inv_2cs4
+                    - usq_n * inv_2cs2
+                )
+                f_eq_b = w * rho_b * (
+                    np.float32(1.0)
+                    + cu_b / cs2
+                    + (cu_b * cu_b) * inv_2cs4
+                    - usq_b * inv_2cs2
+                )
+                f_next[i, 0, y, z] = f_eq_b + (f_next[i, 1, y, z] - f_eq_n)
+
+
+@njit(cache=True, fastmath=True)
+def apply_guo_outflow(
+    f_next: np.ndarray,
+    body: np.ndarray,
+    rho_target: np.float32,
+) -> None:
+    """Guo NEEM outflow at x = Nx - 1: prescribed pressure, extrapolated velocity.
+
+    For each fluid cell at x = Nx - 1:
+      1. Compute the interior neighbour's macroscopic moments from
+         f_next[*, Nx - 2, y, z].
+      2. Set the boundary state: rho_b = rho_target (1.0 = atmospheric),
+         u_b = u_neighbor (velocity extrapolation).
+      3. For each direction i:
+            f_next[i, Nx-1, y, z] = f_eq_i(rho_b, u_b)
+                                  + (f_next[i, Nx-2, y, z] - f_eq_i(rho_n, u_n))
+
+    Replaces the zero-gradient COPY used by ``step_bgk_3d``. Zero-gradient
+    forces both rho and u to be uniform across the outlet plane, which is
+    unphysical and pollutes the wake. Pressure-prescribed + velocity-
+    extrapolated lets the flow leave the domain naturally.
+    """
+    _, Nx, Ny, Nz = f_next.shape
+    cs2 = np.float32(1.0 / 3.0)
+    inv_2cs2 = np.float32(1.0 / (2.0 * 1.0 / 3.0))
+    inv_2cs4 = np.float32(1.0 / (2.0 * (1.0 / 3.0) * (1.0 / 3.0)))
+
+    for y in range(Ny):
+        for z in range(Nz):
+            if body[Nx - 1, y, z]:
+                continue
+
+            # Neighbour macroscopic (x = Nx - 2) from f_next.
+            rho_n = np.float32(0.0)
+            mx = np.float32(0.0)
+            my = np.float32(0.0)
+            mz = np.float32(0.0)
+            for i in range(19):
+                fi = f_next[i, Nx - 2, y, z]
+                rho_n += fi
+                mx += np.float32(LATTICE_VELOCITIES_3D[i, 0]) * fi
+                my += np.float32(LATTICE_VELOCITIES_3D[i, 1]) * fi
+                mz += np.float32(LATTICE_VELOCITIES_3D[i, 2]) * fi
+            if rho_n > np.float32(0.0):
+                inv_rho_n = np.float32(1.0) / rho_n
+            else:
+                inv_rho_n = np.float32(0.0)
+            ux_n = mx * inv_rho_n
+            uy_n = my * inv_rho_n
+            uz_n = mz * inv_rho_n
+            usq_n = ux_n * ux_n + uy_n * uy_n + uz_n * uz_n
+
+            # Boundary state: prescribed pressure (rho), extrapolated velocity.
+            rho_b = rho_target
+            ux_b = ux_n
+            uy_b = uy_n
+            uz_b = uz_n
+            usq_b = usq_n
+
+            for i in range(19):
+                cx = np.float32(LATTICE_VELOCITIES_3D[i, 0])
+                cy = np.float32(LATTICE_VELOCITIES_3D[i, 1])
+                cz = np.float32(LATTICE_VELOCITIES_3D[i, 2])
+                w = np.float32(LATTICE_WEIGHTS_3D[i])
+                cu_n = cx * ux_n + cy * uy_n + cz * uz_n
+                cu_b = cx * ux_b + cy * uy_b + cz * uz_b
+                f_eq_n = w * rho_n * (
+                    np.float32(1.0)
+                    + cu_n / cs2
+                    + (cu_n * cu_n) * inv_2cs4
+                    - usq_n * inv_2cs2
+                )
+                f_eq_b = w * rho_b * (
+                    np.float32(1.0)
+                    + cu_b / cs2
+                    + (cu_b * cu_b) * inv_2cs4
+                    - usq_b * inv_2cs2
+                )
+                f_next[i, Nx - 1, y, z] = f_eq_b + (f_next[i, Nx - 2, y, z] - f_eq_n)
+
+
+# ---------------------------------------------------------------------------
 # High-level driver
 # ---------------------------------------------------------------------------
 
@@ -316,6 +591,8 @@ def run_channel_smoke(
     n_steps: int = 400,
     body: np.ndarray | None = None,
     wall_links=None,
+    use_guo_neem: bool = False,
+    rho_outflow: float = 1.0,
     progress_callback=None,
 ):
     """Run the 3D channel-flow smoke and return (rho, ux, uy, uz, diag).
@@ -331,6 +608,15 @@ def run_channel_smoke(
     post-pass per step. At q = 0.5 the Bouzidi correction is a no-op
     so passing wall_links with all-q=0.5 yields identical output to
     full-way -- the q=0.5 sanity test pins this.
+
+    If ``use_guo_neem`` is True, swap the inline equilibrium-inflow +
+    zero-gradient-outflow path for the Guo non-equilibrium extrapolation
+    pair (``apply_guo_inflow`` + ``apply_guo_outflow``) running as post-
+    passes after the pure-bulk kernel. ``rho_outflow`` is the prescribed
+    outlet density (defaults to 1.0 = atmospheric). The two boundary
+    pathways are independent: the legacy path stays bit-for-bit
+    untouched when ``use_guo_neem`` is False, which is what every
+    existing test relies on.
 
     diag is a dict with mass-conservation, peak velocity, and the
     measured centreline-to-mean ratio (~ 1.5 for fully-developed
@@ -353,19 +639,32 @@ def run_channel_smoke(
     else:
         apply_bouzidi_correction = None
 
+    u_in_f32 = np.float32(u_in)
+    rho_outflow_f32 = np.float32(rho_outflow)
+
     for step in range(n_steps):
-        # step_bgk_3d reads f and writes f_next, leaving f unmodified.
-        # The Bouzidi correction needs the PRE-step populations to
-        # recompute f_tilde locally at wall links, so we pass f (not
-        # f_next) and apply the correction BEFORE the swap.
-        step_bgk_3d(f, f_next, body,
-                    omega, np.float32(u_in))
+        if use_guo_neem:
+            # Pure-bulk step (no inline boundary handling at x faces),
+            # then Guo NEEM post-passes for inflow and outflow.
+            step_bgk_3d_pure_bulk(f, f_next, body, omega)
+            apply_guo_inflow(f_next, body, u_in_f32)
+            apply_guo_outflow(f_next, body, rho_outflow_f32)
+        else:
+            # Legacy path: inline equilibrium-inflow + zero-gradient
+            # outflow inside step_bgk_3d. Bit-for-bit unchanged.
+            step_bgk_3d(f, f_next, body, omega, u_in_f32)
+
         if apply_bouzidi_correction is not None:
+            # Bouzidi reads PRE-step populations (still in f) to
+            # recompute f_tilde locally at wall links, then overrides
+            # specific f_next[opp, x_f] entries. Runs AFTER the Guo
+            # NEEM passes so that at the rare wall link sitting at
+            # x=0 / x=Nx-1, Bouzidi's wall-aware override wins.
             apply_bouzidi_correction(
                 f, f_next, body,
                 wall_links.x, wall_links.y, wall_links.z,
                 wall_links.dir, wall_links.q,
-                omega, np.float32(u_in),
+                omega, u_in_f32,
             )
         f, f_next = f_next, f
         if progress_callback is not None and (step % max(1, n_steps // 20) == 0):

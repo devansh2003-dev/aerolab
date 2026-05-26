@@ -556,6 +556,34 @@ if view == "3D (local, in development)":
     else:
         use_bouzidi = False
 
+    # 2026-05-26 Guo NEEM toggle. The legacy path uses equilibrium-write
+    # inflow + zero-gradient-copy outflow inside the BGK kernel; Guo
+    # non-equilibrium extrapolation (Guo, Zheng, Shi 2002) replaces both
+    # with proper post-passes that copy the non-equilibrium part from
+    # the neighbour interior. Visually this means the wake leaves the
+    # domain cleanly instead of being smoothed flat by the zero-gradient
+    # copy.
+    inflow_choice = st.radio(
+        "Inflow / outflow scheme",
+        ["Equilibrium + zero-gradient (legacy)", "Guo NEEM (non-equilibrium)"],
+        index=1,                                   # default to Guo NEEM
+        horizontal=True,
+        key="inflow_3d_choice",
+        help=(
+            "**Equilibrium + zero-gradient**: the inlet writes f_eq at "
+            "the prescribed velocity, the outlet copies the second-to-last "
+            "x-slice to the last one. Cheap, but the zero-gradient copy "
+            "forces a uniform outlet velocity which damps the wake and "
+            "introduces low-grade reflections back into the domain.\n\n"
+            "**Guo NEEM**: post-passes that prescribe u_in at the inlet "
+            "and rho = 1 at the outlet, while extrapolating the "
+            "non-equilibrium part of the populations from the interior. "
+            "The wake leaves the domain naturally with no spurious "
+            "reflections; this is what the validation track will use."
+        ),
+    )
+    use_guo_neem = inflow_choice.startswith("Guo")
+
     if st.button(":material/play_arrow: &nbsp; Run smoke",
                  use_container_width=True):
         import time as _time
@@ -580,6 +608,7 @@ if view == "3D (local, in development)":
                 Nx=nx, Ny=ny, Nz=nz, u_in=u_in, nu=nu, n_steps=n_steps,
                 body=body_mask_3d,
                 wall_links=wall_links_3d,
+                use_guo_neem=use_guo_neem,
                 progress_callback=_cb,
             )
             elapsed = _time.time() - _t0
@@ -692,6 +721,7 @@ if view == "3D (local, in development)":
             )
         else:
             _sphere_suffix = " (no body)"
+        _sphere_suffix += " · Guo NEEM" if use_guo_neem else " · Eq inflow"
         with st.expander(
             ":material/visibility: &nbsp; **Smoke particles** &mdash; "
             "Phase A2 viz" + _sphere_suffix,
