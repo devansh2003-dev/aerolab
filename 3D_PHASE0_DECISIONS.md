@@ -285,6 +285,16 @@ A minimal abstraction, deliberately not more:
   reference function. A future GPU kernel is a transcription of it,
   not a redesign. Do not abstract beyond this.
 
+**Pre-baked field as a valid `state` (amended 2026-05-26 for D-10).**
+With the pre-bake / replay architecture, the consumer-product runtime
+path never calls `step()` on a gallery shape — it loads a frozen
+`(ux, uy, uz)` from a `.npz` and feeds it straight to the smoke
+advector. The backend seam absorbs this with one extra entry point:
+`load_macroscopic(npz_path) -> state-with-u-only` returns a minimal
+state whose `download_macroscopic` is the identity. The orchestration
+code branches on "have field" vs "must solve" once, at the top, and
+both paths converge on the same advector and renderer.
+
 ---
 
 ## D-8. Smoke-particle advection (the v1 viz, locked 2026-05-26)
@@ -316,10 +326,28 @@ a wind tunnel smoke test. Nobody outside CFD knows what a
 Q-criterion isosurface is. The smoke particles ARE the 3D analogue
 of the 2D streaklines AeroLab already ships.
 
-**Empirical confirmation** (Phase A prototype): pick a pre-baked
-field, advect ~300 particles, render with Plotly Scatter3d, confirm
-the visual matches the 2D streakline output of the same case
-projected onto a plane.
+**Empirical confirmation** (Phase A prototype, two-stage —
+reviewer 2026-05-26 flagged the original single qualitative check
+as too soft):
+
+1. **Analytic verification** (must run as a unit test):
+   * Uniform flow: set `u = (u_in, 0, 0)` everywhere, advect a
+     particle for N steps, assert displacement equals
+     `(u_in * N * dt, 0, 0)` to within machine epsilon. This
+     exercises the RK4 integrator on a closed-form trajectory.
+   * 3D plane Poiseuille: set `u(y) = u_peak * (1 - ((y - y_c)/h)²)`,
+     advect a particle seeded at `y = y_c` (centerline), assert it
+     stays on the centerline and drifts at `u_peak * N * dt` over
+     the run length. This exercises the trilinear interpolator
+     against a known field gradient.
+   * Together these gate the integrator + interpolator combo
+     against the real failure modes (off-by-half-cell trilinear,
+     wrong RK4 weights, integer wrap-around) before the gut check
+     on a real LBM field has any chance of catching them.
+2. **Visual gut check** (the original test, kept as a final
+   acceptance step): pick a pre-baked field, advect ~300 particles,
+   render with Plotly Scatter3d, confirm the visual matches the 2D
+   streakline output of the same case projected onto a plane.
 
 ---
 
@@ -340,14 +368,31 @@ OBJ, PLY, etc.; pure-Python, no compiled binary on Cloud). Adds
   1. **Load** via `trimesh.load(filename)`. Accept STL (ASCII +
      binary), OBJ, PLY, GLB.
   2. **Repair** if non-watertight: `trimesh.repair.fill_holes()`,
-     `trimesh.repair.fix_normals()`. If still bad, warn the user;
-     do not refuse the upload (consumer product).
-  3. **Centre + rescale** to a fixed fraction of the LBM domain
-     (target ~ D / Lx = 0.3 for the streamwise bounding-box
-     dimension, matching the 2D blockage convention).
+     `trimesh.repair.fix_normals()`. If still bad, see step 4a for
+     the morphological-close fallback before any user-facing warning.
+  3. **Centre + rescale** to a fixed fraction of the LBM domain.
+     **Blockage is frontal area / cross-section, not streamwise
+     length** (reviewer 2026-05-26 caught a wording slip). Anchor
+     the target to `D / Ny ≈ 0.3` on the wall-normal dimension —
+     i.e. the body's frontal bounding box should occupy ~30 % of
+     the cross-section, matching the 2D blockage convention which
+     `VALIDATION.md` also uses for the cylinder/square sweeps. The
+     streamwise dimension is set by the channel length, not by the
+     blockage target.
   4. **Voxelise** via `trimesh.voxelized(pitch=lattice_spacing)`.
      Returns a `VoxelGrid` that exposes `.matrix` as a boolean
      numpy array of solid cells.
+  4a. **Morphological close** on the boolean mask
+      (`scipy.ndimage.binary_closing` with a small structuring
+      element, default `iterations=1`). A 3-by-3-by-3 close seals
+      pinholes from sub-cell-thin features without altering the
+      body's outer silhouette by more than one cell. Only AFTER
+      the close fails to produce a single connected solid component
+      do we surface the "result may be approximate" warning. This
+      is the "Swiss-cheese mask lets smoke flow through the body"
+      failure mode the reviewer flagged — consumer-product framing
+      collides with a physically wrong picture, and a silent
+      morphological pass is the right cost/honesty point.
   5. **Build wall-link list**: for every fluid cell at the
      boundary, enumerate the 18 (or fewer) directions whose
      neighbour is solid, record (cell, direction, q=0.5) into the
@@ -394,6 +439,19 @@ a gallery shape.
 shapes = ~15-20 MB. Acceptable in the repo; Git LFS for `*.npz` if
 it grows.
 
+**float16 is storage-only — dequantise to float32 at load time**
+(reviewer 2026-05-26). float16 carries 3-to-4 decimal digits of
+precision; RK4 advection with trilinear interpolation needs more
+than that to keep particle trajectories from drifting visibly over
+hundreds of steps. The replay path is:
+
+  np.load(npz) -> arrays are float16
+  -> dequantise: u_field = arr.astype(np.float32, copy=False)
+  -> RK4 integrator runs entirely in float32.
+
+The float16-only-on-disk discipline keeps the .npz small without
+giving up integrator precision. Document this in the load helper.
+
 **Solve-time cost.** Each gallery shape costs ~5-20 minutes offline
 on the development laptop (96³ × ~5000 steps with the Phase 1 TRT
 kernel at ~2 Mcell/s, less with the Phase 1.5 named-scalars
@@ -413,9 +471,16 @@ rewrite). Run once, never again unless the kernel changes.
   Upload stage (runtime, expensive only once per upload):
     user .stl  ->  voxelise + solve  ->  field  ->  same replay path
 
-**Cache the upload solve.** Hash the uploaded mesh, store the
-solved field in `st.cache_data` keyed on the hash. Same-user
-re-upload of the same file is instant.
+**Cache the upload solve. Hash the canonical mesh form, not the
+raw file bytes** (reviewer 2026-05-26). The upload pipeline (D-9
+steps 1-3) centres and rescales the mesh, optionally simplifies it
+to a face budget, and produces a canonical `trimesh.Trimesh`. Hash
+that — `sha256(canonical_vertices_bytes + canonical_faces_bytes)` —
+not the bytes the user POSTed. Two users uploading the same
+underlying model at different scales or with different ASCII / binary
+STL framings then share the cache; hashing the raw upload misses
+that and burns the LBM solve twice. Use the canonical hash as the
+`st.cache_data` key for the solved field.
 
 **Validation files** (sphere, cylinder, TGV) stay in a different
 directory (`data/validation/`) — they are not gallery candidates

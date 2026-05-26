@@ -597,12 +597,148 @@ if view == "3D (local, in development)":
                 "within 5 %, centerline ratio in the Poiseuille band."
             )
 
+        # === Phase A1 prototype: smoke-particle 3D advection ===
+        # Locked by D-8 in 3D_PHASE0_DECISIONS.md. This is the first
+        # concrete demonstration of the consumer-product viz path:
+        # take the steady (ux, uy, uz) the LBM solver produced, advect
+        # massless tracers through it via RK4 (`src/lbm_3d_smoke_particles.py`),
+        # render the final cloud as Plotly Scatter3d so the user can
+        # rotate / zoom. On a body-less channel the trajectories are
+        # straight; the dramatic flow-around-shape visuals come once
+        # Phase A2 wires in a sphere.
+        from src.lbm_3d_smoke_particles import (
+            seed_inflow_particles,
+            step_smoke,
+        )
+
+        with st.expander(
+            ":material/visibility: &nbsp; **Smoke particles** &mdash; "
+            "Phase A1 viz prototype",
+            expanded=True,
+        ):
+            st.caption(
+                "RK4 advection of ~150 massless tracers through the "
+                "steady velocity field above. Seeded at the inflow "
+                "(x=2) only -- no mid-domain spawn (the 2D streakline "
+                "design rule carries over). Rotate / zoom the scene. "
+                "On a body-less channel the streaks are straight; "
+                "they curve once Phase A2 adds a sphere."
+            )
+
+            # Build the particle pool by repeatedly seeding + advecting.
+            # The LBM solve produced a steady field; advection cost is
+            # dominated by the trilerp inner loops (pure numpy,
+            # ~few ms / frame at this particle count).
+            n_y_rows = max(3, ny // 4)
+            n_z_rows = max(3, nz // 4)
+            y_rows_ad = np.linspace(2.0, ny - 3.0, n_y_rows)
+            z_rows_ad = np.linspace(2.0, nz - 3.0, n_z_rows)
+
+            rng_smoke = np.random.default_rng(0)
+            px = np.empty(0, dtype=np.float64)
+            py = np.empty(0, dtype=np.float64)
+            pz = np.empty(0, dtype=np.float64)
+            age = np.empty(0, dtype=np.int32)
+
+            # max_age sized so an inflow particle can traverse the
+            # full channel; same lesson as 2D's max_age_local.
+            cross_time_frames = int(nx / max(u_in, 1e-6))
+            max_age = max(60, int(1.2 * cross_time_frames))
+
+            # 60 frames is enough to fill the channel; each frame
+            # advects existing particles by dt=1.0 lattice-time.
+            n_frames_ad = 60
+            for _ in range(n_frames_ad):
+                seed = seed_inflow_particles(
+                    n_per_row=1,
+                    y_rows=y_rows_ad,
+                    z_rows=z_rows_ad,
+                    x=2.0,
+                    rng=rng_smoke,
+                )
+                px, py, pz, age = step_smoke(
+                    px, py, pz, age,
+                    ux.astype(np.float32, copy=False),
+                    uy.astype(np.float32, copy=False),
+                    uz.astype(np.float32, copy=False),
+                    body_mask=None,
+                    dt=1.0,
+                    n_substeps=4,
+                    max_age=max_age,
+                    inflow_seed_xyz=seed,
+                )
+
+            if len(px) == 0:
+                st.info(
+                    "Particles all exited the domain before the viz "
+                    "captured them; try a lower inflow speed or more "
+                    "steps."
+                )
+            else:
+                # Colour by streamwise speed at the final position so
+                # the visualisation reads as "fast = brighter", same
+                # plasma convention 2D uses (matches CFD post-proc tools).
+                from src.lbm_3d_smoke_particles import trilerp_3d
+                sp = trilerp_3d(
+                    ux.astype(np.float32, copy=False), px, py, pz,
+                )
+
+                smoke_fig = go.Figure(
+                    data=go.Scatter3d(
+                        x=px, y=py, z=pz,
+                        mode="markers",
+                        marker=dict(
+                            size=3.5,
+                            color=sp,
+                            colorscale="Plasma",
+                            cmin=0.0,
+                            cmax=float(u_in) * 1.5,
+                            colorbar=dict(
+                                title="u<sub>x</sub>",
+                                thickness=12,
+                                len=0.6,
+                            ),
+                            opacity=0.85,
+                        ),
+                    )
+                )
+                smoke_fig.update_layout(
+                    scene=dict(
+                        xaxis=dict(title="x (streamwise)", range=[0, nx]),
+                        yaxis=dict(title="y (wall-normal)", range=[0, ny]),
+                        zaxis=dict(title="z (spanwise)", range=[0, nz]),
+                        aspectmode="data",
+                        bgcolor="#0a0a0a",
+                        camera=dict(
+                            eye=dict(x=1.4, y=1.1, z=0.85),
+                        ),
+                    ),
+                    height=480,
+                    margin=dict(l=0, r=0, t=20, b=0),
+                    paper_bgcolor="#0a0a0a",
+                )
+                st.plotly_chart(smoke_fig, use_container_width=True)
+                st.caption(
+                    f"{len(px):,} live particles after {n_frames_ad} "
+                    f"frames of RK4 advection (4 substeps / frame). "
+                    f"Tests: [test_lbm_3d_smoke_particles.py]"
+                    f"(https://github.com/devansh2003-dev/aerolab/blob/"
+                    f"main/tests/test_lbm_3d_smoke_particles.py) "
+                    f"-- 15 analytic-field gates including uniform-flow "
+                    f"drift and 3D Poiseuille centerline (D-8 reviewer "
+                    f"requirement, 2026-05-26)."
+                )
+
     st.divider()
     st.caption(
         "Source: [src/lbm_3d.py](https://github.com/devansh2003-dev/aerolab/"
-        "blob/main/src/lbm_3d.py) &middot; "
+        "blob/main/src/lbm_3d.py), "
+        "[src/lbm_3d_smoke_particles.py](https://github.com/devansh2003-dev/"
+        "aerolab/blob/main/src/lbm_3d_smoke_particles.py) &middot; "
         "Tests: [tests/test_lbm_3d_smoke.py](https://github.com/"
-        "devansh2003-dev/aerolab/blob/main/tests/test_lbm_3d_smoke.py)"
+        "devansh2003-dev/aerolab/blob/main/tests/test_lbm_3d_smoke.py), "
+        "[tests/test_lbm_3d_smoke_particles.py](https://github.com/"
+        "devansh2003-dev/aerolab/blob/main/tests/test_lbm_3d_smoke_particles.py)"
     )
     st.stop()
 
