@@ -257,3 +257,118 @@ class TestMakeSphereMask:
         a = make_sphere_mask(Nx, Ny, Nz, cx, cy, cz, R)
         b = ref_mask(Nx, Ny, Nz, cx, cy, cz, R)
         assert np.array_equal(a, b)
+
+
+# ============================================================================
+# Bouzidi correction kernel: integration-level checks on run_channel_smoke
+# ============================================================================
+
+
+class TestBouzidiCorrection:
+    """The full-way bounce-back inside `step_bgk_3d` is corrected to
+    Bouzidi linear interpolation when `wall_links` is passed to
+    `run_channel_smoke`. The invariants below pin the kernel against
+    physics:
+
+      1. At q = 0.5 the Bouzidi formula reduces to f_tilde_i(x_f),
+         which equals what full-way BB already writes. So q=0.5
+         everywhere must be a no-op.
+      2. At q != 0.5 the corrected output must differ from full-way.
+      3. Velocity inside the body stays zero under Bouzidi too
+         (no leakage via the corrected populations).
+    """
+
+    def _build_sphere_setup(self, q_override=None):
+        """Return (Nx, Ny, Nz, body, wall_links) -- optionally with all
+        q's overridden to a specific value for sanity tests."""
+        from src.lbm_3d_bouzidi import (
+            sphere_wall_links,
+            make_sphere_mask,
+        )
+        Nx, Ny, Nz = 32, 24, 24
+        cx, cy, cz = 12, 12, 12
+        R = 4.5
+        body = make_sphere_mask(Nx, Ny, Nz, cx, cy, cz, R)
+        wall_links = sphere_wall_links(Nx, Ny, Nz, cx, cy, cz, R)
+        if q_override is not None:
+            wall_links.q[:] = np.float32(q_override)
+        return Nx, Ny, Nz, body, wall_links
+
+    @pytest.mark.slow
+    def test_bouzidi_at_q_half_matches_full_way(self):
+        """At q = 0.5 the Bouzidi linear formula collapses to
+        f_tilde_i(x_f). Running with all-q=0.5 wall-links must produce
+        the SAME velocity field (to float32 precision) as running
+        without Bouzidi (full-way BB only). This is the canonical
+        sanity check that the correction kernel is wired correctly."""
+        from src.lbm_3d import run_channel_smoke
+        Nx, Ny, Nz, body, wall_links = self._build_sphere_setup(q_override=0.5)
+        u_in, nu, n_steps = 0.04, 0.02, 200
+
+        _, ux_full, _, _, _ = run_channel_smoke(
+            Nx=Nx, Ny=Ny, Nz=Nz, u_in=u_in, nu=nu, n_steps=n_steps,
+            body=body,
+        )
+        _, ux_bz, _, _, _ = run_channel_smoke(
+            Nx=Nx, Ny=Ny, Nz=Nz, u_in=u_in, nu=nu, n_steps=n_steps,
+            body=body, wall_links=wall_links,
+        )
+        # float32 precision over 200 steps allows ~1e-4 relative drift
+        # from non-associative summation order, but the velocity field
+        # values are O(0.01-0.1), so an absolute tolerance of 1e-5 is
+        # a tight pin. If this fails the formulas at q=0.5 are
+        # diverging from full-way BB and something is wrong.
+        max_abs_diff = float(np.max(np.abs(ux_full - ux_bz)))
+        assert max_abs_diff < 1e-5, (
+            f"q=0.5 Bouzidi differs from full-way BB by "
+            f"{max_abs_diff:.2e} -- formula reduction broken"
+        )
+
+    @pytest.mark.slow
+    def test_bouzidi_at_real_q_differs_from_full_way(self):
+        """With the ANALYTIC q-field (most q's not equal to 0.5),
+        Bouzidi must produce a measurably different velocity field
+        from full-way BB. This is the dual of the q=0.5 test --
+        catches a kernel that silently does nothing."""
+        from src.lbm_3d import run_channel_smoke
+        Nx, Ny, Nz, body, wall_links = self._build_sphere_setup()
+        # Confirm the wall-link list has q values away from 0.5
+        # (otherwise the test would be vacuous on a corner-case mask).
+        assert np.any(np.abs(wall_links.q - 0.5) > 0.05), (
+            "wall_link q-field has no q != 0.5 entries; test "
+            "cannot distinguish Bouzidi from full-way for this case"
+        )
+
+        u_in, nu, n_steps = 0.04, 0.02, 200
+        _, ux_full, _, _, _ = run_channel_smoke(
+            Nx=Nx, Ny=Ny, Nz=Nz, u_in=u_in, nu=nu, n_steps=n_steps,
+            body=body,
+        )
+        _, ux_bz, _, _, _ = run_channel_smoke(
+            Nx=Nx, Ny=Ny, Nz=Nz, u_in=u_in, nu=nu, n_steps=n_steps,
+            body=body, wall_links=wall_links,
+        )
+        max_abs_diff = float(np.max(np.abs(ux_full - ux_bz)))
+        # Effect size should be at least ~1 % of u_in somewhere -- the
+        # near-wall populations carry the Bouzidi correction directly.
+        assert max_abs_diff > 0.01 * u_in, (
+            f"Bouzidi field is indistinguishable from full-way "
+            f"(max diff = {max_abs_diff:.2e}, expected > {0.01 * u_in:.2e}). "
+            f"Correction kernel may be silently skipping wall links."
+        )
+
+    @pytest.mark.slow
+    def test_bouzidi_preserves_solid_cell_zero_velocity(self):
+        """With Bouzidi corrections active, the post-pass-zero in
+        `run_channel_smoke` (which sets ux/uy/uz to 0 inside the body
+        mask) must still hold. Catches a regression where the
+        correction kernel writes into solid cells."""
+        from src.lbm_3d import run_channel_smoke
+        Nx, Ny, Nz, body, wall_links = self._build_sphere_setup()
+        _, ux, uy, uz, _ = run_channel_smoke(
+            Nx=Nx, Ny=Ny, Nz=Nz, u_in=0.04, nu=0.02, n_steps=100,
+            body=body, wall_links=wall_links,
+        )
+        assert float(np.max(np.abs(ux[body]))) == 0.0
+        assert float(np.max(np.abs(uy[body]))) == 0.0
+        assert float(np.max(np.abs(uz[body]))) == 0.0

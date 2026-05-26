@@ -315,6 +315,7 @@ def run_channel_smoke(
     nu: float = 0.01,
     n_steps: int = 400,
     body: np.ndarray | None = None,
+    wall_links=None,
     progress_callback=None,
 ):
     """Run the 3D channel-flow smoke and return (rho, ux, uy, uz, diag).
@@ -323,6 +324,13 @@ def run_channel_smoke(
     channel: bounce-back on y = 0 / Ny-1, periodic in z, inflow at
     x = 0, zero-gradient at x = Nx-1. Expected steady solution is
     a parabolic plane-Poiseuille profile in y, uniform in z.
+
+    If ``wall_links`` is provided (a ``WallLinkList`` from
+    ``src/lbm_3d_bouzidi.py``), the full-way bounce-back inside
+    ``step_bgk_3d`` is corrected to Bouzidi linear interpolation in a
+    post-pass per step. At q = 0.5 the Bouzidi correction is a no-op
+    so passing wall_links with all-q=0.5 yields identical output to
+    full-way -- the q=0.5 sanity test pins this.
 
     diag is a dict with mass-conservation, peak velocity, and the
     measured centreline-to-mean ratio (~ 1.5 for fully-developed
@@ -336,9 +344,29 @@ def run_channel_smoke(
 
     mass_initial = float(f.sum())
 
+    # Pre-import the Bouzidi correction so the import cost is paid once
+    # per call (not per step) AND the function only loads when actually
+    # using Bouzidi -- the full-way path stays free of numba JIT for
+    # the correction kernel.
+    if wall_links is not None:
+        from src.lbm_3d_bouzidi import apply_bouzidi_correction
+    else:
+        apply_bouzidi_correction = None
+
     for step in range(n_steps):
+        # step_bgk_3d reads f and writes f_next, leaving f unmodified.
+        # The Bouzidi correction needs the PRE-step populations to
+        # recompute f_tilde locally at wall links, so we pass f (not
+        # f_next) and apply the correction BEFORE the swap.
         step_bgk_3d(f, f_next, body,
                     omega, np.float32(u_in))
+        if apply_bouzidi_correction is not None:
+            apply_bouzidi_correction(
+                f, f_next, body,
+                wall_links.x, wall_links.y, wall_links.z,
+                wall_links.dir, wall_links.q,
+                omega, np.float32(u_in),
+            )
         f, f_next = f_next, f
         if progress_callback is not None and (step % max(1, n_steps // 20) == 0):
             progress_callback(step / n_steps, f"3D step {step}/{n_steps}")

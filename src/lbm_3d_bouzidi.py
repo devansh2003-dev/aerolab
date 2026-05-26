@@ -41,8 +41,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from numba import njit
 
-from src.lbm_3d import LATTICE_VELOCITIES_3D
+from src.lbm_3d import (
+    LATTICE_VELOCITIES_3D,
+    LATTICE_WEIGHTS_3D,
+    OPPOSITE_3D,
+)
 
 
 @dataclass
@@ -253,9 +258,223 @@ def sphere_wall_links(
     )
 
 
+# ===========================================================================
+# Bouzidi correction kernel (Phase A2-FULL Part 2)
+# ===========================================================================
+#
+# The full-way bounce-back path in `src/lbm_3d.step_bgk_3d` writes
+# `f_next[opp, x_f] = f_tilde_i(x_f)` whenever the neighbour of fluid
+# cell x_f along direction i is solid. This is correct for q = 0.5
+# (wall at on-link midpoint). For other q values it introduces a
+# viscosity-dependent error in Cd.
+#
+# Bouzidi-Firdaouss-Lallemand 2001 ("Momentum transfer of a Boltzmann-
+# lattice fluid with boundaries", Phys. Fluids 13:11) defines the
+# linear-interpolation correction. After full-way BB has already
+# populated f_next[opp, x_f] for every wall link, we run this post-
+# pass to OVERRIDE those values with the q-correct Bouzidi result.
+#
+# At q = 0.5 the Bouzidi formula reduces to f_tilde_i(x_f), so this
+# pass is a no-op there -- the q=0.5 test in `tests/test_lbm_3d_bouzidi.py`
+# pins this invariant.
+
+
+@njit(cache=True, fastmath=True)
+def apply_bouzidi_correction(
+    f_pre: np.ndarray,            # (19, Nx, Ny, Nz) PRE-collision populations
+    f_next: np.ndarray,           # (19, Nx, Ny, Nz) post-stream populations (full-way BB applied)
+    body: np.ndarray,             # (Nx, Ny, Nz) bool
+    wall_x: np.ndarray,           # (N,) int32
+    wall_y: np.ndarray,           # (N,) int32
+    wall_z: np.ndarray,           # (N,) int32
+    wall_dir: np.ndarray,         # (N,) int32
+    wall_q: np.ndarray,           # (N,) float32
+    omega: np.float32,
+    u_in: np.float32,
+) -> None:
+    """Apply Bouzidi linear interpolation correction at every wall link.
+
+    Reads ``f_pre`` (the populations BEFORE the step, kept unmodified by
+    ``step_bgk_3d``) to recompute the post-collision ``f_tilde`` locally
+    at the wall-link source cell (and, for q < 0.5, at the upstream
+    cell). Overwrites ``f_next[opp, x_f]`` in place.
+
+    Reads the lattice constants from `src.lbm_3d` module-level arrays
+    (LATTICE_VELOCITIES_3D, LATTICE_WEIGHTS_3D, OPPOSITE_3D) so kernel
+    and Bouzidi correction always agree on convention.
+
+    The math:
+
+      q >= 0.5:
+        f_next[opp, x_f] = (1/(2q)) * f_tilde_i(x_f)
+                         + ((2q - 1)/(2q)) * f_tilde_opp(x_f)
+
+      q < 0.5:
+        f_next[opp, x_f] = 2q * f_tilde_i(x_f)
+                         + (1 - 2q) * f_tilde_i(x_f - c_i)
+
+    Notes
+    -----
+    - ``f_pre`` MUST be the unmutated input to the step (not f_next).
+      ``run_channel_smoke`` calls this BEFORE the f/f_next swap.
+    - Upstream cells out of the domain or inside the body force a
+      fall-back to full-way (q = 0.5 equivalent): we just leave
+      f_next[opp, x_f] at the value step_bgk_3d already wrote.
+    - Inflow override at x = 0 matches step_bgk_3d (rho = 1, u =
+      (u_in, 0, 0)). Keeping this in sync is load-bearing -- if the
+      step changes its inflow rule, this must change too.
+    """
+    Nx, Ny, Nz = body.shape
+    n_links = wall_x.shape[0]
+    cs2 = np.float32(1.0 / 3.0)
+    inv_2cs2 = np.float32(1.0 / (2.0 * (1.0 / 3.0)))
+    inv_2cs4 = np.float32(1.0 / (2.0 * (1.0 / 3.0) * (1.0 / 3.0)))
+
+    for k in range(n_links):
+        x = wall_x[k]
+        y = wall_y[k]
+        z = wall_z[k]
+        i = wall_dir[k]
+        q = wall_q[k]
+        opp = OPPOSITE_3D[i]
+
+        # ---- Compute macroscopic at the fluid cell (x_f) ----
+        rho_xf = np.float32(0.0)
+        mx = np.float32(0.0)
+        my = np.float32(0.0)
+        mz = np.float32(0.0)
+        for j in range(19):
+            fj = f_pre[j, x, y, z]
+            rho_xf += fj
+            mx += np.float32(LATTICE_VELOCITIES_3D[j, 0]) * fj
+            my += np.float32(LATTICE_VELOCITIES_3D[j, 1]) * fj
+            mz += np.float32(LATTICE_VELOCITIES_3D[j, 2]) * fj
+
+        if x == 0:
+            # Inflow override (must match step_bgk_3d exactly).
+            rho_xf = np.float32(1.0)
+            ux = u_in
+            uy = np.float32(0.0)
+            uz = np.float32(0.0)
+        else:
+            if rho_xf > np.float32(0.0):
+                inv_rho = np.float32(1.0) / rho_xf
+            else:
+                inv_rho = np.float32(0.0)
+            ux = mx * inv_rho
+            uy = my * inv_rho
+            uz = mz * inv_rho
+
+        usq = ux * ux + uy * uy + uz * uz
+
+        # ---- f_tilde_i at (x, y, z) ----
+        cxi = np.float32(LATTICE_VELOCITIES_3D[i, 0])
+        cyi = np.float32(LATTICE_VELOCITIES_3D[i, 1])
+        czi = np.float32(LATTICE_VELOCITIES_3D[i, 2])
+        wi = np.float32(LATTICE_WEIGHTS_3D[i])
+        cu_i = cxi * ux + cyi * uy + czi * uz
+        f_eq_i = wi * rho_xf * (
+            np.float32(1.0)
+            + cu_i / cs2
+            + (cu_i * cu_i) * inv_2cs4
+            - usq * inv_2cs2
+        )
+        if x == 0:
+            # At the inlet step writes equilibrium directly (see
+            # step_bgk_3d). f_tilde IS f_eq there.
+            f_tilde_i = f_eq_i
+        else:
+            f_tilde_i = f_pre[i, x, y, z] + omega * (f_eq_i - f_pre[i, x, y, z])
+
+        if q >= np.float32(0.5):
+            # ---- q >= 0.5: need f_tilde_opp at (x, y, z) ----
+            cxo = np.float32(LATTICE_VELOCITIES_3D[opp, 0])
+            cyo = np.float32(LATTICE_VELOCITIES_3D[opp, 1])
+            czo = np.float32(LATTICE_VELOCITIES_3D[opp, 2])
+            wo = np.float32(LATTICE_WEIGHTS_3D[opp])
+            cu_opp = cxo * ux + cyo * uy + czo * uz
+            f_eq_opp = wo * rho_xf * (
+                np.float32(1.0)
+                + cu_opp / cs2
+                + (cu_opp * cu_opp) * inv_2cs4
+                - usq * inv_2cs2
+            )
+            if x == 0:
+                f_tilde_opp = f_eq_opp
+            else:
+                f_tilde_opp = (
+                    f_pre[opp, x, y, z]
+                    + omega * (f_eq_opp - f_pre[opp, x, y, z])
+                )
+            inv_2q = np.float32(1.0) / (np.float32(2.0) * q)
+            f_next[opp, x, y, z] = (
+                inv_2q * f_tilde_i
+                + (np.float32(2.0) * q - np.float32(1.0)) * inv_2q * f_tilde_opp
+            )
+        else:
+            # ---- q < 0.5: need f_tilde_i at upstream cell (x - c_i) ----
+            xu = x - LATTICE_VELOCITIES_3D[i, 0]
+            yu = y - LATTICE_VELOCITIES_3D[i, 1]
+            zu = z - LATTICE_VELOCITIES_3D[i, 2]
+            in_domain = (
+                xu >= 0 and xu < Nx
+                and yu >= 0 and yu < Ny
+                and zu >= 0 and zu < Nz
+            )
+            if (not in_domain) or body[xu, yu, zu]:
+                # Upstream cell unavailable -- leave the full-way BB
+                # value step_bgk_3d already wrote. Slightly less
+                # accurate at narrow gaps but never wrong.
+                continue
+            # Compute macroscopic at upstream cell
+            rho_u = np.float32(0.0)
+            mxu = np.float32(0.0)
+            myu = np.float32(0.0)
+            mzu = np.float32(0.0)
+            for j in range(19):
+                fj = f_pre[j, xu, yu, zu]
+                rho_u += fj
+                mxu += np.float32(LATTICE_VELOCITIES_3D[j, 0]) * fj
+                myu += np.float32(LATTICE_VELOCITIES_3D[j, 1]) * fj
+                mzu += np.float32(LATTICE_VELOCITIES_3D[j, 2]) * fj
+            if xu == 0:
+                rho_u = np.float32(1.0)
+                uxu = u_in
+                uyu = np.float32(0.0)
+                uzu = np.float32(0.0)
+            else:
+                if rho_u > np.float32(0.0):
+                    inv_rho_u = np.float32(1.0) / rho_u
+                else:
+                    inv_rho_u = np.float32(0.0)
+                uxu = mxu * inv_rho_u
+                uyu = myu * inv_rho_u
+                uzu = mzu * inv_rho_u
+            usq_u = uxu * uxu + uyu * uyu + uzu * uzu
+            cu_iu = cxi * uxu + cyi * uyu + czi * uzu
+            f_eq_iu = wi * rho_u * (
+                np.float32(1.0)
+                + cu_iu / cs2
+                + (cu_iu * cu_iu) * inv_2cs4
+                - usq_u * inv_2cs2
+            )
+            if xu == 0:
+                f_tilde_iu = f_eq_iu
+            else:
+                f_tilde_iu = (
+                    f_pre[i, xu, yu, zu]
+                    + omega * (f_eq_iu - f_pre[i, xu, yu, zu])
+                )
+            f_next[opp, x, y, z] = (
+                np.float32(2.0) * q * f_tilde_i
+                + (np.float32(1.0) - np.float32(2.0) * q) * f_tilde_iu
+            )
+
+
 __all__ = [
     "WallLinkList",
     "solve_bouzidi_q",
     "make_sphere_mask",
     "sphere_wall_links",
+    "apply_bouzidi_correction",
 ]

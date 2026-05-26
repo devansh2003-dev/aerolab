@@ -529,6 +529,33 @@ if view == "3D (local, in development)":
             f"Blockage (D / Ny) = {2 * sphere_R / ny:.2f}."
         )
 
+        # Phase A2-FULL Part 2 (2026-05-26): BC toggle. Bouzidi-linear
+        # interpolated bounce-back tracks the analytic q for each wall
+        # link (built once via src/lbm_3d_bouzidi.sphere_wall_links).
+        # At q = 0.5 the formula reduces to full-way BB exactly --
+        # pinned by tests/test_lbm_3d_bouzidi.py.
+        bc_choice = st.radio(
+            "Bounce-back scheme",
+            ["Full-way (q = 0.5 everywhere)", "Bouzidi (analytic q)"],
+            index=1,                       # default to Bouzidi -- the accurate path
+            horizontal=True,
+            key="bc_3d_choice",
+            help=(
+                "**Full-way**: every wall link bounces back as if the "
+                "wall sits at the on-link midpoint (q = 0.5). Cheap, "
+                "introduces a viscosity-dependent error in Cd.\n\n"
+                "**Bouzidi**: linearly interpolates the bounce-back "
+                "using the actual wall fraction q from the analytic "
+                "sphere quadratic (D-4 in the memo). Combined with "
+                "TRT (D-2) this places the wall at the mid-link "
+                "position INDEPENDENT of viscosity -- the property "
+                "that directly serves Cd accuracy."
+            ),
+        )
+        use_bouzidi = bc_choice.startswith("Bouzidi")
+    else:
+        use_bouzidi = False
+
     if st.button(":material/play_arrow: &nbsp; Run smoke",
                  use_container_width=True):
         import time as _time
@@ -538,6 +565,12 @@ if view == "3D (local, in development)":
             _make_sphere_mask(nx, ny, nz, sphere_cx, sphere_cy, sphere_cz, sphere_R)
             if use_sphere else None
         )
+        wall_links_3d = None
+        if use_sphere and use_bouzidi:
+            from src.lbm_3d_bouzidi import sphere_wall_links
+            wall_links_3d = sphere_wall_links(
+                nx, ny, nz, sphere_cx, sphere_cy, sphere_cz, sphere_R,
+            )
         try:
             def _cb(frac, text):
                 progress.progress(frac, text=text)
@@ -545,6 +578,7 @@ if view == "3D (local, in development)":
             rho, ux, uy, uz, diag = run_channel_smoke(
                 Nx=nx, Ny=ny, Nz=nz, u_in=u_in, nu=nu, n_steps=n_steps,
                 body=body_mask_3d,
+                wall_links=wall_links_3d,
                 progress_callback=_cb,
             )
             elapsed = _time.time() - _t0
@@ -649,9 +683,17 @@ if view == "3D (local, in development)":
             step_smoke,
         )
 
+        _sphere_suffix = ""
+        if use_sphere:
+            _sphere_suffix = (
+                " with sphere (Bouzidi)" if use_bouzidi
+                else " with sphere (full-way BB)"
+            )
+        else:
+            _sphere_suffix = " (no body)"
         with st.expander(
             ":material/visibility: &nbsp; **Smoke particles** &mdash; "
-            "Phase A2 viz" + (" with sphere" if use_sphere else " (no body)"),
+            "Phase A2 viz" + _sphere_suffix,
             expanded=True,
         ):
             st.caption(
