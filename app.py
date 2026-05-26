@@ -604,6 +604,34 @@ if view == "3D (local, in development)":
     )
     use_guo_neem = inflow_choice.startswith("Guo")
 
+    # 2026-05-26 Collision toggle. BGK is the default reference path
+    # (single relaxation rate, classic Chapman-Enskog viscosity); TRT
+    # adds the antisymmetric mode at the magic parameter Λ = 3/16, which
+    # places the no-slip wall at the mid-link position INDEPENDENT of
+    # viscosity -- the property that buys Cd accuracy in the validation
+    # track. At s_plus = s_minus the two reduce to each other exactly
+    # (pinned by tests/test_lbm_3d_trt.py::test_trt_channel_matches_bgk_at_unit_lambda).
+    collision_choice = st.radio(
+        "Collision operator",
+        ["BGK (single relaxation rate)", "TRT (Λ = 3/16, magic parameter)"],
+        index=0,                                   # default to BGK -- snappier baseline
+        horizontal=True,
+        key="collision_3d_choice",
+        help=(
+            "**BGK**: one relaxation rate omega = 1/tau set by the "
+            "viscosity. The simplest collision operator; what every "
+            "tutorial LBM ships. Stable up to ~Re 200 on this grid.\n\n"
+            "**TRT (Λ = 3/16)**: splits each direction into symmetric "
+            "and antisymmetric modes with rates s_plus and s_minus, "
+            "constrained so (1/s_plus - 1/2)(1/s_minus - 1/2) = 3/16. "
+            "This magic parameter places the wall at the on-link "
+            "midpoint regardless of viscosity, eliminating the "
+            "tau-dependent error in Cd. Production target for the "
+            "Validation3D preset."
+        ),
+    )
+    use_trt = collision_choice.startswith("TRT")
+
     if st.button(":material/play_arrow: &nbsp; Run smoke",
                  use_container_width=True):
         import time as _time
@@ -624,13 +652,25 @@ if view == "3D (local, in development)":
             def _cb(frac, text):
                 progress.progress(frac, text=text)
             _t0 = _time.time()
-            rho, ux, uy, uz, diag = run_channel_smoke(
-                Nx=nx, Ny=ny, Nz=nz, u_in=u_in, nu=nu, n_steps=n_steps,
-                body=body_mask_3d,
-                wall_links=wall_links_3d,
-                use_guo_neem=use_guo_neem,
-                progress_callback=_cb,
-            )
+            if use_trt:
+                # TRT path: separate driver in src/lbm_3d_trt.py. Uses
+                # apply_bouzidi_correction_trt when wall_links is set.
+                from src.lbm_3d_trt import run_channel_smoke_trt
+                rho, ux, uy, uz, diag = run_channel_smoke_trt(
+                    Nx=nx, Ny=ny, Nz=nz, u_in=u_in, nu=nu, n_steps=n_steps,
+                    body=body_mask_3d,
+                    wall_links=wall_links_3d,
+                    use_guo_neem=use_guo_neem,
+                    progress_callback=_cb,
+                )
+            else:
+                rho, ux, uy, uz, diag = run_channel_smoke(
+                    Nx=nx, Ny=ny, Nz=nz, u_in=u_in, nu=nu, n_steps=n_steps,
+                    body=body_mask_3d,
+                    wall_links=wall_links_3d,
+                    use_guo_neem=use_guo_neem,
+                    progress_callback=_cb,
+                )
             elapsed = _time.time() - _t0
         finally:
             progress.empty()
@@ -742,6 +782,7 @@ if view == "3D (local, in development)":
         else:
             _sphere_suffix = " (no body)"
         _sphere_suffix += " · Guo NEEM" if use_guo_neem else " · Eq inflow"
+        _sphere_suffix += " · TRT" if use_trt else " · BGK"
         with st.expander(
             ":material/visibility: &nbsp; **Smoke particles** &mdash; "
             "Phase A2 viz" + _sphere_suffix,

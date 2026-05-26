@@ -218,3 +218,117 @@ def test_mass_conserved_in_periodic_box():
         f"Mass drifted by {rel:.2e} over 200 periodic steps — should "
         f"be machine precision."
     )
+
+
+# ---------------------------------------------------------------------------
+# Channel-flow TRT driver (run_channel_smoke_trt)
+#
+# The kernels are unit-tested above and via the periodic TGV decay gate.
+# These tests pin the channel composition: TRT collision + full-way wall
+# BB + body BB + Guo NEEM inflow/outflow + optional Bouzidi correction.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.slow
+def test_trt_channel_runs_finite_and_mass_bounded():
+    """A 100-step TRT channel run produces finite output and bounded
+    mass drift. Same gate as the BGK channel (< 5 % over 100 steps).
+    """
+    from src.lbm_3d_trt import run_channel_smoke_trt
+    _, ux, _, _, diag = run_channel_smoke_trt(
+        Nx=32, Ny=16, Nz=16, u_in=0.04, nu=0.02, n_steps=100,
+    )
+    assert np.all(np.isfinite(ux)), "TRT channel produced NaN/Inf"
+    assert abs(diag["mass_drift_rel"]) < 0.05, (
+        f"TRT mass drift {diag['mass_drift_rel']:.4f} exceeds 5 % "
+        f"over 100 steps -- channel driver likely broken"
+    )
+    assert diag["u_peak"] > 0.5 * diag["u_in"], (
+        f"TRT peak u {diag['u_peak']:.4f} far below inflow "
+        f"{diag['u_in']:.4f} -- flow isn't developing"
+    )
+    assert diag["u_peak"] < 0.3, (
+        f"TRT peak u {diag['u_peak']:.4f} exceeded Ma ~ 0.5 -- diverged"
+    )
+
+
+@pytest.mark.slow
+def test_trt_channel_matches_bgk_at_unit_lambda():
+    """The strongest invariant for the TRT channel: with
+    ``scheme="bgk"`` (which sets s_plus = s_minus = omega), the
+    TRT channel must reproduce the proven BGK pure-bulk + Guo NEEM
+    path to float32 precision.
+
+    At s_plus = s_minus = omega the TRT collision split reduces to
+    BGK exactly (algebraic identity). Combined with the same boundary
+    handling and the same (collision-agnostic) Guo NEEM passes, the
+    full velocity field must agree.
+    """
+    from src.lbm_3d import run_channel_smoke
+    from src.lbm_3d_trt import run_channel_smoke_trt
+    args = dict(Nx=24, Ny=12, Nz=12, u_in=0.04, nu=0.02, n_steps=60)
+    _, ux_bgk, uy_bgk, uz_bgk, _ = run_channel_smoke(**args, use_guo_neem=True)
+    _, ux_trt, uy_trt, uz_trt, _ = run_channel_smoke_trt(**args, scheme="bgk")
+    # Float32 accumulation differences are O(1e-7); 1e-5 is a tight pin.
+    max_diff = max(
+        float(np.max(np.abs(ux_trt - ux_bgk))),
+        float(np.max(np.abs(uy_trt - uy_bgk))),
+        float(np.max(np.abs(uz_trt - uz_bgk))),
+    )
+    assert max_diff < 1e-5, (
+        f"TRT channel with s_plus = s_minus = omega should reduce to "
+        f"BGK pure-bulk + Guo NEEM, but max abs diff is {max_diff:.2e}"
+    )
+
+
+@pytest.mark.slow
+def test_trt_channel_sphere_wake_reduction():
+    """A sphere placed in the TRT channel produces a measurable
+    velocity reduction downstream, same direction as the BGK channel.
+    This catches a kernel that silently bypasses the body mask.
+    """
+    from src.lbm_3d_bouzidi import make_sphere_mask, sphere_wall_links
+    from src.lbm_3d_trt import run_channel_smoke_trt
+    Nx, Ny, Nz = 48, 24, 24
+    u_in, nu = 0.04, 0.02
+    cx, cy, cz = 16, 12, 12
+    R = 4.0
+
+    # No-body baseline.
+    _, ux_clean, _, _, _ = run_channel_smoke_trt(
+        Nx=Nx, Ny=Ny, Nz=Nz, u_in=u_in, nu=nu, n_steps=400,
+    )
+    u_clean_downstream = float(ux_clean[cx + 6, cy, cz])
+
+    body = make_sphere_mask(Nx, Ny, Nz, cx, cy, cz, R)
+    wall_links = sphere_wall_links(Nx, Ny, Nz, float(cx), float(cy), float(cz), R)
+    _, ux_sphere, _, _, _ = run_channel_smoke_trt(
+        Nx=Nx, Ny=Ny, Nz=Nz, u_in=u_in, nu=nu, n_steps=400,
+        body=body, wall_links=wall_links,
+    )
+
+    # Velocity inside sphere ~ 0.
+    u_inside = float(ux_sphere[cx, cy, cz])
+    assert abs(u_inside) < 0.1 * u_in, (
+        f"TRT velocity inside sphere {u_inside:.4f} is not near zero "
+        f"-- body bounce-back not pinning solid cells"
+    )
+    # Downstream velocity measurably reduced (~10 % gate, generous --
+    # at this Re and grid the wake is still developing).
+    u_wake = float(ux_sphere[cx + 6, cy, cz])
+    assert u_wake < 0.9 * u_clean_downstream, (
+        f"TRT wake velocity {u_wake:.4f} is not reduced vs baseline "
+        f"{u_clean_downstream:.4f} -- sphere not deflecting flow"
+    )
+
+
+@pytest.mark.slow
+def test_trt_channel_invalid_scheme_raises():
+    """``scheme`` only accepts 'trt' and 'bgk'; anything else is a
+    typo and we'd rather fail fast than silently pick one.
+    """
+    from src.lbm_3d_trt import run_channel_smoke_trt
+    with pytest.raises(ValueError, match="unknown scheme"):
+        run_channel_smoke_trt(
+            Nx=12, Ny=8, Nz=8, n_steps=2, scheme="srt",
+        )

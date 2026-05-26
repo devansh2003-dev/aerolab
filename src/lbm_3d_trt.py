@@ -690,12 +690,258 @@ def fit_decay_rate(times, ke) -> float:
     return -float(b)
 
 
+# ---------------------------------------------------------------------------
+# Channel-flow TRT driver
+#
+# Composes:
+#   * ``trt_channel_step``: TRT collide + push-stream + full-way wall BB
+#     at y faces + full-way body BB. x faces are DROPPED (no streaming
+#     contribution out of the domain). Mirrors ``step_bgk_3d_pure_bulk``
+#     in ``src/lbm_3d.py`` for boundary handling; only the collision math
+#     differs.
+#   * ``apply_guo_inflow`` and ``apply_guo_outflow`` from ``src/lbm_3d.py``
+#     -- those are collision-agnostic (they only need post-stream
+#     f_next entries and the prescribed boundary state), so the BGK
+#     and TRT paths share the inflow/outflow code.
+#   * ``apply_bouzidi_correction_trt`` from ``src/lbm_3d_bouzidi.py`` when
+#     wall_links are provided.
+#
+# At ``s_plus = s_minus = omega`` the TRT split formula reduces to BGK
+# exactly. The corresponding driver-level test pins this against the
+# proven ``step_bgk_3d_pure_bulk`` + Guo NEEM path.
+# ---------------------------------------------------------------------------
+
+
+@njit(cache=True, fastmath=True)
+def trt_channel_step(
+    f: np.ndarray,
+    f_next: np.ndarray,
+    body: np.ndarray,
+    s_plus: np.float32,
+    s_minus: np.float32,
+    vel: np.ndarray,
+    weights: np.ndarray,
+    opp: np.ndarray,
+) -> None:
+    """One channel-flow TRT collide + push-stream pass.
+
+    Boundary handling: ``z`` is periodic, ``y`` is full-way bounce-back
+    on both faces (channel walls), ``x`` boundaries are DROPPED (the
+    caller runs ``apply_guo_inflow`` / ``apply_guo_outflow`` as
+    post-passes to fill them). Solid cells (``body == True``) bounce-back
+    via opposite-direction write to the source.
+
+    Same shape and convention as ``step_bgk_3d_pure_bulk``: pure-bulk
+    plus body + walls, no inline inflow/outflow.
+    """
+    _, Nx, Ny, Nz = f.shape
+    cs2 = np.float32(1.0 / 3.0)
+    inv_2cs2 = np.float32(1.0 / (2.0 * 1.0 / 3.0))
+    inv_2cs4 = np.float32(1.0 / (2.0 * (1.0 / 3.0) * (1.0 / 3.0)))
+
+    for x in range(Nx):
+        for y in range(Ny):
+            for z in range(Nz):
+                if body[x, y, z]:
+                    continue
+
+                rho = np.float32(0.0)
+                mx = np.float32(0.0)
+                my = np.float32(0.0)
+                mz = np.float32(0.0)
+                for i in range(19):
+                    fi = f[i, x, y, z]
+                    rho += fi
+                    mx += np.float32(vel[i, 0]) * fi
+                    my += np.float32(vel[i, 1]) * fi
+                    mz += np.float32(vel[i, 2]) * fi
+                if rho > np.float32(0.0):
+                    inv_rho = np.float32(1.0) / rho
+                else:
+                    inv_rho = np.float32(0.0)
+                ux = mx * inv_rho
+                uy = my * inv_rho
+                uz = mz * inv_rho
+                usq = ux * ux + uy * uy + uz * uz
+
+                for i in range(19):
+                    ii = opp[i]
+                    cu_i = (
+                        np.float32(vel[i, 0]) * ux
+                        + np.float32(vel[i, 1]) * uy
+                        + np.float32(vel[i, 2]) * uz
+                    )
+                    cu_ii = (
+                        np.float32(vel[ii, 0]) * ux
+                        + np.float32(vel[ii, 1]) * uy
+                        + np.float32(vel[ii, 2]) * uz
+                    )
+                    e_i = weights[i] * rho * (
+                        np.float32(1.0)
+                        + cu_i / cs2
+                        + (cu_i * cu_i) * inv_2cs4
+                        - usq * inv_2cs2
+                    )
+                    e_ii = weights[ii] * rho * (
+                        np.float32(1.0)
+                        + cu_ii / cs2
+                        + (cu_ii * cu_ii) * inv_2cs4
+                        - usq * inv_2cs2
+                    )
+                    f_i = f[i, x, y, z]
+                    f_ii = f[ii, x, y, z]
+                    fp = np.float32(0.5) * (f_i + f_ii)
+                    fm = np.float32(0.5) * (f_i - f_ii)
+                    ep = np.float32(0.5) * (e_i + e_ii)
+                    em = np.float32(0.5) * (e_i - e_ii)
+                    f_post = f_i - s_plus * (fp - ep) - s_minus * (fm - em)
+
+                    xn = x + vel[i, 0]
+                    yn = y + vel[i, 1]
+                    zn = z + vel[i, 2]
+                    if zn < 0:
+                        zn += Nz
+                    elif zn >= Nz:
+                        zn -= Nz
+                    if 0 <= xn < Nx and 0 <= yn < Ny:
+                        if body[xn, yn, zn]:
+                            f_next[opp[i], x, y, z] = f_post
+                        else:
+                            f_next[i, xn, yn, zn] = f_post
+                    elif yn < 0 or yn >= Ny:
+                        f_next[opp[i], x, y, z] = f_post
+                    # xn out of [0, Nx): drop. Guo NEEM fills the
+                    # boundary cells in their own post-pass.
+
+
+def run_channel_smoke_trt(
+    Nx: int = 80,
+    Ny: int = 32,
+    Nz: int = 32,
+    u_in: float = 0.05,
+    nu: float = 0.01,
+    n_steps: int = 400,
+    body: np.ndarray | None = None,
+    wall_links=None,
+    use_guo_neem: bool = True,
+    rho_outflow: float = 1.0,
+    scheme: str = "trt",
+    progress_callback=None,
+):
+    """3D channel-flow with TRT collision + (optional) Bouzidi + (default)
+    Guo NEEM. Returns ``(rho, ux, uy, uz, diag)`` -- same shape as
+    ``run_channel_smoke``.
+
+    Differences from ``run_channel_smoke``:
+
+      * ``trt_channel_step`` instead of ``step_bgk_3d``. The TRT magic
+        parameter Λ = 3/16 places the no-slip wall at the on-link
+        midpoint INDEPENDENT of viscosity -- the property that buys
+        Cd accuracy in the validation track.
+      * Default ``use_guo_neem=True``: TRT without Guo NEEM is not a
+        sensible production configuration.
+      * ``scheme="trt"`` (default) uses Λ = 3/16; ``scheme="bgk"`` uses
+        ``s_plus = s_minus = omega`` for equivalence pinning against
+        ``run_channel_smoke``.
+      * Bouzidi (if ``wall_links`` is provided) uses
+        ``apply_bouzidi_correction_trt`` (NOT the BGK variant).
+    """
+    from src.lbm_3d import (
+        apply_guo_inflow,
+        apply_guo_outflow,
+        init_population,
+        macroscopic_3d,
+    )
+
+    if body is None:
+        body = np.zeros((Nx, Ny, Nz), dtype=np.bool_)
+
+    if scheme == "trt":
+        s_plus_v, s_minus_v = omegas_for_trt(nu)
+    elif scheme == "bgk":
+        s_plus_v, s_minus_v = omegas_for_bgk(nu)
+    else:
+        raise ValueError(f"unknown scheme {scheme!r}")
+    s_plus = np.float32(s_plus_v)
+    s_minus = np.float32(s_minus_v)
+
+    f = init_population(Nx, Ny, Nz, u_in)
+    f_next = f.copy()
+
+    vel = LATTICE_VELOCITIES_3D.astype(np.int32)
+    weights = LATTICE_WEIGHTS_3D.astype(np.float32)
+    opp = OPPOSITE_3D.astype(np.int32)
+
+    mass_initial = float(f.sum())
+
+    if wall_links is not None:
+        from src.lbm_3d_bouzidi import apply_bouzidi_correction_trt
+    else:
+        apply_bouzidi_correction_trt = None
+
+    u_in_f32 = np.float32(u_in)
+    rho_outflow_f32 = np.float32(rho_outflow)
+
+    for step in range(n_steps):
+        trt_channel_step(
+            f, f_next, body, s_plus, s_minus, vel, weights, opp
+        )
+        if use_guo_neem:
+            apply_guo_inflow(f_next, body, u_in_f32)
+            apply_guo_outflow(f_next, body, rho_outflow_f32)
+
+        if apply_bouzidi_correction_trt is not None:
+            apply_bouzidi_correction_trt(
+                f, f_next, body,
+                wall_links.x, wall_links.y, wall_links.z,
+                wall_links.dir, wall_links.q,
+                s_plus, s_minus,
+            )
+        f, f_next = f_next, f
+        if progress_callback is not None and (
+            step % max(1, n_steps // 20) == 0
+        ):
+            progress_callback(
+                step / n_steps, f"3D TRT step {step}/{n_steps}"
+            )
+
+    rho, ux, uy, uz = macroscopic_3d(f)
+    if body is not None:
+        ux = np.where(body, np.float32(0.0), ux)
+        uy = np.where(body, np.float32(0.0), uy)
+        uz = np.where(body, np.float32(0.0), uz)
+    mass_final = float(f.sum())
+
+    mid_x = Nx // 2
+    mid_z = Nz // 2
+    y_profile = ux[mid_x, :, mid_z]
+    u_mean = float(np.mean(y_profile[1:-1]))
+    u_peak = float(np.max(y_profile))
+    centerline_ratio = u_peak / u_mean if u_mean > 0 else float("nan")
+
+    diag = {
+        "mass_initial": mass_initial,
+        "mass_final": mass_final,
+        "mass_drift_rel": (mass_final - mass_initial) / mass_initial,
+        "u_peak": u_peak,
+        "u_mean": u_mean,
+        "centerline_ratio": centerline_ratio,
+        "u_in": u_in,
+        "nu": nu,
+        "scheme": scheme,
+        "use_guo_neem": use_guo_neem,
+    }
+    return rho, ux, uy, uz, diag
+
+
 __all__ = [
     "LAMBDA_TRT",
     "omegas_for_trt",
     "omegas_for_bgk",
     "trt_periodic_step",
     "trt_periodic_step_parallel",
+    "trt_channel_step",
+    "run_channel_smoke_trt",
     "init_tgv",
     "analytic_tgv_decay_rate",
     "run_tgv",
