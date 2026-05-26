@@ -389,9 +389,11 @@ st.markdown(
 # AeroLab ships the validated 2D D2Q9 solver online. The 3D D3Q19 scaffold
 # lives behind this toggle as a LOCAL-ONLY development bench -- D3Q19
 # populations are ~150 MB at modest grids, well beyond Streamlit Cloud's
-# 1 GB process cap, and the kernel is BGK-only with bounce-back boundaries
-# (no Bouzidi, no MRT yet). The 2D tab is the default and runs the same
-# code path as before this toggle existed.
+# 1 GB process cap. The kernel is BGK with full-way OR Bouzidi
+# interpolated bounce-back, full-way OR Guo NEEM inflow/outflow (both
+# toggleable in the bench), and TRT is available as the validation-
+# track collision -- no MRT yet. The 2D tab is the default and runs
+# the same code path as before this toggle existed.
 with st.sidebar:
     st.markdown("### :material/grid_view: Solver tab")
     # key= is REQUIRED here. Without it, Streamlit auto-generates a key
@@ -423,8 +425,10 @@ if view == "3D (local, in development)":
         "This tab drives the <b>D3Q19 BGK</b> scaffold in "
         "<code>src/lbm_3d.py</code>. It is NOT the shipped playground "
         "&mdash; the 2D solver in <code>src/lbm.py</code> is. The 3D "
-        "kernel runs a channel-flow smoke and prints diagnostics. No "
-        "GIF rendering yet, no Cd validation, no MRT, no Bouzidi q-fields. "
+        "kernel runs a channel-flow smoke and prints diagnostics. As "
+        "of Phase A2 it ships a sphere body with Bouzidi interpolated "
+        "bounce-back (analytic q-field) and Guo NEEM inflow/outflow; no "
+        "GIF rendering yet, no Cd validation, no MRT, no mesh upload. "
         "The point of this bench is to make every increment of 3D solver "
         "work visible while it is still developing locally."
         "</div>",
@@ -438,11 +442,20 @@ if view == "3D (local, in development)":
             "- D3Q19 lattice constants verified (weights sum to 1, "
             "second-moment matches `cs² = 1/3`, OPPOSITE is an involution, "
             "all velocities unique).\n"
-            "- BGK collision + push-streaming compiled by Numba.\n"
-            "- Plane-channel boundaries: equilibrium inflow at x=0, "
-            "zero-gradient outflow at x=Nx-1, bounce-back at y=0/Ny-1, "
-            "periodic in z.\n"
-            "- Optional sphere body via full-way bounce-back.\n"
+            "- BGK collision + push-streaming compiled by Numba; TRT "
+            "(Λ = 3/16) production kernel available for the validation "
+            "track (`src/lbm_3d_trt.py`).\n"
+            "- Plane-channel boundaries: equilibrium inflow + zero-gradient "
+            "outflow as the legacy path, **Guo non-equilibrium "
+            "extrapolation** for both inflow and outflow as the production "
+            "path (toggleable). Bounce-back at y=0/Ny-1, periodic in z.\n"
+            "- Sphere body with full-way OR **Bouzidi interpolated "
+            "bounce-back** using the analytic q-field (toggleable). "
+            "TRT-aware Bouzidi correction is also wired up via "
+            "`apply_bouzidi_correction_trt` for the validation track.\n"
+            "- RK4 smoke-particle advection (`src/lbm_3d_smoke_particles.py`) "
+            "with inflow-only seeding and solid-cell culling -- the "
+            "Plotly Scatter3d viz below uses it.\n"
             "- Channel smoke produces a symmetric parabolic ux(y) profile "
             "(plane Poiseuille shape) with `mass_drift_rel < 1 %` over "
             "400 steps."
@@ -451,10 +464,12 @@ if view == "3D (local, in development)":
     with st.expander(":material/build: &nbsp; **What is queued**",
                      expanded=False):
         st.markdown(
-            "- Bouzidi q-fields for off-lattice body geometry (the 2D "
-            "solver's third-order correction).\n"
+            "- TRT-collision channel driver -- a `run_channel_smoke`-shaped "
+            "wrapper around `trt_periodic_step` plus the Guo NEEM and "
+            "Bouzidi post-passes so the TRT validation track is "
+            "end-to-end runnable (the kernels exist; the driver does not).\n"
             "- MRT collision (D3Q19 moment basis from d'Humières 2002) "
-            "to replace BGK at moderate Re.\n"
+            "as an alternative to TRT for the production path.\n"
             "- 3D cylinder Cd validation against Williamson 1996 at "
             "Re = 100 to 200 (the headline 3D check).\n"
             "- Slice rendering as an animated GIF (mirror the 2D path).\n"
@@ -523,10 +538,15 @@ if view == "3D (local, in development)":
     sphere_cy = ny // 2
     sphere_cz = nz // 2
     if use_sphere:
+        _blockage = 2 * sphere_R / ny
         st.caption(
             f"Sphere: R = {sphere_R:.1f} cells, centre = "
             f"({sphere_cx}, {sphere_cy}, {sphere_cz}). "
-            f"Blockage (D / Ny) = {2 * sphere_R / ny:.2f}."
+            f"Blockage (D / Ny) = {_blockage:.2f}. "
+            f"This bench is correctness scaffolding, not a "
+            f"validation result -- the dev grid is small so the "
+            f"blockage is intentionally well above the < 0.10 the "
+            f"`Validation3D` preset will use for Cd numbers."
         )
 
         # Phase A2-FULL Part 2 (2026-05-26): BC toggle. Bouzidi-linear
@@ -727,16 +747,17 @@ if view == "3D (local, in development)":
             "Phase A2 viz" + _sphere_suffix,
             expanded=True,
         ):
+            _bc_label = "Bouzidi interpolated" if use_bouzidi else "full-way"
             st.caption(
                 "RK4 advection of ~150 massless tracers through the "
                 "steady velocity field above. Seeded at the inflow "
                 "(x=2) only -- no mid-domain spawn (the 2D streakline "
                 "design rule carries over). Rotate / zoom the scene. "
                 + (
-                    "Particles deflect around the sphere; the LBM solver "
-                    "computed the flow field with full-way bounce-back on "
-                    "the sphere surface, and the advector culls any tracer "
-                    "whose nearest cell is solid."
+                    f"Particles deflect around the sphere; the LBM solver "
+                    f"computed the flow field with **{_bc_label}** bounce-back "
+                    f"on the sphere surface, and the advector culls any "
+                    f"tracer whose nearest cell is solid."
                     if use_sphere
                     else "On a body-less channel the streaks are straight; "
                     "switch the **Body** above to **Sphere** to see the "
