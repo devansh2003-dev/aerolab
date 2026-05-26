@@ -1,23 +1,51 @@
 # AeroLab 3D Solver: Phase 0 Decision Memo
 
-Status: research complete, no code written. This memo resolves every
-open question from `3D_RESEARCH_PLAN.md` section 3 with the technical
-detail needed to start Phase 1. Where a choice still wants empirical
-confirmation, that is called out as the first prototype task.
+Status: **Phase 0 + Phase 1 closed**. Phase 0 prototypes confirmed
+the locked decisions (see `3D_PHASE0_FINDINGS.md`); Phase 1
+production TRT kernel met the TGV decay-rate gate within ±0.25 %.
+This memo records every locked technical decision; new entries
+(D-8, D-9, D-10) reflect the 2026-05-26 product re-scope from
+"validation tool" to "consumer 3D visualisation product with
+validation as the backend credibility layer."
 
 Companion to `3D_RESEARCH_PLAN.md`. Read that first for the budget
-analysis and phasing.
+analysis, the revised phase ordering, and the rendering plan.
 
 ---
 
-## Scope decisions (locked)
+## Scope decisions (locked, revised 2026-05-26)
 
-- **v1 geometry:** sphere and spanwise-periodic cylinder only. Both
-  have analytic surfaces, so both get analytic q-fields and no mesh
-  voxelisation is needed. Arbitrary 3D uploads are deferred.
-- **Timeline:** validation-first, ~8 to 10 weeks. Phase 4 (cylinder)
-  is the protected milestone.
-- **2D K-recalibration:** carried as 2D backlog, not done before 3D.
+The original v1 was "validation-first": sphere + spanwise-periodic
+cylinder, no uploads. The revised scope adds the consumer-product
+layer that always sat behind AeroLab's purpose — see
+`3D_RESEARCH_PLAN.md` section 0 for the framing.
+
+**v1 user-facing geometry:** the same gallery / Upload split that
+the 2D mode already has, scaled to 3D:
+
+- **Built-in gallery shapes** (3D analogues of `src/sample_shapes.py`):
+  a sphere, a simplified car, a building, a wing. **Pre-baked
+  velocity fields** ship with the repo so the user clicks → result
+  is instantaneous, no live LBM solve.
+- **Upload** (3D analogue of `src/custom_shape.py`): STL / OBJ via
+  `trimesh`, voxelised onto the LBM grid, solved live, the user
+  waits a few minutes the first time. Pre-baking is impossible by
+  definition for a user upload.
+
+**v1 backend geometry (the credibility layer, never user-facing):**
+sphere + spanwise-periodic cylinder, validated offline against
+Schiller-Naumann (sphere) and Williamson (cylinder). These are how
+`VALIDATION.md` proves the solver is real. They do not appear in
+the gallery.
+
+**Timeline:** still ~8 to 10 weeks but reordered. The web app's
+gallery + smoke-particle viz + upload pipeline are now the
+"product-blocking" front-half work; the sphere + cylinder
+validation is the "credibility-blocking" back-half work. See
+`3D_RESEARCH_PLAN.md` section 4 for the revised phase ordering.
+
+**2D K-recalibration:** still carried as 2D backlog, not done
+before 3D.
 
 ---
 
@@ -182,15 +210,33 @@ for q != 0.5). Drag is the streamwise component, lift the transverse.
 
 ---
 
-## D-5. q-field storage: analytic on-the-fly (locked, no prototype)
+## D-5. q-field storage: analytic for sphere/cylinder, sparse-list for uploads
 
 A dense (Nx, Ny, Nz, 19) q-field is as large as the population array
 itself (159 MB at 128 cubed) and is forbidden by the memory budget.
-Because v1 geometry is sphere and cylinder only, both with analytic
-surfaces, q is computed inside the kernel from the surface equation
-when a wall link is detected. Zero storage. A sparse wall-link list
-(cell index, direction, q) remains the general mechanism if arbitrary
-geometry is ever added, but v1 does not need it.
+
+**For sphere and cylinder** (the credibility-layer validation
+geometries): q is computed inside the kernel from the surface
+equation when a wall link is detected. Zero storage. The Bouzidi
+quadratic-root formula from section D-4 evaluates per cell at
+trace-time cost.
+
+**For uploaded meshes** (the product layer, added 2026-05-26): the
+surface is a triangle soup with no closed-form q. The sparse
+wall-link list is the right storage scheme — a 1-D array of
+`(cell_x, cell_y, cell_z, direction_i, q)` tuples for every fluid
+cell that has at least one solid neighbour. The wall-link count
+scales as the body's surface area in cells, i.e. O(L²) for a body
+of linear size L, which on a 96³ grid with a body filling ~half the
+domain is a few tens of thousands of entries. Tiny next to the 67 MB
+population array. The kernel reads the list once per step and applies
+Bouzidi interpolation per entry. See D-9 for the upload pipeline.
+
+A simpler full-way bounce-back (q assumed = 0.5) is the first
+implementation for uploads; Bouzidi interpolation against the
+voxelised mesh is the v1.1 follow-on. Full-way is what 2D's
+`custom_shape.py` uses for arbitrary polygons; the same accuracy /
+simplicity trade-off carries over.
 
 ---
 
@@ -205,10 +251,17 @@ but it complicates the kernel and the tests. Defer it: implement
 double buffering, and revisit the in-place scheme in Phase 1 only if
 128 cubed turns out to be wanted.
 
-Array layout: store f as shape (19, Nx, Ny, Nz) so each direction is
-contiguous, matching the 2D (9, Nx, Ny) convention. Confirm cache
-behaviour in the throughput prototype; if it disappoints, the
-alternative is (Nx, Ny, Nz, 19) "array of structures".
+Array layout: (Nx, Ny, Nz, 19) AoS (array of structures), confirmed
+by the Phase 1 throughput pass. The original plan named SoA layout
+(19, Nx, Ny, Nz) as the default matching 2D's `(9, Nx, Ny)`, but
+proto 3 measured throughput collapsing from ~12 Mcell/s at 48³ to
+~3 Mcell/s at 96³ — the cache-spillover signature of the per-cell
+strided read pattern that SoA forces (19 cache lines per cell, each
+Nx·Ny·Nz·4 bytes apart). Switching to AoS made per-cell reads
+unit-stride (one cache line for all 19 populations) and lifted the
+96³ throughput ~1.3× — modest but in the predicted direction. The
+remaining performance gap is in the equilibrium duplication (see
+`3D_PHASE0_FINDINGS.md` and Phase 1.5 backlog), not the layout.
 
 ---
 
@@ -234,42 +287,168 @@ A minimal abstraction, deliberately not more:
 
 ---
 
-## Phase 1 verification: 3D Taylor-Green vortex (the gate)
+## D-8. Smoke-particle advection (the v1 viz, locked 2026-05-26)
 
-The Phase 1 exit gate is "the viscosity is provably correct." The
-cleanest rigorous test is a decaying Taylor-Green vortex in a periodic
-box.
+The user-facing 3D viz is **smoke streamers**, not Q-criterion
+isosurfaces. Rationale and trade-offs are in
+`3D_RESEARCH_PLAN.md` section 7; the decision and the algorithm
+live here.
 
-Initialise the 2D Taylor-Green vortex extruded through a thin periodic
-3D box (uniform in z):
+**Algorithm.** Once the LBM solve has produced a steady velocity
+field `u(x, y, z) = (ux, uy, uz)`, integrate massless tracer
+particles through it with RK4:
 
-  u_x = -U * cos(k*x) * sin(k*y),
-  u_y =  U * sin(k*x) * cos(k*y),
-  u_z = 0,
+  p(t + dt) = p(t) + dt * RK4(u, p(t)),
 
-with k = 2*pi / L. The analytic solution decays as
-u(t) = u(0) * exp(-2 * nu * k^2 * t), so the total kinetic energy
-decays as exp(-4 * nu * k^2 * t).
+with trilinear interpolation of u at the particle position. dt is
+chosen so a particle moves <~ 0.5 cell per step at the inflow
+speed; smaller particles look smoother but cost more. ~300-500
+particles per scene, lifetime ~ Lx / u_in, continuous re-seeding
+just upstream of the body so the streamlines stay alive.
 
-Procedure: initialise, run a few thousand steps, fit a straight line
-to ln(KE) versus t, extract the decay rate, and compare to the
-analytic 4 * nu * k^2 using the nu set by s_plus. **Gate: agreement
-within ~2%.** This single test proves the collision operator,
-streaming, and the viscosity relation are all correct, and it is
-prototype-cheap.
+**Why this is cheap.** The expensive work (the LBM solve) produced
+a static (ux, uy, uz) array. Advecting 500 particles for 100 frames
+is ~50 ms in pure numpy. The user can spin the camera, change the
+seed pattern, replay — all free.
 
-The full 3D Taylor-Green vortex (a genuinely three-dimensional initial
-condition) is run afterwards as a qualitative check that the solver
-behaves in 3D, but the 2D-extruded case is the one with a clean
-analytic decay rate to gate on.
+**Why this is the right viz for the audience.** Everyone has seen
+a wind tunnel smoke test. Nobody outside CFD knows what a
+Q-criterion isosurface is. The smoke particles ARE the 3D analogue
+of the 2D streaklines AeroLab already ships.
+
+**Empirical confirmation** (Phase A prototype): pick a pre-baked
+field, advect ~300 particles, render with Plotly Scatter3d, confirm
+the visual matches the 2D streakline output of the same case
+projected onto a plane.
 
 ---
 
-## What still needs the first code (the Phase 0 prototypes)
+## D-9. Mesh-upload pipeline (the new product piece, locked 2026-05-26)
 
-Everything above is decided on paper. Four throwaway prototype scripts,
-roughly 100 to 250 lines total, disposable, confirm the choices
-empirically before Phase 1 production code:
+**v1 supports user-uploaded 3D meshes**, lifted out of the
+"deferred" pile in the original Phase 0 memo because the consumer
+product needs it. The 2D mode already ships custom-shape upload
+(`src/custom_shape.py` + `src/sample_shapes.py`); 3D is the natural
+extension.
+
+**New dependency: `trimesh`** (the standard Python library for STL,
+OBJ, PLY, etc.; pure-Python, no compiled binary on Cloud). Adds
+~5 MB to the Cloud image, acceptable.
+
+**Pipeline** (all host-side numpy, runs once on user upload):
+
+  1. **Load** via `trimesh.load(filename)`. Accept STL (ASCII +
+     binary), OBJ, PLY, GLB.
+  2. **Repair** if non-watertight: `trimesh.repair.fill_holes()`,
+     `trimesh.repair.fix_normals()`. If still bad, warn the user;
+     do not refuse the upload (consumer product).
+  3. **Centre + rescale** to a fixed fraction of the LBM domain
+     (target ~ D / Lx = 0.3 for the streamwise bounding-box
+     dimension, matching the 2D blockage convention).
+  4. **Voxelise** via `trimesh.voxelized(pitch=lattice_spacing)`.
+     Returns a `VoxelGrid` that exposes `.matrix` as a boolean
+     numpy array of solid cells.
+  5. **Build wall-link list**: for every fluid cell at the
+     boundary, enumerate the 18 (or fewer) directions whose
+     neighbour is solid, record (cell, direction, q=0.5) into the
+     sparse list per D-5.
+  6. **Hand to the solver** with the same `Solver3DBackend`
+     interface as gallery shapes.
+
+**Robustness layer** for what users actually upload (the 2D
+silhouette extractor taught this lesson — most of that module is
+validation code, not algorithm):
+
+- Non-watertight meshes: auto-repair, on failure proceed anyway
+  with the holey mask and note in the UI that the result may be
+  approximate.
+- Wrong scale (object is 0.001 m or 50 m): bounding-box normalise
+  on load.
+- Wrong orientation (user uploaded a car pointed up): offer a
+  "flip / rotate" button in the UI; default to auto-aligning the
+  longest axis to the wind direction.
+- Way too many faces: `trimesh.simplify_quadric_decimation()` to
+  a target face budget if the mesh would take >2 minutes to
+  voxelise.
+
+**Honest UX expectation** (the reviewer flagged this and it is
+worth signing in blood): **uploaded meshes pay the full LBM solve
+cost. ~3-5 minutes the first time on Cloud, then instant playback.**
+The "first run is slow, then it is yours to play with" framing must
+be in the UI from day one. Promising instant on an upload is the
+broken-product trap.
+
+---
+
+## D-10. Pre-bake / replay architecture (the product-enables decision, locked 2026-05-26)
+
+**Built-in gallery shapes ship as pre-computed velocity fields.**
+The expensive LBM solve runs ONCE per gallery shape, offline, on
+the developer machine. The result — a (3, Nx, Ny, Nz) `(ux, uy,
+uz)` array — is compressed and committed to the repo. The Streamlit
+app loads it on demand. The user never waits for an LBM solve for
+a gallery shape.
+
+**Storage cost.** Per shape, `3 * 96³ * 4 = 10.6 MB` raw, ~3 MB with
+`np.savez_compressed` and float16 quantisation. Four to six gallery
+shapes = ~15-20 MB. Acceptable in the repo; Git LFS for `*.npz` if
+it grows.
+
+**Solve-time cost.** Each gallery shape costs ~5-20 minutes offline
+on the development laptop (96³ × ~5000 steps with the Phase 1 TRT
+kernel at ~2 Mcell/s, less with the Phase 1.5 named-scalars
+rewrite). Run once, never again unless the kernel changes.
+
+**Two-stage architecture this enables:**
+
+  Solve stage (offline, expensive, run by developer):
+    geometry + LBM solve  ->  steady velocity field
+                          ->  np.savez_compressed to data/3d_fields/
+
+  Replay stage (runtime, cheap, run on every user interaction):
+    load .npz  ->  smoke-particle advection through field
+              ->  Plotly Scatter3d frames
+              ->  smooth interactive scene
+
+  Upload stage (runtime, expensive only once per upload):
+    user .stl  ->  voxelise + solve  ->  field  ->  same replay path
+
+**Cache the upload solve.** Hash the uploaded mesh, store the
+solved field in `st.cache_data` keyed on the hash. Same-user
+re-upload of the same file is instant.
+
+**Validation files** (sphere, cylinder, TGV) stay in a different
+directory (`data/validation/`) — they are not gallery candidates
+and they ship raw JSON, not compressed fields.
+
+---
+
+## Phase 1 verification: 3D Taylor-Green vortex — PASSED 2026-05-28
+
+The Phase 1 exit gate was "the viscosity is provably correct" via
+the decaying Taylor-Green vortex in a periodic box. The 2D-extruded
+TGV initial condition (uniform in z) has the analytic KE decay rate
+4 ν k², and the Phase 1 production TRT kernel reproduces it.
+
+**Measured** (`scripts/dev_3d_phase1_tgv_gate.py`, AoS and SoA
+variants, N = 32, U = 0.04, n_steps = 800):
+
+  TRT err = +0.16 % to -0.24 % across ν in {0.005, 0.01, 0.02}.
+  BGK err = -0.01 % to -0.04 %.
+
+Both inside the ±2 % gate. The collision operator, streaming, and
+viscosity relation are correct. Phase 2 entry criterion met.
+
+The full 3D TGV (a genuinely three-dimensional initial condition)
+is still listed for Phase 2 as a qualitative check.
+
+---
+
+## What needed the first code — the Phase 0 prototypes (now done)
+
+Everything in D-1 through D-7 was decided on paper. Four throwaway
+prototype scripts confirmed the choices empirically before Phase 1
+production code; results in `3D_PHASE0_FINDINGS.md`.
 
 1. TRT vs BGK stability sweep on a 3D cavity and the TGV near
    tau -> 0.5.
@@ -278,26 +457,42 @@ empirically before Phase 1 production code:
    confirm the plan's compute budget (section 1.2).
 4. float32 vs float64 accuracy spot check on the TGV decay rate.
 
-These are the first lines of code in the 3D effort. Per your
-"research only, do not implement first" instruction, they are not
-written yet. They are the natural next action and they are cheap.
+All four shipped 2026-05-28 (commit `17566bb`) and gave PASS / PASS
+/ PARTIAL / PASS verdicts; the PARTIAL on throughput drove the
+Phase 1 AoS layout switch and the deferred Phase 1.5 named-scalars
+rewrite. Phase 0 closed.
+
+The next prototypes (per the revised plan section 4 in
+`3D_RESEARCH_PLAN.md`) are Phase A scaffolding for the consumer
+product, not more Phase 0 work:
+
+  * Smoke-particle RK4 advection through a known velocity field.
+  * Pre-bake driver: solve a sphere field offline, save to
+    `data/3d_fields/sphere.npz`, reload and replay.
+  * Plotly Scatter3d render of the advected particles inside
+    Streamlit; confirm the rotate / zoom interaction works.
+  * trimesh load + voxelise of a sample STL onto an LBM grid.
 
 ---
 
-## Summary: Phase 0 is decided
+## Summary: Phase 0 decisions (revised 2026-05-26 for the product re-scope)
 
-| Question        | Decision                                            |
-|-----------------|-----------------------------------------------------|
-| Lattice         | D3Q19                                               |
-| Collision       | TRT (Lambda = 3/16); BGK as reference path          |
-| Turbulence      | none in the validated path (no LES)                 |
-| Inflow/outflow  | Guo non-equilibrium extrapolation                   |
-| Obstacle wall   | Bouzidi interpolated bounce-back, analytic q        |
-| q-field storage | analytic on-the-fly, zero storage                   |
-| Streaming       | double buffer, float32, (19,Nx,Ny,Nz) layout        |
-| Backend         | thin seam, NumbaCPU (serial + parallel) now         |
-| Phase 1 gate    | 2D-extruded Taylor-Green decay rate within ~2%      |
+| Question         | Decision                                                          |
+|------------------|-------------------------------------------------------------------|
+| Lattice          | D3Q19                                                             |
+| Collision        | TRT (Λ = 3/16); BGK as reference path                             |
+| Turbulence       | none in the validated path (no LES)                               |
+| Inflow/outflow   | Guo non-equilibrium extrapolation                                 |
+| Obstacle wall    | Bouzidi interpolated bounce-back                                  |
+| q-field storage  | analytic for sphere/cylinder; sparse wall-link list for uploads   |
+| Streaming        | double buffer, float32, **(Nx, Ny, Nz, 19) AoS** (Phase 1 confirmed) |
+| Backend          | thin seam, NumbaCPU (serial + parallel) now                       |
+| **Viz**          | **smoke-particle RK4 advection rendered via Plotly Scatter3d**    |
+| **Mesh upload**  | **trimesh + voxelise + sparse wall-link list (v1, full-way BB)**  |
+| **Architecture** | **pre-bake gallery fields, replay at runtime; uploads pay once**  |
+| Phase 1 gate     | 2D-extruded TGV decay rate within ~2 % — **PASSED 2026-05-28**    |
 
-Nothing above requires a decision from you. The next action is the
-four confirmation prototypes, then Phase 1. No code will be written
-until you give the explicit go-ahead.
+Phase 0 + Phase 1 closed. The next coding actions sit under the
+revised Phase A in `3D_RESEARCH_PLAN.md` section 4: smoke-particle
+advection prototype, the pre-bake driver, and the Plotly 3D viz.
+No code is written until the user gives the explicit go-ahead.
