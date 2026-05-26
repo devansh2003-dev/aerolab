@@ -344,6 +344,19 @@ def run_channel_smoke(
             progress_callback(step / n_steps, f"3D step {step}/{n_steps}")
 
     rho, ux, uy, uz = macroscopic_3d(f)
+    # Zero out macroscopic velocities inside the body. The kernel skips
+    # collision on solid cells, so their populations stay at the initial
+    # f_eq(rho=1, u=u_in)  -- read back through macroscopic_3d this looks
+    # like the inflow velocity is leaking through the solid. Physically
+    # solid cells have no fluid flow; for the downstream consumers
+    # (smoke-particle trilerp interpolation, slice plots) we need that
+    # to be reflected in the returned arrays. Bouzidi BB would handle
+    # this implicitly by tracking wall positions; for the simpler
+    # full-way BB scaffold a post-pass zero is the right fix.
+    if body is not None:
+        ux = np.where(body, np.float32(0.0), ux)
+        uy = np.where(body, np.float32(0.0), uy)
+        uz = np.where(body, np.float32(0.0), uz)
     mass_final = float(f.sum())
 
     # Centerline (mid-z, mid-y) profile through x; centre y-profile at

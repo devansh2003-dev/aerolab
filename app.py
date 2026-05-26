@@ -496,17 +496,55 @@ if view == "3D (local, in development)":
         f"Reynolds, low-Re smoke regime)."
     )
 
+    # Phase A2 (2026-05-26): body selector. The existing lbm_3d.py
+    # kernel already takes a `body` bool mask and does full-way
+    # bounce-back on solid cells. Wiring the sphere here is what
+    # turns the channel-flow demo into a recognisable wind-tunnel
+    # scene: smoke deflecting around an obstacle.
+    body_choice = st.radio(
+        "Body",
+        ["None (channel only)", "Sphere"],
+        index=1,                   # default to sphere -- the dramatic demo
+        horizontal=True,
+        key="body_3d_choice",
+        help=(
+            "**None**: plain channel flow, baseline Poiseuille profile.\n\n"
+            "**Sphere**: a sphere placed ~30 % downstream of the inflow. "
+            "Smoke particles deflect around it (Phase A2 demo)."
+        ),
+    )
+    use_sphere = body_choice == "Sphere"
+    # Radius scales with the wall-normal dimension so the sphere fits
+    # comfortably regardless of grid choice. ~Ny/5 leaves ~2 Ny/5 cells
+    # of clearance on each side -- well outside the bounce-back wall
+    # boundary layer, where flow is reasonably uniform.
+    sphere_R = float(ny) / 5.0
+    sphere_cx = int(nx * 0.30)
+    sphere_cy = ny // 2
+    sphere_cz = nz // 2
+    if use_sphere:
+        st.caption(
+            f"Sphere: R = {sphere_R:.1f} cells, centre = "
+            f"({sphere_cx}, {sphere_cy}, {sphere_cz}). "
+            f"Blockage (D / Ny) = {2 * sphere_R / ny:.2f}."
+        )
+
     if st.button(":material/play_arrow: &nbsp; Run smoke",
                  use_container_width=True):
         import time as _time
-        from src.lbm_3d import run_channel_smoke
+        from src.lbm_3d import _make_sphere_mask, run_channel_smoke
         progress = st.progress(0.0, text="Compiling kernel + streaming...")
+        body_mask_3d = (
+            _make_sphere_mask(nx, ny, nz, sphere_cx, sphere_cy, sphere_cz, sphere_R)
+            if use_sphere else None
+        )
         try:
             def _cb(frac, text):
                 progress.progress(frac, text=text)
             _t0 = _time.time()
             rho, ux, uy, uz, diag = run_channel_smoke(
                 Nx=nx, Ny=ny, Nz=nz, u_in=u_in, nu=nu, n_steps=n_steps,
+                body=body_mask_3d,
                 progress_callback=_cb,
             )
             elapsed = _time.time() - _t0
@@ -613,7 +651,7 @@ if view == "3D (local, in development)":
 
         with st.expander(
             ":material/visibility: &nbsp; **Smoke particles** &mdash; "
-            "Phase A1 viz prototype",
+            "Phase A2 viz" + (" with sphere" if use_sphere else " (no body)"),
             expanded=True,
         ):
             st.caption(
@@ -621,8 +659,16 @@ if view == "3D (local, in development)":
                 "steady velocity field above. Seeded at the inflow "
                 "(x=2) only -- no mid-domain spawn (the 2D streakline "
                 "design rule carries over). Rotate / zoom the scene. "
-                "On a body-less channel the streaks are straight; "
-                "they curve once Phase A2 adds a sphere."
+                + (
+                    "Particles deflect around the sphere; the LBM solver "
+                    "computed the flow field with full-way bounce-back on "
+                    "the sphere surface, and the advector culls any tracer "
+                    "whose nearest cell is solid."
+                    if use_sphere
+                    else "On a body-less channel the streaks are straight; "
+                    "switch the **Body** above to **Sphere** to see the "
+                    "flow-around-obstacle demo."
+                )
             )
 
             # Build the particle pool by repeatedly seeding + advecting.
@@ -661,7 +707,7 @@ if view == "3D (local, in development)":
                     ux.astype(np.float32, copy=False),
                     uy.astype(np.float32, copy=False),
                     uz.astype(np.float32, copy=False),
-                    body_mask=None,
+                    body_mask=body_mask_3d,
                     dt=1.0,
                     n_substeps=4,
                     max_age=max_age,
@@ -683,10 +729,11 @@ if view == "3D (local, in development)":
                     ux.astype(np.float32, copy=False), px, py, pz,
                 )
 
-                smoke_fig = go.Figure(
-                    data=go.Scatter3d(
+                scene_traces = [
+                    go.Scatter3d(
                         x=px, y=py, z=pz,
                         mode="markers",
+                        name="smoke",
                         marker=dict(
                             size=3.5,
                             color=sp,
@@ -701,7 +748,38 @@ if view == "3D (local, in development)":
                             opacity=0.85,
                         ),
                     )
-                )
+                ]
+                if use_sphere:
+                    # Render the sphere as a translucent slate-grey Surface
+                    # so the viewer can see particles deflecting AROUND it
+                    # rather than through empty space. Parametric mesh:
+                    # 32 x 32 grid in (theta, phi). Surface3d uses one
+                    # colour ramp so we hold it at a single neutral tone
+                    # via colorscale=[[0, c], [1, c]] -- gives a uniform
+                    # slate-grey body that doesn't compete with the
+                    # plasma-coloured particles for attention.
+                    _theta = np.linspace(0.0, 2.0 * np.pi, 33)
+                    _phi = np.linspace(0.0, np.pi, 17)
+                    _T, _P = np.meshgrid(_theta, _phi)
+                    sph_x = sphere_cx + sphere_R * np.sin(_P) * np.cos(_T)
+                    sph_y = sphere_cy + sphere_R * np.sin(_P) * np.sin(_T)
+                    sph_z = sphere_cz + sphere_R * np.cos(_P)
+                    scene_traces.append(
+                        go.Surface(
+                            x=sph_x, y=sph_y, z=sph_z,
+                            showscale=False,
+                            colorscale=[[0, "#475569"], [1, "#475569"]],
+                            opacity=0.55,
+                            lighting=dict(
+                                ambient=0.55, diffuse=0.7,
+                                specular=0.25, roughness=0.5,
+                            ),
+                            lightposition=dict(x=100, y=200, z=0),
+                            name="sphere",
+                            hoverinfo="skip",
+                        )
+                    )
+                smoke_fig = go.Figure(data=scene_traces)
                 smoke_fig.update_layout(
                     scene=dict(
                         xaxis=dict(title="x (streamwise)", range=[0, nx]),

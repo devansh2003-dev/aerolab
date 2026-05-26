@@ -19,6 +19,7 @@ from src.lbm_3d import (
     LATTICE_VELOCITIES_3D,
     LATTICE_WEIGHTS_3D,
     OPPOSITE_3D,
+    _make_sphere_mask,
     equilibrium_3d,
     macroscopic_3d,
     run_channel_smoke,
@@ -125,3 +126,79 @@ def test_channel_smoke_has_nonzero_velocity():
     # Spot check that ux is finite everywhere (no NaN escaping the
     # body / boundary handling).
     assert np.all(np.isfinite(ux))
+
+
+# ---------------------------------------------------------------------------
+# Phase A2: sphere-body sanity checks (cheap; gate the wiring works)
+# ---------------------------------------------------------------------------
+
+
+def test_sphere_mask_geometry():
+    """_make_sphere_mask produces a sphere of the right size, centred where
+    expected, with no off-by-one drift."""
+    Nx, Ny, Nz = 32, 16, 16
+    cx, cy, cz = 16, 8, 8
+    R = 4.0
+    mask = _make_sphere_mask(Nx, Ny, Nz, cx, cy, cz, R)
+    assert mask.shape == (Nx, Ny, Nz)
+    assert mask.dtype == np.bool_
+    # Centre is solid; corners are fluid.
+    assert mask[cx, cy, cz]
+    assert not mask[0, 0, 0]
+    assert not mask[Nx - 1, Ny - 1, Nz - 1]
+    # Cell count: 4/3 pi R^3 with discretisation slack (~ +/- 15 %).
+    expected = (4.0 / 3.0) * np.pi * R ** 3
+    actual = float(mask.sum())
+    assert 0.85 * expected < actual < 1.15 * expected, (
+        f"sphere cell count {actual:.0f} vs analytic {expected:.0f} "
+        f"is outside the +/- 15 % discretisation band"
+    )
+    # Surface symmetry: cell on +x of centre equals cell on -x of centre.
+    for d in range(1, int(R)):
+        assert mask[cx + d, cy, cz] == mask[cx - d, cy, cz]
+        assert mask[cx, cy + d, cz] == mask[cx, cy - d, cz]
+        assert mask[cx, cy, cz + d] == mask[cx, cy, cz - d]
+
+
+@pytest.mark.slow
+def test_sphere_blocks_flow_at_centre():
+    """With a sphere in the channel, the velocity inside the sphere should
+    be ~0 (bounce-back forces no-slip on solid cells), and the velocity
+    just downstream of the sphere should be LOWER than the channel
+    centre-line value at the same y/z without a sphere -- evidence the
+    LBM actually deflects the flow."""
+    Nx, Ny, Nz = 48, 24, 24
+    u_in, nu = 0.04, 0.02
+    cx, cy, cz = 16, 12, 12
+    R = 4.0
+
+    # Run WITHOUT body for the baseline centreline velocity.
+    _, ux_clean, _, _, _ = run_channel_smoke(
+        Nx=Nx, Ny=Ny, Nz=Nz, u_in=u_in, nu=nu, n_steps=400,
+    )
+    # Sample downstream of where the sphere will be.
+    u_clean_downstream = float(ux_clean[cx + 6, cy, cz])
+
+    # Run WITH the sphere body.
+    body = _make_sphere_mask(Nx, Ny, Nz, cx, cy, cz, R)
+    _, ux_sphere, _, _, _ = run_channel_smoke(
+        Nx=Nx, Ny=Ny, Nz=Nz, u_in=u_in, nu=nu, n_steps=400, body=body,
+    )
+
+    # Inside the sphere: velocity should be ~0 (bounce-back pins it).
+    u_inside = float(ux_sphere[cx, cy, cz])
+    assert abs(u_inside) < 0.1 * u_in, (
+        f"velocity inside sphere {u_inside:.4f} is not near zero "
+        f"-- bounce-back is not pinning the solid cells"
+    )
+    # Just downstream of the sphere: streamwise velocity should be
+    # measurably reduced vs the no-body baseline. Use a generous gate
+    # (10 % reduction) -- the actual wake on a Re ~ 50 sphere is
+    # closer to 60-80 % reduction, but at 48^3 with full-way BB and
+    # only 400 steps the wake is still developing.
+    u_wake_downstream = float(ux_sphere[cx + 6, cy, cz])
+    assert u_wake_downstream < 0.9 * u_clean_downstream, (
+        f"wake velocity {u_wake_downstream:.4f} is not reduced vs "
+        f"baseline {u_clean_downstream:.4f} -- sphere may not be "
+        f"deflecting the flow"
+    )
