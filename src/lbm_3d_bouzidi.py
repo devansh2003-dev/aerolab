@@ -471,10 +471,205 @@ def apply_bouzidi_correction(
             )
 
 
+# ===========================================================================
+# TRT variant of the Bouzidi correction kernel
+# ===========================================================================
+#
+# The BGK kernel above is wired into `run_channel_smoke` in `src/lbm_3d.py`,
+# which uses single-omega BGK collision + channel inflow/outflow. The
+# production validation track uses the TRT kernels in `src/lbm_3d_trt.py`
+# (Λ = 3/16 magic parameter: mid-link wall placement independent of
+# viscosity, which is the property that buys Cd accuracy).
+#
+# The Bouzidi correction is collision-AGNOSTIC at the formula level — it
+# only needs the post-collision pre-stream `f_tilde` values. The only thing
+# that changes vs the BGK kernel is how those `f_tilde` get computed: TRT
+# uses the symmetric/antisymmetric split with (s_plus, s_minus) instead of
+# the single-omega BGK relaxation.
+#
+# This variant has NO inflow override. The TRT module's kernels are pure
+# periodic-box; when a TRT channel driver is added it will need its own
+# variant (or a parameter to enable the override) that mirrors whatever
+# inflow rule the new driver picks.
+
+
+@njit(cache=True, fastmath=True)
+def apply_bouzidi_correction_trt(
+    f_pre: np.ndarray,            # (19, Nx, Ny, Nz) PRE-step populations
+    f_next: np.ndarray,           # (19, Nx, Ny, Nz) post-stream populations
+    body: np.ndarray,             # (Nx, Ny, Nz) bool
+    wall_x: np.ndarray,           # (N,) int32
+    wall_y: np.ndarray,           # (N,) int32
+    wall_z: np.ndarray,           # (N,) int32
+    wall_dir: np.ndarray,         # (N,) int32
+    wall_q: np.ndarray,           # (N,) float32
+    s_plus: np.float32,
+    s_minus: np.float32,
+) -> None:
+    """Apply Bouzidi linear interpolation correction with TRT collision.
+
+    Same architecture as ``apply_bouzidi_correction`` (BGK variant above):
+    runs as a post-pass over the sparse wall-link list, reads ``f_pre``
+    (the unmutated input to the TRT step), recomputes ``f_tilde`` locally
+    at the wall-link source cell (and at the upstream cell when q < 0.5),
+    and overrides ``f_next[opp, x_f]`` in place.
+
+    TRT post-collision per direction (Ginzburg, Verhaeghe, d'Humières 2008):
+
+      f_tilde_i   = f_i   - s_plus * (fp - ep) - s_minus * (fm - em)
+      f_tilde_opp = f_opp - s_plus * (fp - ep) + s_minus * (fm - em)
+
+    where ``fp = (f_i + f_opp) / 2``, ``fm = (f_i - f_opp) / 2``,
+    ``ep = (e_i + e_opp) / 2``, ``em = (e_i - e_opp) / 2``, and
+    ``e_i, e_opp`` are the local equilibria. BGK is the special case
+    ``s_plus = s_minus = omega``; substituting in the formulas recovers
+    ``f_tilde_i = f_i - omega * (f_i - e_i)`` exactly.
+
+    No inflow override: the TRT module's kernels (``trt_periodic_step``
+    and variants in ``src/lbm_3d_trt.py``) are periodic-box only.
+    """
+    Nx, Ny, Nz = body.shape
+    n_links = wall_x.shape[0]
+    cs2 = np.float32(1.0 / 3.0)
+    inv_2cs2 = np.float32(1.0 / (2.0 * (1.0 / 3.0)))
+    inv_2cs4 = np.float32(1.0 / (2.0 * (1.0 / 3.0) * (1.0 / 3.0)))
+
+    for k in range(n_links):
+        x = wall_x[k]
+        y = wall_y[k]
+        z = wall_z[k]
+        i = wall_dir[k]
+        q = wall_q[k]
+        opp = OPPOSITE_3D[i]
+
+        # ---- Local macroscopic at the fluid cell (x_f) ----
+        rho_xf = np.float32(0.0)
+        mx = np.float32(0.0)
+        my = np.float32(0.0)
+        mz = np.float32(0.0)
+        for j in range(19):
+            fj = f_pre[j, x, y, z]
+            rho_xf += fj
+            mx += np.float32(LATTICE_VELOCITIES_3D[j, 0]) * fj
+            my += np.float32(LATTICE_VELOCITIES_3D[j, 1]) * fj
+            mz += np.float32(LATTICE_VELOCITIES_3D[j, 2]) * fj
+        if rho_xf > np.float32(0.0):
+            inv_rho = np.float32(1.0) / rho_xf
+        else:
+            inv_rho = np.float32(0.0)
+        ux = mx * inv_rho
+        uy = my * inv_rho
+        uz = mz * inv_rho
+        usq = ux * ux + uy * uy + uz * uz
+
+        # ---- Equilibria at (x_f) for i and opp ----
+        cxi = np.float32(LATTICE_VELOCITIES_3D[i, 0])
+        cyi = np.float32(LATTICE_VELOCITIES_3D[i, 1])
+        czi = np.float32(LATTICE_VELOCITIES_3D[i, 2])
+        wi = np.float32(LATTICE_WEIGHTS_3D[i])
+        cxo = np.float32(LATTICE_VELOCITIES_3D[opp, 0])
+        cyo = np.float32(LATTICE_VELOCITIES_3D[opp, 1])
+        czo = np.float32(LATTICE_VELOCITIES_3D[opp, 2])
+        wo = np.float32(LATTICE_WEIGHTS_3D[opp])
+        cu_i = cxi * ux + cyi * uy + czi * uz
+        cu_o = cxo * ux + cyo * uy + czo * uz
+        e_i = wi * rho_xf * (
+            np.float32(1.0)
+            + cu_i / cs2
+            + (cu_i * cu_i) * inv_2cs4
+            - usq * inv_2cs2
+        )
+        e_o = wo * rho_xf * (
+            np.float32(1.0)
+            + cu_o / cs2
+            + (cu_o * cu_o) * inv_2cs4
+            - usq * inv_2cs2
+        )
+
+        # ---- TRT post-collision split at (x_f) ----
+        f_i = f_pre[i, x, y, z]
+        f_o = f_pre[opp, x, y, z]
+        fp = np.float32(0.5) * (f_i + f_o)
+        fm = np.float32(0.5) * (f_i - f_o)
+        ep = np.float32(0.5) * (e_i + e_o)
+        em = np.float32(0.5) * (e_i - e_o)
+        f_tilde_i = f_i - s_plus * (fp - ep) - s_minus * (fm - em)
+        f_tilde_o = f_o - s_plus * (fp - ep) + s_minus * (fm - em)
+
+        if q >= np.float32(0.5):
+            inv_2q = np.float32(1.0) / (np.float32(2.0) * q)
+            f_next[opp, x, y, z] = (
+                inv_2q * f_tilde_i
+                + (np.float32(2.0) * q - np.float32(1.0)) * inv_2q * f_tilde_o
+            )
+        else:
+            # q < 0.5: need f_tilde_i at upstream cell (x_f - c_i)
+            xu = x - LATTICE_VELOCITIES_3D[i, 0]
+            yu = y - LATTICE_VELOCITIES_3D[i, 1]
+            zu = z - LATTICE_VELOCITIES_3D[i, 2]
+            in_domain = (
+                xu >= 0 and xu < Nx
+                and yu >= 0 and yu < Ny
+                and zu >= 0 and zu < Nz
+            )
+            if (not in_domain) or body[xu, yu, zu]:
+                # Fall back to full-way BB (= f_tilde_i): the value the
+                # caller's wall-handling already wrote stays.
+                continue
+
+            # ---- Local macroscopic at upstream cell ----
+            rho_u = np.float32(0.0)
+            mxu = np.float32(0.0)
+            myu = np.float32(0.0)
+            mzu = np.float32(0.0)
+            for j in range(19):
+                fj = f_pre[j, xu, yu, zu]
+                rho_u += fj
+                mxu += np.float32(LATTICE_VELOCITIES_3D[j, 0]) * fj
+                myu += np.float32(LATTICE_VELOCITIES_3D[j, 1]) * fj
+                mzu += np.float32(LATTICE_VELOCITIES_3D[j, 2]) * fj
+            if rho_u > np.float32(0.0):
+                inv_rho_u = np.float32(1.0) / rho_u
+            else:
+                inv_rho_u = np.float32(0.0)
+            uxu = mxu * inv_rho_u
+            uyu = myu * inv_rho_u
+            uzu = mzu * inv_rho_u
+            usq_u = uxu * uxu + uyu * uyu + uzu * uzu
+            cu_iu = cxi * uxu + cyi * uyu + czi * uzu
+            cu_ou = cxo * uxu + cyo * uyu + czo * uzu
+            e_iu = wi * rho_u * (
+                np.float32(1.0)
+                + cu_iu / cs2
+                + (cu_iu * cu_iu) * inv_2cs4
+                - usq_u * inv_2cs2
+            )
+            e_ou = wo * rho_u * (
+                np.float32(1.0)
+                + cu_ou / cs2
+                + (cu_ou * cu_ou) * inv_2cs4
+                - usq_u * inv_2cs2
+            )
+            f_iu = f_pre[i, xu, yu, zu]
+            f_ou = f_pre[opp, xu, yu, zu]
+            fp_u = np.float32(0.5) * (f_iu + f_ou)
+            fm_u = np.float32(0.5) * (f_iu - f_ou)
+            ep_u = np.float32(0.5) * (e_iu + e_ou)
+            em_u = np.float32(0.5) * (e_iu - e_ou)
+            f_tilde_iu = (
+                f_iu - s_plus * (fp_u - ep_u) - s_minus * (fm_u - em_u)
+            )
+            f_next[opp, x, y, z] = (
+                np.float32(2.0) * q * f_tilde_i
+                + (np.float32(1.0) - np.float32(2.0) * q) * f_tilde_iu
+            )
+
+
 __all__ = [
     "WallLinkList",
     "solve_bouzidi_q",
     "make_sphere_mask",
     "sphere_wall_links",
     "apply_bouzidi_correction",
+    "apply_bouzidi_correction_trt",
 ]

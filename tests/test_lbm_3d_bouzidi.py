@@ -372,3 +372,182 @@ class TestBouzidiCorrection:
         assert float(np.max(np.abs(ux[body]))) == 0.0
         assert float(np.max(np.abs(uy[body]))) == 0.0
         assert float(np.max(np.abs(uz[body]))) == 0.0
+
+
+# ============================================================================
+# Bouzidi correction kernel (TRT variant): direct-math unit tests
+# ============================================================================
+
+
+class TestBouzidiCorrectionTrt:
+    """Tests for `apply_bouzidi_correction_trt` -- the TRT-collision
+    variant of the Bouzidi correction. The TRT module has no channel
+    driver yet, so these are direct-math unit tests on the kernel.
+
+    The strongest invariant is #2 (TRT-with-s_plus=s_minus equals BGK
+    exactly): BGK is the special case s_plus = s_minus = omega, and the
+    TRT formula reduces to f_tilde_i = f_i - omega(f_i - e_i) under that
+    substitution. If #2 passes, the TRT split is implemented correctly.
+    """
+
+    def _build_uniform_flow_setup(self, u_in=0.04):
+        """Sphere placed away from x = 0 (so the BGK kernel's inflow
+        override at x=0 never triggers -- lets us compare BGK vs TRT
+        directly). Returns (Nx, Ny, Nz, f_pre, body, wall_links, u_in).
+        """
+        from src.lbm_3d import equilibrium_3d
+        Nx, Ny, Nz = 24, 20, 20
+        rho = np.ones((Nx, Ny, Nz), dtype=np.float32)
+        u = np.zeros((3, Nx, Ny, Nz), dtype=np.float32)
+        u[0] = np.float32(u_in)
+        f_pre = equilibrium_3d(rho, u).astype(np.float32)
+        cx, cy, cz = 16.0, 10.0, 10.0
+        R = 3.5
+        body = make_sphere_mask(Nx, Ny, Nz, cx, cy, cz, R)
+        wall_links = sphere_wall_links(Nx, Ny, Nz, cx, cy, cz, R)
+        assert wall_links.n_links > 0
+        return Nx, Ny, Nz, f_pre, body, wall_links, u_in
+
+    def _build_nonuniform_flow_setup(self, u_in=0.04):
+        """Non-uniform IC -- parabolic Poiseuille-style u_x(y) so the
+        upstream cell sees a different u than the wall-link cell. This
+        is what makes the q != 0.5 vs q = 0.5 comparison non-vacuous
+        (uniform IC collapses both branches to f_eq[i] -- see the
+        notes on test_trt_at_real_q_differs_from_q_half).
+        """
+        from src.lbm_3d import equilibrium_3d
+        Nx, Ny, Nz = 24, 20, 20
+        rho = np.ones((Nx, Ny, Nz), dtype=np.float32)
+        u = np.zeros((3, Nx, Ny, Nz), dtype=np.float32)
+        ys = np.arange(Ny, dtype=np.float32)
+        u_y_profile = u_in * (1.0 - (2.0 * ys / (Ny - 1) - 1.0) ** 2)
+        u[0] = u_y_profile[None, :, None].astype(np.float32)
+        f_pre = equilibrium_3d(rho, u).astype(np.float32)
+        cx, cy, cz = 16.0, 10.0, 10.0
+        R = 3.5
+        body = make_sphere_mask(Nx, Ny, Nz, cx, cy, cz, R)
+        wall_links = sphere_wall_links(Nx, Ny, Nz, cx, cy, cz, R)
+        assert wall_links.n_links > 0
+        return Nx, Ny, Nz, f_pre, body, wall_links, u_in
+
+    def test_trt_q_half_uniform_flow_writes_f_eq_at_each_link(self):
+        """At q = 0.5 the Bouzidi formula reduces to f_tilde_i(x_f).
+        For a uniform-flow IC, f_pre = f_eq, so f_tilde_i = f_eq[i]
+        regardless of the relaxation rates (because fp - ep = 0 and
+        fm - em = 0 when f = e). Assert f_next[opp, x_f] == f_pre[i, x_f]
+        at every wall link.
+        """
+        from src.lbm_3d_bouzidi import apply_bouzidi_correction_trt
+        from src.lbm_3d import OPPOSITE_3D
+        from src.lbm_3d_trt import omegas_for_trt
+        Nx, Ny, Nz, f_pre, body, wall_links, _ = self._build_uniform_flow_setup()
+        wall_links.q[:] = np.float32(0.5)
+        s_plus, s_minus = omegas_for_trt(0.02)
+        s_plus = np.float32(s_plus)
+        s_minus = np.float32(s_minus)
+
+        f_next = np.zeros_like(f_pre)
+        apply_bouzidi_correction_trt(
+            f_pre, f_next, body,
+            wall_links.x, wall_links.y, wall_links.z,
+            wall_links.dir, wall_links.q,
+            s_plus, s_minus,
+        )
+        max_err = 0.0
+        for k in range(wall_links.n_links):
+            x = int(wall_links.x[k])
+            y = int(wall_links.y[k])
+            z = int(wall_links.z[k])
+            i = int(wall_links.dir[k])
+            opp = int(OPPOSITE_3D[i])
+            err = abs(float(f_next[opp, x, y, z]) - float(f_pre[i, x, y, z]))
+            if err > max_err:
+                max_err = err
+        assert max_err < 1e-6, (
+            f"q=0.5 under uniform flow: f_next[opp, x_f] should equal "
+            f"f_pre[i, x_f] but max abs error is {max_err:.2e}."
+        )
+
+    def test_trt_matches_bgk_at_s_plus_eq_s_minus(self):
+        """TRT with s_plus = s_minus = omega is the BGK special case.
+        Apply the proven BGK kernel and the new TRT kernel to the same
+        f_pre and assert identical f_next at every wall-link entry.
+
+        Sphere is placed away from x = 0 so the BGK inflow override
+        (no analogue in the periodic TRT module) never triggers.
+        """
+        from src.lbm_3d_bouzidi import (
+            apply_bouzidi_correction,
+            apply_bouzidi_correction_trt,
+        )
+        Nx, Ny, Nz, f_pre, body, wall_links, u_in = self._build_nonuniform_flow_setup()
+        nu = 0.02
+        omega = np.float32(1.0 / (3.0 * nu + 0.5))
+
+        f_next_bgk = f_pre.copy()
+        f_next_trt = f_pre.copy()
+
+        apply_bouzidi_correction(
+            f_pre, f_next_bgk, body,
+            wall_links.x, wall_links.y, wall_links.z,
+            wall_links.dir, wall_links.q,
+            omega, np.float32(u_in),
+        )
+        apply_bouzidi_correction_trt(
+            f_pre, f_next_trt, body,
+            wall_links.x, wall_links.y, wall_links.z,
+            wall_links.dir, wall_links.q,
+            omega, omega,
+        )
+        max_diff = float(np.max(np.abs(f_next_trt - f_next_bgk)))
+        assert max_diff < 1e-6, (
+            f"TRT with s_plus = s_minus = omega should reduce exactly "
+            f"to BGK, but max abs diff is {max_diff:.2e}."
+        )
+
+    def test_trt_at_real_q_differs_from_q_half_with_nonuniform_flow(self):
+        """With a non-uniform IC and the analytic q-field, the TRT
+        Bouzidi correction must produce measurably different f_next
+        entries than the all-q=0.5 override. Uniform flow would not
+        discriminate (both branches collapse to f_eq[i] when f = e),
+        so this test deliberately uses a y-varying u_x profile.
+
+        Catches a kernel that ignores q and silently does full-way BB.
+        """
+        from src.lbm_3d_bouzidi import apply_bouzidi_correction_trt
+        from src.lbm_3d_trt import omegas_for_trt
+        Nx, Ny, Nz, f_pre, body, wall_links_real, _ = self._build_nonuniform_flow_setup()
+        # Confirm the analytic q-field isn't degenerately all-0.5.
+        assert np.any(np.abs(wall_links_real.q - 0.5) > 0.05), (
+            "wall_link q-field has no q != 0.5 entries; test would be vacuous"
+        )
+        s_plus, s_minus = omegas_for_trt(0.02)
+        s_plus = np.float32(s_plus)
+        s_minus = np.float32(s_minus)
+
+        f_next_real = f_pre.copy()
+        apply_bouzidi_correction_trt(
+            f_pre, f_next_real, body,
+            wall_links_real.x, wall_links_real.y, wall_links_real.z,
+            wall_links_real.dir, wall_links_real.q,
+            s_plus, s_minus,
+        )
+
+        wall_links_half_q = wall_links_real.q.copy()
+        wall_links_half_q[:] = np.float32(0.5)
+        f_next_half = f_pre.copy()
+        apply_bouzidi_correction_trt(
+            f_pre, f_next_half, body,
+            wall_links_real.x, wall_links_real.y, wall_links_real.z,
+            wall_links_real.dir, wall_links_half_q,
+            s_plus, s_minus,
+        )
+        max_diff = float(np.max(np.abs(f_next_real - f_next_half)))
+        # Effect must be at least a few percent of f_eq's magnitude
+        # (weights are ~1/18 to ~1/3, populations are O(1/18) to O(1/3)),
+        # so 1e-4 is a comfortable lower bound for a real correction.
+        assert max_diff > 1e-4, (
+            f"TRT correction is q-independent: max(|f_real - f_half|) = "
+            f"{max_diff:.2e}. Real q-field must produce non-trivially "
+            f"different output than all-q=0.5."
+        )
