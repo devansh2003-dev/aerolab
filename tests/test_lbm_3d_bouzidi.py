@@ -18,7 +18,6 @@ from src.lbm_3d_bouzidi import (
     sphere_wall_links,
 )
 
-
 # ============================================================================
 # solve_bouzidi_q: closed-form quadratic checks
 # ============================================================================
@@ -282,8 +281,8 @@ class TestBouzidiCorrection:
         """Return (Nx, Ny, Nz, body, wall_links) -- optionally with all
         q's overridden to a specific value for sanity tests."""
         from src.lbm_3d_bouzidi import (
-            sphere_wall_links,
             make_sphere_mask,
+            sphere_wall_links,
         )
         Nx, Ny, Nz = 32, 24, 24
         cx, cy, cz = 12, 12, 12
@@ -437,8 +436,8 @@ class TestBouzidiCorrectionTrt:
         fm - em = 0 when f = e). Assert f_next[opp, x_f] == f_pre[i, x_f]
         at every wall link.
         """
-        from src.lbm_3d_bouzidi import apply_bouzidi_correction_trt
         from src.lbm_3d import OPPOSITE_3D
+        from src.lbm_3d_bouzidi import apply_bouzidi_correction_trt
         from src.lbm_3d_trt import omegas_for_trt
         Nx, Ny, Nz, f_pre, body, wall_links, _ = self._build_uniform_flow_setup()
         wall_links.q[:] = np.float32(0.5)

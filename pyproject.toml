@@ -95,9 +95,16 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# Scripts are research/dev workflows -- relaxed imports and unused vars
-# are routine.
-"scripts/**" = ["E402", "F401", "F841"]
+# Scripts are research/dev workflows -- relaxed imports, unused vars,
+# unused-loop counters in benchmarks, and f-strings used purely as
+# multi-line comment blocks are routine.
+"scripts/**" = ["E402", "F401", "F841", "B007", "F541"]
+
+# app.py sets NUMBA_NUM_THREADS BEFORE any other import (see the
+# 30-line comment at app.py:12-41 for the cross-platform race that
+# requires this). Ruff flags every subsequent import as E402; the
+# convention is intentional and load-bearing.
+"app.py" = ["E402"]
 
 # black was previously configured here but never installed or run in
 # CI / dev. Removed 2026-05-24 to stop being "configured-but-dead"

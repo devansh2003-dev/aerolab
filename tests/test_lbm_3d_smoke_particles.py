@@ -17,7 +17,6 @@ known closed-form trajectories.
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from src.lbm_3d_smoke_particles import (
     advect_rk4,
@@ -25,7 +24,6 @@ from src.lbm_3d_smoke_particles import (
     step_smoke,
     trilerp_3d,
 )
-
 
 # ============================================================================
 # trilerp_3d: read-back fidelity
