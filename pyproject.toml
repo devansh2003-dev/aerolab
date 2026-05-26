@@ -93,6 +93,12 @@ ignore = [
 # are routine.
 "scripts/**" = ["E402", "F401", "F841"]
 
+# app.py sets NUMBA_NUM_THREADS BEFORE any other import (see the
+# 30-line comment at app.py:12-41 for the cross-platform race that
+# requires this). Ruff flags every subsequent import as E402; the
+# convention is intentional and load-bearing.
+"app.py" = ["E402"]
+
 # black was previously configured here but never installed or run in
 # CI / dev. Removed 2026-05-24 to stop being "configured-but-dead"
 # tooling. Ruff's formatter (ruff format) is what we'll use if we add
