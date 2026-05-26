@@ -864,6 +864,37 @@ if view == "3D (local, in development)":
                     ux.astype(np.float32, copy=False), px, py, pz,
                 )
 
+                # Phase A3 visual: Q-criterion isosurface overlay (the
+                # first reusable consumer-viz primitive). Compute Q from
+                # the velocity field, marching-cubes an isosurface at
+                # the user-selected fraction of Q_max, render as a
+                # translucent cyan Plotly Mesh3d behind the particles.
+                # Cheap (~5 ms on this grid) so we always compute Q
+                # when the checkbox is on; no caching gymnastics.
+                q_col1, q_col2 = st.columns([1, 3])
+                with q_col1:
+                    show_q = st.checkbox(
+                        "Q-criterion vortex shell",
+                        value=False,
+                        key="show_q_3d",
+                        help=(
+                            "Render the Q = level isosurface around "
+                            "vortex tubes in the wake. Q = (1/2)(|Ω|² - "
+                            "|S|²); positive Q means rotation dominates "
+                            "strain. The shell carves out where the "
+                            "flow swirls -- visible at moderate Re even "
+                            "before full vortex shedding."
+                        ),
+                    )
+                with q_col2:
+                    q_level_pct = st.slider(
+                        "Q threshold (% of max)", 1, 50, 10,
+                        key="q_level_pct_3d",
+                        disabled=not show_q,
+                        help="Lower → bigger shell (catches weaker swirls). "
+                             "Higher → only the most intense vortex cores.",
+                    )
+
                 scene_traces = [
                     go.Scatter3d(
                         x=px, y=py, z=pz,
@@ -884,6 +915,46 @@ if view == "3D (local, in development)":
                         ),
                     )
                 ]
+                if show_q:
+                    from src.lbm_3d_qcriterion import (
+                        compute_q_field,
+                        extract_q_isosurface,
+                    )
+                    Q = compute_q_field(ux, uy, uz, body=body_mask_3d)
+                    q_max = float(Q.max())
+                    if q_max > 0.0:
+                        level = (q_level_pct / 100.0) * q_max
+                        iso = extract_q_isosurface(Q, level=level)
+                        if iso is not None:
+                            verts, faces = iso
+                            scene_traces.append(
+                                go.Mesh3d(
+                                    x=verts[:, 0],
+                                    y=verts[:, 1],
+                                    z=verts[:, 2],
+                                    i=faces[:, 0],
+                                    j=faces[:, 1],
+                                    k=faces[:, 2],
+                                    color="#22d3ee",            # cyan-400
+                                    opacity=0.35,
+                                    name=f"Q = {level:.2e}",
+                                    flatshading=False,
+                                    hoverinfo="name",
+                                )
+                            )
+                        else:
+                            st.caption(
+                                f":material/info: No Q ≥ {level:.2e} "
+                                f"region found. Lower the threshold or "
+                                f"crank `u_in` / lower `nu` to develop "
+                                f"the wake."
+                            )
+                    else:
+                        st.caption(
+                            ":material/info: Q ≤ 0 everywhere -- the flow "
+                            "has no vortex structure at this Re yet. "
+                            "Raise `u_in` or lower `nu` and re-run."
+                        )
                 if use_sphere:
                     # Render the sphere as a translucent slate-grey Surface
                     # so the viewer can see particles deflecting AROUND it
