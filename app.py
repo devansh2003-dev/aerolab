@@ -367,18 +367,20 @@ st.markdown(
     "<span style='font-size:0.85rem;line-height:1;'>&#10003;</span>"
     "<span>Validated against published Cd</span>"
     "</a>"
-    # Discoverability chip for the 3D dev bench. Subtle, dimmer than the
-    # validated badge -- this is local-only / WIP, not a shipped feature.
+    # Discoverability chip for the 3D experience. Subtle, dimmer than
+    # the validated badge -- 3D is preview-quality, not the headline
+    # claim. The gallery view loads pre-baked fields (Cloud-safe); the
+    # dev bench runs the kernel live (local-only).
     "<span style='display:inline-flex;align-items:center;gap:0.3rem;"
     "padding:0.22rem 0.6rem;background:rgba(100,116,139,0.10);"
     "border:1px solid #1f2937;border-radius:999px;"
     "color:#94a3b8;font-size:0.72rem;letter-spacing:0.01em;' "
     "title='Switch via the &quot;Solver tab&quot; radio in the sidebar. "
-    "The 3D scaffold is for local development only -- D3Q19 populations "
-    "exceed Streamlit Cloud&apos;s memory cap.'>"
-    "<span style='color:#64748b;'>3D bench</span>"
+    "Gallery view replays pre-baked flow fields with smoke particles; "
+    "the dev bench runs the kernel live and stays local-only.'>"
+    "<span style='color:#64748b;'>3D gallery</span>"
     "<span style='opacity:0.6;'>&middot;</span>"
-    "<span>local-only, in sidebar &rarr;</span>"
+    "<span>preview, in sidebar &rarr;</span>"
     "</span>"
     "</div>"
     "</div>",
@@ -404,7 +406,11 @@ with st.sidebar:
     # did not switch the view -- an explicit key fixes the binding.
     view = st.radio(
         "Solver dimensionality",
-        ["2D playground (validated)", "3D (local, in development)"],
+        [
+            "2D playground (validated)",
+            "3D gallery (preview)",
+            "3D dev bench (local)",
+        ],
         index=0,
         label_visibility="collapsed",
         key="solver_view",
@@ -412,13 +418,19 @@ with st.sidebar:
             "**2D**: the shipped D2Q9 LBM solver. Validated against "
             "Williamson 1996 (cylinder) and Okajima 1982 (square) to "
             "single-digit percent up to Re ~ 200. See VALIDATION.md.\n\n"
-            "**3D**: D3Q19 BGK scaffold. WIP, runs locally only. Channel "
-            "flow + sphere bounce-back so far; no cylinder validation yet."
+            "**3D gallery**: pre-baked field replay. The kernel ran "
+            "offline; this view loads the saved velocity field and "
+            "streams smoke particles through it. No live compute, "
+            "Cloud-safe.\n\n"
+            "**3D dev bench**: D3Q19 TRT scaffold. WIP, runs the kernel "
+            "live -- local-only because populations are ~150 MB at "
+            "modest grids. Channel flow + sphere + Bouzidi + Guo NEEM; "
+            "no cylinder validation yet."
         ),
     )
     st.divider()
 
-if view == "3D (local, in development)":
+if view == "3D dev bench (local)":
     st.markdown("# AeroLab 3D &mdash; *local development bench*")
     st.markdown(
         "<div style='color:#94a3b8;font-size:0.92rem;line-height:1.5;'>"
@@ -1023,6 +1035,295 @@ if view == "3D (local, in development)":
         "devansh2003-dev/aerolab/blob/main/tests/test_lbm_3d_smoke.py), "
         "[tests/test_lbm_3d_smoke_particles.py](https://github.com/"
         "devansh2003-dev/aerolab/blob/main/tests/test_lbm_3d_smoke_particles.py)"
+    )
+    st.stop()
+
+
+# ---------------------------------------------------------------------------
+# 3D Gallery: pre-baked field replay (consumer-mode, Cloud-safe)
+#
+# Loads a .npz produced by scripts/bake_3d_field.py, streams smoke
+# particles through the steady velocity field, renders Plotly Scatter3d
+# + (optional) sphere Surface + (optional) Q-criterion shell. No kernel
+# compute on the page -- the heavy work happened offline.
+#
+# The presets live in data/baked/*.npz (gitignored; user runs the bake
+# script once locally OR a future deploy includes them via Git LFS).
+# Empty-state UX shows the bake command to run.
+# ---------------------------------------------------------------------------
+
+if view == "3D gallery (preview)":
+    from pathlib import Path
+
+    from src.baked_fields import list_baked_fields, load_baked_field
+
+    st.markdown("# AeroLab 3D &mdash; *gallery (preview)*")
+    st.caption(
+        "Pre-baked velocity fields, replayed with smoke-particle "
+        "advection. The LBM solver ran offline; this page just streams "
+        "tracers through the saved field. **Cloud-safe**: no live "
+        "kernel compute on the request thread."
+    )
+
+    baked_dir = Path("data/baked")
+    available = list_baked_fields(baked_dir)
+
+    if not available:
+        # Empty-state: tell the user exactly how to populate the gallery.
+        st.info(
+            ":material/info: **No baked presets yet.** Run the bake "
+            "script once to populate `data/baked/`:"
+        )
+        st.code(
+            "python scripts/bake_3d_field.py --preset sphere_re40",
+            language="bash",
+        )
+        st.caption(
+            "The preset registry lives in [scripts/bake_3d_field.py]"
+            "(https://github.com/devansh2003-dev/aerolab/blob/main/"
+            "scripts/bake_3d_field.py). Each preset bakes in ~10-20 s "
+            "on a laptop. Output is a compressed .npz with float16 "
+            "storage and a SHA-256 manifest hash."
+        )
+        st.stop()
+
+    # Selector: stem is the preset name, full path is the load target.
+    preset_options = {p.stem: p for p in available}
+    chosen_name = st.selectbox(
+        ":material/auto_awesome: &nbsp; Scene",
+        options=list(preset_options.keys()),
+        index=0,
+        key="gallery_preset_choice",
+        help=(
+            "Pre-baked flow scenes. Each is a steady velocity field "
+            "computed offline by `scripts/bake_3d_field.py`. The "
+            "smoke particles below are advected through the loaded "
+            "field in your browser."
+        ),
+    )
+    field = load_baked_field(preset_options[chosen_name])
+
+    # Diagnostics row: grid, Re estimate, mass drift, peak speed.
+    _Re_est = (
+        float(field.meta.get("u_in", 0.0))
+        * 2.0 * float(field.meta.get("body_params", {}).get("R", 0.0))
+        / max(float(field.meta.get("nu", 1.0)), 1e-9)
+    )
+    _solver = field.meta.get("solver_diag", {})
+    diag_cols = st.columns(4)
+    diag_cols[0].metric(
+        "Grid", f"{field.Nx} × {field.Ny} × {field.Nz}"
+    )
+    diag_cols[1].metric(
+        "Re (approx)", f"{_Re_est:.0f}",
+        help="u_in · D / nu, using sphere diameter D = 2R from the "
+             "preset's body params.",
+    )
+    diag_cols[2].metric(
+        "Mass drift", f"{_solver.get('mass_drift_rel', 0):.2%}",
+        help="Mass change between the simulation's first and last "
+             "step. Small drift means the boundary conditions are "
+             "well-balanced.",
+    )
+    diag_cols[3].metric(
+        "Peak u_x", f"{_solver.get('u_peak', 0):.4f}",
+        help="Maximum streamwise velocity in the domain (lattice "
+             "units).",
+    )
+
+    # Particle pool: heavier than the dev-bench because there is no
+    # compute pressure -- the kernel already ran.
+    from src.lbm_3d_smoke_particles import (
+        seed_inflow_particles,
+        step_smoke,
+        trilerp_3d,
+    )
+
+    n_y_rows = max(5, field.Ny // 3)
+    n_z_rows = max(5, field.Nz // 3)
+    y_rows = np.linspace(2.0, field.Ny - 3.0, n_y_rows)
+    z_rows = np.linspace(2.0, field.Nz - 3.0, n_z_rows)
+
+    rng_smoke = np.random.default_rng(7)
+    px = np.empty(0, dtype=np.float64)
+    py = np.empty(0, dtype=np.float64)
+    pz = np.empty(0, dtype=np.float64)
+    age = np.empty(0, dtype=np.int32)
+
+    u_in_meta = float(field.meta.get("u_in", 0.05))
+    cross_time = int(field.Nx / max(u_in_meta, 1e-6))
+    max_age = max(80, int(1.5 * cross_time))
+    n_frames = 90                                          # vs 60 in the dev-bench
+    n_per_row = 2                                          # vs 1 in the dev-bench
+
+    for _ in range(n_frames):
+        seed = seed_inflow_particles(
+            n_per_row=n_per_row,
+            y_rows=y_rows,
+            z_rows=z_rows,
+            x=2.0,
+            rng=rng_smoke,
+        )
+        px, py, pz, age = step_smoke(
+            px, py, pz, age,
+            field.ux, field.uy, field.uz,
+            body_mask=field.body,
+            dt=1.0,
+            n_substeps=4,
+            max_age=max_age,
+            inflow_seed_xyz=seed,
+        )
+
+    speeds = trilerp_3d(field.ux, px, py, pz)
+
+    # Q-criterion toggle (reuse the dev-bench pattern).
+    q_col1, q_col2 = st.columns([1, 3])
+    with q_col1:
+        show_q = st.checkbox(
+            "Q-criterion vortex shell",
+            value=False,
+            key="show_q_gallery",
+            help=(
+                "Render the Q = level isosurface around vortex tubes "
+                "in the wake. Q = (1/2)(|Ω|² - |S|²); positive Q means "
+                "rotation dominates strain. The shell carves out where "
+                "the flow swirls."
+            ),
+        )
+    with q_col2:
+        q_level_pct = st.slider(
+            "Q threshold (% of max)", 1, 50, 10,
+            key="q_level_pct_gallery",
+            disabled=not show_q,
+        )
+
+    # Build the 3D scene. Smaller markers + lower opacity vs the
+    # dev-bench so the cloud reads as smoke, not a constellation.
+    scene_traces = [
+        go.Scatter3d(
+            x=px, y=py, z=pz,
+            mode="markers",
+            name="smoke",
+            marker=dict(
+                size=2.4,
+                color=speeds,
+                colorscale="Plasma",
+                cmin=0.0,
+                cmax=u_in_meta * 1.6,
+                colorbar=dict(
+                    title="u<sub>x</sub>",
+                    thickness=12,
+                    len=0.6,
+                ),
+                opacity=0.78,
+            ),
+        )
+    ]
+
+    if show_q:
+        from src.lbm_3d_qcriterion import compute_q_field, extract_q_isosurface
+        Q = compute_q_field(field.ux, field.uy, field.uz, body=field.body)
+        q_max_f = float(Q.max())
+        if q_max_f > 0.0:
+            level = (q_level_pct / 100.0) * q_max_f
+            iso = extract_q_isosurface(Q, level=level)
+            if iso is not None:
+                verts, faces = iso
+                scene_traces.append(
+                    go.Mesh3d(
+                        x=verts[:, 0], y=verts[:, 1], z=verts[:, 2],
+                        i=faces[:, 0], j=faces[:, 1], k=faces[:, 2],
+                        color="#22d3ee",
+                        opacity=0.32,
+                        name=f"Q = {level:.2e}",
+                        flatshading=False,
+                        hoverinfo="name",
+                    )
+                )
+            else:
+                st.caption(
+                    f":material/info: No Q ≥ {level:.2e} region. "
+                    f"Try a lower threshold."
+                )
+        else:
+            st.caption(
+                ":material/info: Q ≤ 0 everywhere -- this field has "
+                "no vortex structure (Re may be too low to develop one)."
+            )
+
+    # Sphere overlay (if the preset is a sphere body).
+    body_type = str(field.meta.get("body_type", ""))
+    if body_type == "sphere":
+        bp = field.meta.get("body_params", {})
+        try:
+            sphere_cx = float(bp["cx"])
+            sphere_cy = float(bp["cy"])
+            sphere_cz = float(bp["cz"])
+            sphere_R = float(bp["R"])
+        except (KeyError, ValueError, TypeError):
+            sphere_cx = sphere_cy = sphere_cz = sphere_R = None
+        if sphere_R is not None:
+            _theta = np.linspace(0.0, 2.0 * np.pi, 33)
+            _phi = np.linspace(0.0, np.pi, 17)
+            _T, _P = np.meshgrid(_theta, _phi)
+            sph_x = sphere_cx + sphere_R * np.sin(_P) * np.cos(_T)
+            sph_y = sphere_cy + sphere_R * np.sin(_P) * np.sin(_T)
+            sph_z = sphere_cz + sphere_R * np.cos(_P)
+            scene_traces.append(
+                go.Surface(
+                    x=sph_x, y=sph_y, z=sph_z,
+                    showscale=False,
+                    colorscale=[[0, "#475569"], [1, "#475569"]],
+                    opacity=0.6,
+                    lighting=dict(
+                        ambient=0.55, diffuse=0.7,
+                        specular=0.3, roughness=0.5,
+                    ),
+                    lightposition=dict(x=100, y=200, z=0),
+                    name="sphere",
+                    hoverinfo="skip",
+                )
+            )
+
+    fig = go.Figure(data=scene_traces)
+    fig.update_layout(
+        scene=dict(
+            xaxis=dict(title="x (streamwise)", range=[0, field.Nx]),
+            yaxis=dict(title="y (wall-normal)", range=[0, field.Ny]),
+            zaxis=dict(title="z (spanwise)", range=[0, field.Nz]),
+            aspectmode="data",
+            bgcolor="#0a0a0a",
+            camera=dict(eye=dict(x=1.5, y=1.15, z=0.9)),
+        ),
+        height=560,
+        margin=dict(l=0, r=0, t=20, b=0),
+        paper_bgcolor="#0a0a0a",
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption(
+        f"{len(px):,} live particles after {n_frames} frames of RK4 "
+        f"advection (4 substeps / frame) through the loaded field. "
+        f"Particles deflect around solid cells and exit the outflow "
+        f"naturally."
+    )
+
+    # Manifest expander -- the "show me the receipt" panel.
+    with st.expander(":material/receipt_long: &nbsp; **Manifest**", expanded=False):
+        st.caption(
+            f"Preset hash: `{field.meta.get('hash', '?')[:16]}...` "
+            f"&middot; Schema v{field.meta.get('version', '?')} "
+            f"&middot; Baked at {field.meta.get('ts_baked', '?')}"
+        )
+        st.json(field.meta, expanded=False)
+
+    st.divider()
+    st.caption(
+        "Source: [src/baked_fields.py](https://github.com/devansh2003-dev/"
+        "aerolab/blob/main/src/baked_fields.py), "
+        "[scripts/bake_3d_field.py](https://github.com/devansh2003-dev/"
+        "aerolab/blob/main/scripts/bake_3d_field.py) &middot; "
+        "Tests: [tests/test_baked_fields.py](https://github.com/"
+        "devansh2003-dev/aerolab/blob/main/tests/test_baked_fields.py)"
     )
     st.stop()
 
