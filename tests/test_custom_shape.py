@@ -241,8 +241,13 @@ def test_fills_internal_hole():
     result = extract_silhouette_from_image(png)
     assert result.n_holes_filled == 1
     # Polygon should follow the OUTER boundary, not also outline the hole.
+    # Cap raised 2026-05-26 (Chaikin subdivision pass added): an ellipse
+    # outline has ~30 DP vertices and inflates to ~120 after 2 Chaikin
+    # iterations. An outer+inner trace would be ~80 DP, ~320 after
+    # Chaikin -- so the gate still cleanly separates "outer only"
+    # from "both rings traced", just at a higher numeric threshold.
     poly = result.polygon_xy
-    assert len(poly) < 80  # if the hole was traced too, we'd get many more vertices
+    assert len(poly) < 200
 
 
 def test_oversize_image_resized_to_max():

@@ -23,9 +23,14 @@ from dataclasses import dataclass
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageOps
-from scipy.ndimage import binary_closing, binary_fill_holes, gaussian_filter
+from scipy.ndimage import (
+    binary_closing,
+    binary_fill_holes,
+    gaussian_filter,
+    median_filter,
+)
 from scipy.ndimage import label as ndimage_label
-from skimage.filters import threshold_otsu
+from skimage.filters import threshold_otsu, threshold_triangle, threshold_yen
 from skimage.measure import approximate_polygon, find_contours
 
 # Register HEIF/HEIC opener (iPhone photos default to .heic). Optional --
@@ -64,9 +69,28 @@ SIMPLIFY_TOLERANCE_FRAC = 0.005
 # small sigma so 3-px-wide features survive; on big (2 k px) uploads
 # we want a larger sigma so anti-aliasing staircases on long edges
 # actually get smoothed. min/max clamps keep behaviour predictable.
-CONTOUR_SMOOTH_SIGMA_FRAC = 0.002   # 0.2 % of shorter dim
+# Bumped 2026-05-26 from 0.002/2.5 to 0.004/4.5: the prior ceiling left
+# visibly stair-stepped outlines on curved subjects (space capsules,
+# car bodies, eggs). Higher sigma rounds them properly. The lower
+# bound is unchanged because tiny uploads still need crisp 3-px features.
+CONTOUR_SMOOTH_SIGMA_FRAC = 0.004   # 0.4 % of shorter dim
 CONTOUR_SMOOTH_SIGMA_MIN = 0.5
-CONTOUR_SMOOTH_SIGMA_MAX = 2.5
+CONTOUR_SMOOTH_SIGMA_MAX = 4.5
+# Chaikin corner-rounding: applied AFTER Douglas-Peucker to round the
+# straight-line segments that DP produces. Each iteration replaces
+# every (v_i, v_{i+1}) edge with two new vertices at 1/4 and 3/4 along
+# the edge, so corners are visibly cut. 2 iterations on a curve-heavy
+# silhouette gives the "smooth heat-shield curve" appearance the user
+# expects; squares / triangles / etc. with sharp corners are detected
+# by the small-polygon gate below and skip Chaikin so they stay sharp.
+CHAIKIN_ITERATIONS = 2
+CHAIKIN_MIN_VERTICES = 7    # below this, polygon has intentional corners
+# Median pre-filter kernel size (pixels). Applied to the grayscale image
+# BEFORE bg sampling and thresholding so shot noise on natural photos
+# (sky grain, sensor noise, JPEG block artefacts) does not bleed into
+# the foreground signal. Edge-preserving, unlike a gaussian. 3-px is
+# enough to kill single-pixel noise without softening real edges.
+PRE_FILTER_MEDIAN_SIZE = 3
 # Soft cap on the simplified polygon's vertex count. Pathological
 # uploads (scribbles, photos with noisy edges) can produce thousands
 # of vertices after DP -- functional but slow to rasterize / render
@@ -78,6 +102,122 @@ MAX_SIMPLIFIED_VERTICES = 600
 # uploads; MAX catches "shape fills entire frame, no bg to sample" cases.
 MIN_AREA_FRAC = 0.01
 MAX_AREA_FRAC = 0.92
+
+
+def _binarize_multi_threshold(
+    fg_signal: np.ndarray,
+    w: int, h: int,
+    closing_iters: int,
+) -> tuple[np.ndarray, str, float]:
+    """Try Otsu, Triangle, and Yen; return the cleanest single-component binary.
+
+    Otsu maximises inter-class variance and is the workhorse on most uploads.
+    It can fail on MULTI-TONAL foregrounds (e.g. a white space capsule with
+    a dark heat shield + dark windows + dark insignia) by setting the
+    threshold high enough that the dark accents fall on the background side,
+    fragmenting the subject. Triangle (Zack 1977) picks lower thresholds
+    and recovers those darker subject regions; Yen (1995) uses entropy
+    maximisation and often wins on bimodal-but-skewed histograms.
+
+    We run each method, fill holes (catches windows inside the subject
+    BEFORE component labelling — critical for capsule bodies), and score
+    each candidate by "single-component quality":
+
+        quality = largest_component_area / total_foreground_area
+
+    A score of 1.0 means the foreground is a single clean blob; lower
+    scores mean it fragmented. Ties broken by preferring area fractions
+    in the 5 %-50 % band (a sane subject is usually here; very small =
+    noise speck, very large = background-was-thresholded-as-foreground).
+
+    Returns (binary_mask, method_name, quality_score). Raises ValueError
+    if every method produces an empty foreground.
+    """
+    methods = [
+        ("otsu", threshold_otsu),
+        ("triangle", threshold_triangle),
+        ("yen", threshold_yen),
+    ]
+    candidates = []
+    img_area = float(w * h)
+    for name, fn in methods:
+        try:
+            t = float(fn(fg_signal))
+        except (ValueError, RuntimeError):
+            # threshold_yen can fail on near-uniform histograms; skip
+            # the method silently and let the other candidates compete.
+            continue
+        binary = fg_signal > t
+        binary = binary_closing(binary, iterations=closing_iters)
+        if not binary.any():
+            continue
+        # Score using a fill-holes preview so a candidate with a clean
+        # outer ring + interior holes (a donut, or a capsule with dark
+        # windows) is judged AS IF those holes were already filled --
+        # which the caller will do once the largest component is
+        # selected. We do NOT mutate the returned binary; the caller's
+        # downstream fill_holes counter (n_holes_filled diagnostic) needs
+        # to see the unfilled form to do its before/after measurement.
+        binary_for_scoring = binary_fill_holes(binary)
+        labels, n = ndimage_label(binary_for_scoring)
+        if n == 0:
+            continue
+        sizes = np.bincount(labels.ravel())
+        sizes[0] = 0
+        largest = int(sizes.max())
+        total = int(binary_for_scoring.sum())
+        if total == 0:
+            continue
+        quality = largest / total
+        area_frac = largest / img_area
+        # Score: maximise quality, prefer area-frac near 0.25 (typical
+        # "subject is the dominant object but not the whole frame").
+        rank_key = (-quality, abs(area_frac - 0.25))
+        candidates.append((rank_key, name, quality, binary))
+
+    if not candidates:
+        raise ValueError(
+            "Couldn't separate the shape from the background. Try an "
+            "image with a single solid-colour background."
+        )
+    candidates.sort(key=lambda c: c[0])
+    _, name, quality, binary = candidates[0]
+    return binary, name, quality
+
+
+def _chaikin_subdivide(
+    polygon: np.ndarray, iterations: int = CHAIKIN_ITERATIONS,
+) -> np.ndarray:
+    """Chaikin's corner-cutting subdivision: rounds the polygon's corners.
+
+    For each edge (v_i, v_{i+1}), replace v_{i+1} with two new vertices:
+        q = 0.75 * v_i + 0.25 * v_{i+1}
+        r = 0.25 * v_i + 0.75 * v_{i+1}
+    Iterating this 2-3 times turns a polygon-with-corners into a smooth
+    curve that converges to a quadratic B-spline. Used here to undo the
+    "straight segment between every DP vertex" look on curved subjects;
+    the small-polygon gate in the caller stops it from rounding off
+    deliberately-sharp corners (squares, triangles, NACA tails).
+
+    Treats the polygon as closed (the contour from find_contours already
+    is, but we work in open form internally for the subdivision pass).
+    Returns the subdivided polygon, also as an open form.
+    """
+    pts = np.asarray(polygon, dtype=np.float64)
+    # Drop a trailing duplicate of the first point if find_contours
+    # closed the loop explicitly -- the subdivision wraps around.
+    if len(pts) > 1 and np.allclose(pts[0], pts[-1]):
+        pts = pts[:-1]
+    for _ in range(int(iterations)):
+        next_pts = np.roll(pts, -1, axis=0)
+        q = 0.75 * pts + 0.25 * next_pts
+        r = 0.25 * pts + 0.75 * next_pts
+        # Interleave q and r so the new sequence is q0, r0, q1, r1, ...
+        new_pts = np.empty((2 * len(pts), 2), dtype=np.float64)
+        new_pts[0::2] = q
+        new_pts[1::2] = r
+        pts = new_pts
+    return pts
 
 
 @dataclass
@@ -192,6 +332,14 @@ def extract_silhouette_from_image(png_bytes: bytes) -> SilhouetteResult:
             "image with a distinct shape on a contrasting background."
         )
 
+    # Median pre-filter to suppress shot noise on natural photos
+    # (sensor grain, JPEG block artefacts, cloud texture). Edge-
+    # preserving -- unlike a gaussian -- so real subject edges stay
+    # crisp. Critical on photos with textured backgrounds (sky, ocean,
+    # asphalt) where Otsu would otherwise mis-classify a few sparkles
+    # as foreground and end up with a fragmented mask.
+    orig_arr = median_filter(orig_arr, size=PRE_FILTER_MEDIAN_SIZE)
+
     # Sample a thin border ring to estimate background brightness BEFORE
     # auto-padding. Median is robust to up to ~50 % shape-touching-edge
     # contamination -- a shape that fills half the border can still be
@@ -217,26 +365,32 @@ def extract_silhouette_from_image(png_bytes: bytes) -> SilhouetteResult:
 
     # Foreground signal: distance from the background brightness. Pixels
     # that differ from the background -- regardless of direction -- are
-    # candidate foreground. Otsu picks the threshold inside this
-    # distance image, which is always non-negative and tends to be
-    # cleanly bimodal even when the source image isn't.
+    # candidate foreground. The multi-threshold helper picks the
+    # threshold that produces the cleanest SINGLE-component foreground,
+    # which is much more robust on multi-tonal subjects (a white space
+    # capsule with a dark heat shield + dark windows) than a single
+    # Otsu pass.
     fg_signal = np.abs(arr - bg_value)
-    try:
-        fg_thresh = threshold_otsu(fg_signal)
-    except ValueError as e:
-        raise ValueError(
-            "Couldn't separate the shape from the background. Try an "
-            "image with a single solid-colour background."
-        ) from e
-    binary = fg_signal > fg_thresh
 
-    # Morphological closing: bridge AA-edge gaps and reconnect narrow
-    # appendages. iter scales with image size so the bridged-gap width
-    # is roughly constant in fraction-of-image (~0.5 % of shorter dim).
-    # Auto-padding already gave us a bg-coloured margin so closing's
-    # erosion can't artificially shrink anything important here.
+    # Morphological closing scale: bridge AA-edge gaps and reconnect
+    # narrow appendages. iter scales with image size so the bridged-gap
+    # width is roughly constant in fraction-of-image (~0.5 % of shorter
+    # dim). Auto-padding already gave us a bg-coloured margin so
+    # closing's erosion can't artificially shrink anything important.
     closing_iters = max(2, min(w, h) // 200)
-    binary = binary_closing(binary, iterations=closing_iters)
+    try:
+        binary, threshold_method, threshold_quality = (
+            _binarize_multi_threshold(fg_signal, w, h, closing_iters)
+        )
+    except ValueError as e:
+        raise ValueError(str(e)) from e
+    if threshold_quality < 0.85:
+        warnings.append(
+            f"Foreground fragmented into multiple regions "
+            f"(single-component quality = {threshold_quality:.0%} "
+            f"using {threshold_method}). Result uses the largest piece; "
+            f"if it looks wrong, try a cleaner background."
+        )
 
     # Connected components, keep the largest by pixel count.
     labels, n_components = ndimage_label(binary)
@@ -347,6 +501,34 @@ def extract_silhouette_from_image(png_bytes: bytes) -> SilhouetteResult:
             "the shape collapsed during simplification. Try a smoother "
             "source image or one with less noise."
         )
+
+    # Chaikin corner-rounding (NEW 2026-05-26): the gaussian-smooth pass
+    # before find_contours already produces sub-pixel-precise edges, but
+    # Douglas-Peucker still outputs STRAIGHT segments between vertices,
+    # so a heavily simplified curved subject reads as a faceted polygon.
+    # Chaikin's algorithm rounds those segments by recursively cutting
+    # corners; 2 iterations is enough to make a heat-shield curve look
+    # smooth without inflating vertex count past the rasterizer's
+    # ability to render it cleanly.
+    #
+    # Gate on vertex count: shapes with <= 6 vertices are almost always
+    # intentional corner geometry (square, triangle, simple polygon)
+    # that the user wants to stay sharp. Higher counts indicate a
+    # curve-dominated silhouette where Chaikin earns its rounding.
+    if len(simplified) >= CHAIKIN_MIN_VERTICES:
+        simplified = _chaikin_subdivide(
+            simplified, iterations=CHAIKIN_ITERATIONS,
+        )
+        # Re-cap if Chaikin pushed us over the soft limit. Each iteration
+        # ~doubles the vertex count so the cap is a hard wall, not a
+        # silent inflation.
+        if len(simplified) > MAX_SIMPLIFIED_VERTICES:
+            # Re-run DP on the Chaikin output at a tolerance that brings
+            # us back under cap. Tolerance is small (~0.5 px on a
+            # 400-px image) so the smoothing survives.
+            simplified = approximate_polygon(
+                simplified, tolerance=max(0.5, tolerance * 0.5),
+            )
 
     return SilhouetteResult(
         polygon_xy=simplified,
