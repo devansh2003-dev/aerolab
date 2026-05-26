@@ -184,35 +184,33 @@ RESOLUTION_PRESETS = {
 # Set both back to 256 if you ship a fundamentally different palette.
 
 # --- Particle streaklines ---
-# Two seeding sources:
-#   (a) "Inflow column" -- n_seed_rows rows across the inflow, SPAWN_PER_SEED
-#       particles per row per frame. Floor of 8 rows (Standard preset),
-#       scales as Ny / SEED_ROW_CELL_SPACING on Detailed (Ny=240 -> 20 rows)
-#       so seed density stays roughly constant as the channel grows. The
-#       previous fixed 8 rows on Detailed left big gaps -- one stream per
-#       30 cells of Ny, with half the channel unsampled.
-#   (b) "Wake region" -- N_WAKE_SPAWN_PER_FRAME particles spawned at random
-#       (x, y) downstream of the body each frame. Without this the wake
-#       had no fresh particles by the time vortices shed -- the inflow
-#       particles aged out, leaving the most physically interesting region
-#       visually empty. Spawn box extends close to the outflow so Detailed
-#       (Nx=720) doesn't show a long empty stretch past the body.
-# MAX_AGE 100: particles fade out after 100 frames. At STEPS_PER_FRAME=35
-# and U=0.1 that's 350 cells of drift -- enough for one particle to traverse
-# nearly half of the Detailed (720) channel before fading, which makes the
-# wake trail-off gradual instead of abrupt.
+# Inflow-only seeding: n_seed_rows rows across the inflow column, SPAWN_PER_SEED
+# particles per row per frame. Floor of 8 rows (Standard preset), scales as
+# Ny / SEED_ROW_CELL_SPACING on Detailed (Ny=240 -> 20 rows) so seed density
+# stays constant as the channel grows.
+#
+# IMPORTANT: never add a mid-domain / wake-region random spawn. It looks
+# physically wrong ("smoke appearing behind the shape from nowhere") and
+# breaks the streakline interpretation. This was tried before and the user
+# reported the artefact both times; see memory feedback_streamline_design.
+# If the back half of the channel looks empty, raise MAX_AGE so a single
+# inflow particle can drift past the outflow, OR raise SPAWN_PER_SEED --
+# do NOT inject particles downstream.
+#
+# MAX_AGE is sized per-render (max_age_local in render_simulation) so an
+# inflow particle has enough lifetime to drift the full channel: roughly
+# LBM_NX / (U_INFLOW * STEPS_PER_FRAME) frames, with a multiplier so
+# particles caught in slow wake recirculation can still escape.
 # RK4_SUBSTEPS 4: 4 RK4 substeps per frame, each advecting by
 # STEPS_PER_FRAME/4 = ~8.75 lattice-time. More substeps = smoother
 # trajectories near vortices, marginal cost (perf).
 # PARTICLE_BASE_SIZE 22: matplotlib scatter "s" param in px^2 at birth;
-# tapers to ~60% at MAX_AGE.
+# tapers to ~60% at max_age_local.
 SEED_ROW_CELL_SPACING = 12   # one inflow seed row per N cells of Ny
 SEED_ROW_MIN = 8             # never fewer than this many inflow rows
-WAKE_SPAWN_PER_NX = 0.05     # wake particles per frame, as fraction of Nx
-WAKE_SPAWN_MIN = 12          # never fewer than this many wake particles/frame
-WAKE_OUTFLOW_FRAC = 0.15     # last 15 % of channel is the trail-off zone (no wake spawn)
 SPAWN_PER_SEED = 3
-MAX_AGE = 100
+MAX_AGE_MIN = 100            # floor; actual max age scales with LBM_NX
+MAX_AGE_NX_MARGIN = 1.25     # particle lifetime covers 1.25x channel length
 RK4_SUBSTEPS = 4
 PARTICLE_BASE_SIZE = 22.0
 
@@ -949,49 +947,15 @@ def render_lbm(solve, *, viz_mode="Vorticity", progress_callback=None):
     n_seed_rows = max(SEED_ROW_MIN, LBM_NY // SEED_ROW_CELL_SPACING)
     inflow_y = np.linspace(4.0, LBM_NY - 5.0, n_seed_rows)
 
-    # Wake-region spawn box. Particles spawn at random (x, y) inside this
-    # box every frame so vortices that shed off the body have fresh
-    # streakline tracers passing through them.
-    # * wake_x_min was BODY_X + char_length (one full body length past
-    #   center). On Detailed NACA (chord=100) that left ~50 cells of
-    #   empty channel between the trailing edge and the spawn box --
-    #   visible as "streams trail off past the leading edge". We now use
-    #   char_length/2 + 3: hugs the body's trailing edge at AoA=0 so the
-    #   user can see vortices peeling off the moment they form (the most
-    #   visually dramatic frames). Spawns that land INSIDE the rotated
-    #   body footprint at AoA=45 are still rejected by the mask check
-    #   below. The previous +6 buffer left a 3-cell deadzone where the
-    #   wake's birth was unsampled -- visually the wake "appeared" two
-    #   cells downstream of the body instead of right at the surface.
-    # * wake_x_max = LBM_NX * (1 - WAKE_OUTFLOW_FRAC). Last 15 % of the
-    #   channel is the trail-off zone: no fresh spawns, but aged wake
-    #   particles drift through it and fade out. On Detailed (Nx=960)
-    #   that's a 144-cell trail-off vs the old 0.22*Nx (=158-cell) one
-    #   the user described as "trails off after the leading edge" --
-    #   the channel-end emptiness was from wake_x_max being too far
-    #   back, leaving the body-to-mid-channel region under-spawned.
-    BODY_X = res_cfg["body_x"]
-    wake_x_min = BODY_X + char_length / 2 + 3
-    wake_x_max = LBM_NX * (1.0 - WAKE_OUTFLOW_FRAC)
-    wake_y_min = LBM_NY * 0.08
-    wake_y_max = LBM_NY * 0.92
-    n_wake_spawn = max(WAKE_SPAWN_MIN, int(LBM_NX * WAKE_SPAWN_PER_NX))
-
-    # Wake-spawn ramp-up: holds at 0 until inflow particles have nearly
-    # reached wake_x_min, then quadratically ramps to full strength.
-    # Earlier linear ramp still spawned a visible 2-3 wake particles by
-    # frame ~5 -- physically wrong because flow hadn't yet propagated
-    # into the wake region. Quadratic ease-in keeps n_wake near zero
-    # until well into the ramp window. WAKE_HOLD_FRAC = 0.8 means we
-    # don't begin ramping until inflow particles have travelled 80% of
-    # the distance from x=3 to wake_x_min; the ramp completes ~10 frames
-    # after they fully arrive. Net effect: wake region appears to fill
-    # naturally from the flow that reaches it, not from random spawns.
-    wake_arrival_frames = max(
-        1.0, (wake_x_min - 3.0) / (U_INFLOW * STEPS_PER_FRAME)
+    # Per-render max age: inflow particles must live long enough to drift
+    # past the outflow. At U=U_INFLOW with STEPS_PER_FRAME steps/frame the
+    # one-way crossing takes LBM_NX / (U_INFLOW * STEPS_PER_FRAME) frames.
+    # Multiply by MAX_AGE_NX_MARGIN so particles that slow down in the wake
+    # recirculation zone still reach the outflow before fading.
+    max_age_local = max(
+        MAX_AGE_MIN,
+        int(MAX_AGE_NX_MARGIN * LBM_NX / (U_INFLOW * STEPS_PER_FRAME)),
     )
-    wake_hold_frames = wake_arrival_frames * 0.8
-    wake_ramp_window = max(8.0, wake_arrival_frames * 0.2 + 10.0)
 
     # === Phase 2: render frames into a reused figure ===
     # Height tracks the data aspect ratio so set_aspect("equal") doesn't
@@ -1174,41 +1138,14 @@ def render_lbm(solve, *, viz_mode="Vorticity", progress_callback=None):
             if patch is not body_patch:
                 patch.remove()
 
-        # --- 1) Spawn new particles ---
+        # --- 1) Spawn new particles (INFLOW ONLY) ---
+        # n_seed_rows * SPAWN_PER_SEED particles at x=3 each frame.
         # Deterministic RNG seeded per-frame so cache hits reproduce identically.
+        # Do NOT add a mid-domain/wake spawn here -- see header note.
         spawn_rng = np.random.default_rng(seed=1000 + i)
-
-        # (a) Inflow-column spawn: n_seed_rows * SPAWN_PER_SEED particles at x=3.
-        inflow_new_x = np.full(n_seed_rows * SPAWN_PER_SEED, 3.0, dtype=np.float64)
-        inflow_new_y = np.repeat(inflow_y, SPAWN_PER_SEED).astype(np.float64)
-        inflow_new_y = inflow_new_y + spawn_rng.uniform(-0.7, 0.7, size=inflow_new_y.shape)
-
-        # (b) Wake-region spawn: spawn at random (x, y) inside the wake box,
-        # scaled by a held-then-quadratic ramp so frame 0 spawns 0 wake
-        # particles, the next ~20 frames (Standard) / ~50 frames (Detailed)
-        # spawn very few, and full strength only kicks in once inflow
-        # particles have physically reached and crossed the wake_x_min
-        # boundary. Reject any spawn that lands inside the body before
-        # adding it to the particle pool (the cull step would catch these
-        # on the next frame anyway, but rejecting now avoids a 1-frame
-        # visual artifact).
-        raw_ramp = max(0.0, (i - wake_hold_frames) / wake_ramp_window)
-        wake_ramp = min(1.0, raw_ramp * raw_ramp)  # quadratic ease-in
-        n_wake_this_frame = int(round(n_wake_spawn * wake_ramp))
-        if n_wake_this_frame > 0:
-            wake_x_candidates = spawn_rng.uniform(wake_x_min, wake_x_max, size=n_wake_this_frame)
-            wake_y_candidates = spawn_rng.uniform(wake_y_min, wake_y_max, size=n_wake_this_frame)
-            xi_cand = np.clip(np.round(wake_x_candidates).astype(np.int32), 0, LBM_NX - 1)
-            yi_cand = np.clip(np.round(wake_y_candidates).astype(np.int32), 0, LBM_NY - 1)
-            valid_wake = ~mask[xi_cand, yi_cand]
-            wake_new_x = wake_x_candidates[valid_wake]
-            wake_new_y = wake_y_candidates[valid_wake]
-        else:
-            wake_new_x = np.empty(0, dtype=np.float64)
-            wake_new_y = np.empty(0, dtype=np.float64)
-
-        new_x = np.concatenate([inflow_new_x, wake_new_x])
-        new_y = np.concatenate([inflow_new_y, wake_new_y])
+        new_x = np.full(n_seed_rows * SPAWN_PER_SEED, 3.0, dtype=np.float64)
+        new_y = np.repeat(inflow_y, SPAWN_PER_SEED).astype(np.float64)
+        new_y = new_y + spawn_rng.uniform(-0.7, 0.7, size=new_y.shape)
         new_age = np.zeros(len(new_y), dtype=np.int32)
 
         particle_x = np.concatenate([particle_x, new_x])
@@ -1251,7 +1188,7 @@ def render_lbm(solve, *, viz_mode="Vorticity", progress_callback=None):
             xi = np.clip(np.round(particle_x).astype(np.int32), 0, LBM_NX - 1)
             yi = np.clip(np.round(particle_y).astype(np.int32), 0, LBM_NY - 1)
             in_body = mask[xi, yi]
-            keep = in_x & in_y & (~in_body) & (particle_age < MAX_AGE)
+            keep = in_x & in_y & (~in_body) & (particle_age < max_age_local)
 
             particle_x = particle_x[keep]
             particle_y = particle_y[keep]
@@ -1262,9 +1199,9 @@ def render_lbm(solve, *, viz_mode="Vorticity", progress_callback=None):
             sp = np.sqrt(_bilerp(u_field, particle_x, particle_y) ** 2 +
                          _bilerp(v_field, particle_x, particle_y) ** 2)
             rgba = speed_cmap(speed_norm(sp))
-            age_frac = particle_age.astype(np.float64) / MAX_AGE
+            age_frac = particle_age.astype(np.float64) / max_age_local
             # Alpha: fade IN over first 3 frames so newly-spawned
-            # particles don't pop, then fade OUT linearly as age -> MAX_AGE.
+            # particles don't pop, then fade OUT linearly as age -> max_age_local.
             fade_in = np.minimum(particle_age / 3.0, 1.0)
             fade_out = 1.0 - age_frac
             rgba[:, 3] = fade_in * fade_out * 0.92
