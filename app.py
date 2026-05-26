@@ -559,6 +559,7 @@ if view == "3D (local, in development)":
     if st.button(":material/play_arrow: &nbsp; Run smoke",
                  use_container_width=True):
         import time as _time
+
         from src.lbm_3d import _make_sphere_mask, run_channel_smoke
         progress = st.progress(0.0, text="Compiling kernel + streaming...")
         body_mask_3d = (
