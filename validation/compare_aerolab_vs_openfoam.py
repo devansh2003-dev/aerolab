@@ -119,7 +119,8 @@ def main() -> int:
             t_end = max(times)
             t_window_start = t_end - WINDOW_DU * 0.01
             cd_tail = [
-                cd for t, cd in zip(times, cds) if t >= t_window_start
+                cd for t, cd in zip(times, cds, strict=True)
+                if t >= t_window_start
             ]
             of_cd = sum(cd_tail) / len(cd_tail) if cd_tail else None
             of_note = (
@@ -139,11 +140,11 @@ def main() -> int:
         "",
         "Sources:",
         "",
-        f"- AeroLab: `data/validation/results_lowblockage.json` "
-        f"(Validation preset, D = 20, B = 5 %)",
+        "- AeroLab: `data/validation/results_lowblockage.json` "
+        "(Validation preset, D = 20, B = 5 %)",
         f"- OpenFOAM: `validation/openfoam/cylinder_re100/` "
         f"(pisoFoam, 2D laminar). Notes: {of_note}",
-        f"- Williamson 1996 ARFM 28: from `src/references.py:CYLINDER_FREESTREAM`",
+        "- Williamson 1996 ARFM 28: from `src/references.py:CYLINDER_FREESTREAM`",
         "",
         "| Source | Cd | Deviation from Williamson |",
         "|--------|----|----------------------------|",

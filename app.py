@@ -2386,7 +2386,7 @@ if mode == "Real CFD (LBM)":
                         "border:1px solid rgba(148,163,184,0.35);border-radius:9999px;"
                         "font-size:0.74rem;font-weight:600;'>"
                         ":material/info: No literature reference at "
-                        f"this shape</span>"
+                        "this shape</span>"
                     )
                 st.markdown(_badge_html, unsafe_allow_html=True)
             else:
