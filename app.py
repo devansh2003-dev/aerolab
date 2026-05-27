@@ -365,6 +365,19 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# --- 2D validity thresholds (single source of truth) ---
+# Cited in VALIDATION.md headline and surfaced in the UI as the Re-banner
+# (above the velocity slider) and the inline pill (in the slider caption).
+# These are the Williamson 1996 / ARFM 28 mode-A 3D-instability threshold
+# (Re ~ 190 for the cylinder; we round to 200) and the rough envelope where
+# the 2D approximation can still produce visually plausible wakes without
+# claiming engineering accuracy. Above RE_UNPHYSICAL_2D the solver still
+# converges, but the missing 3D modes mean the numbers do not represent
+# any real flow.
+RE_VALIDATED_MAX = 200
+RE_EXPLORATORY_MAX = 800
+RE_UNPHYSICAL_2D = RE_EXPLORATORY_MAX  # alias for clarity at call sites
+
 # --- Mode toggle (sidebar, top) ---
 with st.sidebar:
     st.markdown("### :material/tune: Mode")
@@ -375,27 +388,45 @@ with st.sidebar:
     st.markdown(
         "<div style='color:#94a3b8;font-size:0.85rem;line-height:1.45;"
         "margin-bottom:0.4rem;'>"
-        "<b style='color:#cbd5e1;'>Fast</b> &mdash; airfoil lift/drag numbers in "
-        "&lt;1 s. Drag a slider, get a polar.<br>"
-        "<b style='color:#cbd5e1;'>Real CFD</b> &mdash; watch the air actually move "
-        "around a shape. ~2.5 min on Cloud, ~30 s locally."
+        "<b style='color:#cbd5e1;'>Fast (ML surrogate)</b> &mdash; airfoil "
+        "lift/drag numbers in &lt;1 s. Drag a slider, get a polar.<br>"
+        "<b style='color:#cbd5e1;'>CFD (LBM solver)</b> &mdash; watch the air "
+        "actually move around a shape. ~2.5 min on Cloud, ~30 s locally."
         "</div>",
         unsafe_allow_html=True,
     )
+    # Internal option values are kept verbatim ("Fast (NeuralFoil)" /
+    # "Real CFD (LBM)") so the `if mode == "Real CFD (LBM)"` branch below
+    # and any session-state keys persist. Only the user-visible labels
+    # change, via format_func: "(NeuralFoil)" -> "(ML surrogate)" so a
+    # first-time visitor sees it is a NEURAL NETWORK, not a CFD speedup;
+    # "Real CFD (LBM)" -> "CFD (LBM solver)" to drop the "Real" framing
+    # that implied the other mode was not real, and put the algorithm
+    # family up front. (Card #3 from the 2026-05-27 reviewer round.)
+    _MODE_LABELS = {
+        "Fast (NeuralFoil)": "Fast (ML surrogate)",
+        "Real CFD (LBM)": "CFD (LBM solver)",
+        "Validation": "Validation (benchmarks)",
+    }
     mode = st.radio(
         "Simulation mode",
-        ["Fast (NeuralFoil)", "Real CFD (LBM)"],
+        ["Fast (NeuralFoil)", "Real CFD (LBM)", "Validation"],
         # Default to Real CFD: the user-facing "see air move" feature is
         # what makes AeroLab visually distinctive, and the curated gallery
         # cards give first-time visitors something compelling to click
         # without needing to know what NeuralFoil is.
         index=1,
+        format_func=lambda v: _MODE_LABELS[v],
         label_visibility="collapsed",
         help=(
-            "**Fast**: instant ML predictions for NACA airfoils -- great "
-            "for sweeping lots of cases.  "
-            "**Real CFD**: full Lattice Boltzmann simulation -- watch the air "
-            "actually move."
+            "**Fast (ML surrogate)**: NeuralFoil neural-network prediction "
+            "of lift / drag for NACA airfoils. Trained on XFoil / RANS data; "
+            "not a live simulation.\n\n"
+            "**CFD (LBM solver)**: full 2D Lattice Boltzmann simulation -- "
+            "watch the air actually move.\n\n"
+            "**Validation (benchmarks)**: read-only benchmark tables and "
+            "bar charts vs Williamson 1996 / Okajima 1982. No solver runs "
+            "here -- the data is committed in `data/validation/`."
         ),
     )
     st.divider()
@@ -521,6 +552,175 @@ def _cached_simulate_and_render(
         shape_preset, reynolds_target, aoa_deg, res_key, polygon_key,
         viz_mode, _custom_polygon=custom_polygon,
     )
+
+
+# --- Validation mode: read-only benchmark tables + bar charts ---
+# Card #8 from the 2026-05-27 review. Loads the committed
+# `data/validation/results*.json` files and renders them with no solver
+# work -- the math behind the numbers lives in VALIDATION.md.
+if mode == "Validation":
+    import json as _json_validation
+    from pathlib import Path as _Path_validation
+
+    st.title("Validation benchmarks")
+    st.caption(
+        ":material/menu_book: Read-only view of "
+        "[`data/validation/results*.json`](https://github.com/devansh2003-dev/"
+        "aerolab/tree/main/data/validation). The math, methodology, and "
+        "10+ academic citations live in "
+        "[VALIDATION.md](https://github.com/devansh2003-dev/"
+        "aerolab/blob/main/VALIDATION.md)."
+    )
+
+    # The Resolved preset (D = 40, B = 10 %) is the headline data. We
+    # lead with it so a first-time visitor sees the validated numbers
+    # before scrolling into the cross-check tables.
+    _v_root = _Path_validation(__file__).resolve().parent / "data" / "validation"
+    _v_files = [
+        ("Resolved preset (D = 40, B = 10 %) -- headline",
+         _v_root / "results_resolved.json", True),
+        ("Validation preset (D = 20, B = 5 %) -- cross-check",
+         _v_root / "results_lowblockage.json", False),
+        ("Standard preset (D = 28, B = 35 %) -- interactive UI / CI gate",
+         _v_root / "results.json", False),
+    ]
+
+    for _title, _path, _is_headline in _v_files:
+        if not _path.exists():
+            continue
+        try:
+            _payload = _json_validation.loads(
+                _path.read_text(encoding="utf-8")
+            )
+        except (_json_validation.JSONDecodeError, OSError) as _exc:
+            st.warning(f"Could not read {_path.name}: {_exc}")
+            continue
+        _rows = _payload.get("results", [])
+        if not _rows:
+            continue
+
+        st.markdown(f"### {_title}")
+
+        # --- Compact table ---
+        _table_rows = []
+        for r in _rows:
+            cd_corr = r.get("cd_corrected")
+            cd_err = r.get("cd_error_pct")
+            _table_rows.append({
+                "Shape": r["shape"],
+                "Re": int(r["re"]),
+                "Cd raw": round(float(r.get("cd_raw", 0.0)), 3),
+                "Cd corrected": (round(float(cd_corr), 3)
+                                  if cd_corr is not None else None),
+                "Cd ref": (round(float(r.get("cd_ref", 0.0)), 3)
+                           if r.get("cd_ref") is not None else None),
+                "Cd err %": (round(float(cd_err), 1)
+                              if cd_err is not None else None),
+                "St raw": (round(float(r.get("st_raw", 0.0)), 3)
+                           if r.get("st_raw") is not None else None),
+                "St cycles": (round(float(r.get("strouhal_n_cycles", 0.0)), 1)
+                              if "strouhal_n_cycles" in r else None),
+                "Cd pass": bool(r.get("cd_pass", False)),
+            })
+        st.dataframe(_table_rows, width="stretch", hide_index=True)
+
+        # --- Per-shape bar chart: AeroLab vs reference ---
+        # Cylinder + Square are the two benchmark shapes. We do one chart
+        # per shape so the y-axis ranges are sane (Square Cd ~ 1.5 - 2.0,
+        # Cylinder Cd ~ 1.0 - 1.4).
+        for _shape in sorted({r["shape"] for r in _rows}):
+            _shape_rows = [r for r in _rows if r["shape"] == _shape
+                           and r.get("cd_ref") is not None]
+            if not _shape_rows:
+                continue
+            _shape_rows.sort(key=lambda r: int(r["re"]))
+            _re_labels = [f"Re={int(r['re'])}" for r in _shape_rows]
+            _cd_aero = [
+                float(r.get("cd_corrected") or r.get("cd_raw"))
+                for r in _shape_rows
+            ]
+            _cd_ref_arr = [float(r["cd_ref"]) for r in _shape_rows]
+            _fig = go.Figure()
+            _fig.add_trace(go.Bar(
+                x=_re_labels, y=_cd_aero,
+                name="AeroLab Cd",
+                marker_color="#10b981" if _is_headline else "#94a3b8",
+            ))
+            _fig.add_trace(go.Bar(
+                x=_re_labels, y=_cd_ref_arr,
+                name=f"Reference ({_shape})",
+                marker_color="#3b82f6",
+            ))
+            _fig.update_layout(
+                title=dict(
+                    text=f"<span style='font-size:0.95rem;'>"
+                         f"{_shape} Cd vs reference</span>",
+                    x=0.0, xanchor="left",
+                ),
+                barmode="group",
+                height=300,
+                margin=dict(t=50, l=50, r=20, b=40),
+                yaxis_title="Cd",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                             xanchor="left", x=0),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+            )
+            st.plotly_chart(_fig, width="stretch")
+
+        # Strouhal-record-quality notice. Every St row currently has
+        # n_cycles < 20 (card #5). Surface that here so a reader who
+        # only opens this tab still sees the FFT caveat.
+        _any_insufficient = any(
+            r.get("strouhal_insufficient_record") for r in _rows
+        )
+        if _any_insufficient:
+            st.caption(
+                ":material/info_outline: The St columns above are reported "
+                "for completeness only. Every row was captured with "
+                "fewer than 20 shedding cycles in the FFT window, so the "
+                "St-axis bin width is wide vs the Williamson St(Re) range -- "
+                "treat St as qualitative agreement, not a percent-error "
+                "measurement. VALIDATION.md section 3.4 has the long-form "
+                "discussion."
+            )
+        st.markdown("---")
+
+    # Long-time stability appendix (card #10), surfaced if the JSON has
+    # been generated by `scripts/long_time_stability_cylinder.py`. We
+    # don't gate the rest of the page on this file existing.
+    _lt_path = _v_root / "long_time_cylinder_re100.json"
+    if _lt_path.exists():
+        try:
+            _lt = _json_validation.loads(_lt_path.read_text(encoding="utf-8"))
+        except (_json_validation.JSONDecodeError, OSError) as _exc:
+            st.warning(f"Could not read {_lt_path.name}: {_exc}")
+            _lt = None
+        if _lt is not None:
+            st.markdown(
+                "### Long-time behaviour (cylinder Re = 100, Standard preset)"
+            )
+            st.caption(
+                "How the validated case behaves as we push the run length "
+                "past the validated window. SciML's standing critique of "
+                "low-cost solvers is that long-time extrapolation is "
+                "where accumulated drift wins; this table is AeroLab's "
+                "honest answer for the most-instrumented case."
+            )
+            _lt_table = []
+            for r in _lt.get("results", []):
+                _lt_table.append({
+                    "t_end (D/U)": r.get("t_end_DU"),
+                    "n_steps": r.get("n_steps"),
+                    "Finished clean": r.get("finished_clean"),
+                    "Mass drift (%)": r.get("mass_drift_pct"),
+                    "u_peak (lattice)": r.get("u_peak_lattice"),
+                    "Cd (last 50 D/U)": r.get("cd_mean"),
+                    "St": r.get("strouhal"),
+                })
+            st.dataframe(_lt_table, width="stretch", hide_index=True)
+
+    st.stop()
 
 
 # --- Real CFD (LBM) mode: animated GIF playback of LBM run ---
@@ -1002,10 +1202,70 @@ if mode == "Real CFD (LBM)":
         )
         reynolds_target = int(round(np.clip(velocity_mps * L_REAL_M / NU_AIR, 50, _re_cap)))
         reg, reg_feel = regime_label(reynolds_target)
-        st.caption(
+
+        # Inline validity pill (card #7) -- color reflects what region of
+        # the 2D-LBM validation envelope the current Re lands in. Bluff
+        # bodies only; airfoil shapes use a different reference frame
+        # (NeuralFoil polars, chord Re ~ 1e5+) where the bluff-body 2D
+        # ceiling does not apply.
+        _is_bluff = shape_preset in ("Cylinder", "Square", "Ellipse", "Custom")
+        if _is_bluff:
+            if reynolds_target <= RE_VALIDATED_MAX:
+                _pill_label, _pill_bg, _pill_fg = "validated", "#10b981", "#022c22"
+            elif reynolds_target <= RE_EXPLORATORY_MAX:
+                _pill_label, _pill_bg, _pill_fg = "exploratory", "#f59e0b", "#451a03"
+            else:
+                _pill_label, _pill_bg, _pill_fg = "unphysical 2D", "#ef4444", "#450a0a"
+            _pill_html = (
+                f"<span style='display:inline-block;padding:0.05rem 0.5rem;"
+                f"margin-left:0.4rem;background:{_pill_bg};color:{_pill_fg};"
+                f"border-radius:9999px;font-size:0.72rem;font-weight:600;"
+                f"vertical-align:middle;'>{_pill_label}</span>"
+            )
+        else:
+            _pill_html = ""
+        st.markdown(
+            f"<div style='color:#94a3b8;font-size:0.85rem;margin-top:-0.25rem;"
+            f"margin-bottom:0.45rem;'>"
             f"{velocity_mps:.2f} m/s &nbsp;·&nbsp; Re &asymp; {reynolds_target} "
-            f"&nbsp;·&nbsp; **{reg}** &mdash; air feels {reg_feel}"
+            f"&nbsp;·&nbsp; <b>{reg}</b> &mdash; air feels {reg_feel}{_pill_html}"
+            f"</div>",
+            unsafe_allow_html=True,
         )
+
+        # Re-ceiling banner (card #1) -- bluff-body only. The 2D-LBM
+        # validation ceiling (Williamson mode-A, Re ~ 190 for cylinder) is
+        # the physical limit, not a solver one; above it a strictly 2D
+        # solver is a different problem, not "the same problem at higher
+        # Re". Airfoil shapes are exempt because they reference a chord
+        # Re envelope (~1e5+) where the bluff-body 2D ceiling does not
+        # apply -- the NeuralFoil Fast mode handles that regime instead.
+        if _is_bluff:
+            if reynolds_target <= RE_VALIDATED_MAX:
+                st.info(
+                    f":material/verified: **Validated range** (Re &le; "
+                    f"{RE_VALIDATED_MAX}). Cd and St are benchmarked against "
+                    "Williamson 1996 (cylinder) and Okajima 1982 (square). "
+                    "See [VALIDATION.md](https://github.com/devansh2003-dev/"
+                    "aerolab/blob/main/VALIDATION.md) for the methodology."
+                )
+            elif reynolds_target <= RE_EXPLORATORY_MAX:
+                st.warning(
+                    f":material/warning: **Beyond the 2D validation "
+                    f"ceiling** (Re &gt; {RE_VALIDATED_MAX}). Real flow "
+                    "develops 3D instabilities (oblique shedding, mode-A/B "
+                    "vortex dislocations) that a 2D solver cannot capture. "
+                    "Results are exploratory visualisation, not validated "
+                    "CFD."
+                )
+            else:
+                st.error(
+                    f":material/dangerous: **Far beyond 2D validity** "
+                    f"(Re &gt; {RE_EXPLORATORY_MAX}). The numbers shown are "
+                    "not trustworthy as engineering predictions; the wake "
+                    "still animates because the solver is stable, not "
+                    "because the physics is right."
+                )
 
         if shape_preset == "Cylinder":
             # A circle is rotationally invariant -- no point exposing a slider.
@@ -1707,6 +1967,20 @@ if mode == "Real CFD (LBM)":
 
     with st.container(border=True):
         if not _showing_side_by_side:
+            # "[CFD simulation]" chip (card #3) so a screenshot of the GIF
+            # cropped out of the app carries the mode label. The Fast-mode
+            # Plotly figures have an equivalent "[ML surrogate]" prefix in
+            # their layout.title; this is the LBM-side analog. Keep the
+            # chip small so it doesn't compete with the animation.
+            st.markdown(
+                "<div style='color:#94a3b8;font-size:0.72rem;"
+                "margin-bottom:0.35rem;'>"
+                "<span style='display:inline-block;padding:0.05rem 0.5rem;"
+                "background:rgba(59,130,246,0.12);color:#93c5fd;"
+                "border:1px solid rgba(59,130,246,0.35);border-radius:9999px;"
+                "font-weight:600;'>[CFD simulation &middot; LBM]</span></div>",
+                unsafe_allow_html=True,
+            )
             st.image(gif_bytes, width="stretch")
 
         # Action row: download GIF, pin for comparison, clear pin (if set).
@@ -2068,6 +2342,53 @@ if mode == "Real CFD (LBM)":
                     f"K = {_K:.2f} at B = {_B:.2f} &nbsp;|&nbsp; "
                     f"interactive estimate, not the validation claim]"
                 )
+                # Validation-status badge (card #2). Numbers come from the
+                # VALIDATION.md headline (Resolved preset, D = 40, B = 10 %),
+                # not from this Standard-preset interactive run -- the badge
+                # is a TRUST label, not a per-run error. Inside the Re <= 200
+                # band the literature reference is well-defined; outside it,
+                # there is no 2D validation reference at all.
+                if shape_preset == "Cylinder" and reynolds_target <= RE_VALIDATED_MAX:
+                    _badge_html = (
+                        "<span style='display:inline-block;padding:0.1rem 0.55rem;"
+                        "background:rgba(16,185,129,0.15);color:#6ee7b7;"
+                        "border:1px solid rgba(16,185,129,0.35);border-radius:9999px;"
+                        "font-size:0.74rem;font-weight:600;'>"
+                        ":material/check_circle: Validated &mdash; "
+                        "Williamson 1996, &plusmn;5.6 % (max 10.2 %)</span>"
+                    )
+                elif shape_preset == "Square" and reynolds_target <= RE_VALIDATED_MAX:
+                    _badge_html = (
+                        "<span style='display:inline-block;padding:0.1rem 0.55rem;"
+                        "background:rgba(16,185,129,0.15);color:#6ee7b7;"
+                        "border:1px solid rgba(16,185,129,0.35);border-radius:9999px;"
+                        "font-size:0.74rem;font-weight:600;'>"
+                        ":material/check_circle: Validated &mdash; "
+                        "Okajima 1982, &plusmn;4.5 % (max 5.1 %)</span>"
+                    )
+                elif reynolds_target > RE_VALIDATED_MAX:
+                    _badge_html = (
+                        "<span style='display:inline-block;padding:0.1rem 0.55rem;"
+                        "background:rgba(245,158,11,0.15);color:#fbbf24;"
+                        "border:1px solid rgba(245,158,11,0.35);border-radius:9999px;"
+                        "font-size:0.74rem;font-weight:600;'>"
+                        ":material/warning: Exploratory &mdash; "
+                        f"Re &gt; {RE_VALIDATED_MAX}, no 2D validation reference</span>"
+                    )
+                else:
+                    # Re <= 200 on a shape we don't have a tabulated
+                    # reference for (e.g. Ellipse at AoA != 0). Honest
+                    # label: the regime is the validated one, but no
+                    # paper to compare against.
+                    _badge_html = (
+                        "<span style='display:inline-block;padding:0.1rem 0.55rem;"
+                        "background:rgba(100,116,139,0.18);color:#cbd5e1;"
+                        "border:1px solid rgba(148,163,184,0.35);border-radius:9999px;"
+                        "font-size:0.74rem;font-weight:600;'>"
+                        ":material/info: No literature reference at "
+                        f"this shape</span>"
+                    )
+                st.markdown(_badge_html, unsafe_allow_html=True)
             else:
                 # Shapes without a tabulated K (Custom polygons,
                 # airfoils outside the validation set): just show raw.
@@ -2083,6 +2404,18 @@ if mode == "Real CFD (LBM)":
                     ),
                 )
                 st.caption(":gray[Channel-confined; no correction applied.]")
+                # No-reference badge (card #2). Custom polygons and
+                # airfoils outside the validation set have no published
+                # Cd to compare against, regardless of Re.
+                st.markdown(
+                    "<span style='display:inline-block;padding:0.1rem 0.55rem;"
+                    "background:rgba(100,116,139,0.18);color:#cbd5e1;"
+                    "border:1px solid rgba(148,163,184,0.35);border-radius:9999px;"
+                    "font-size:0.74rem;font-weight:600;'>"
+                    ":material/info: Exploratory &mdash; no 2D validation "
+                    "reference for this shape</span>",
+                    unsafe_allow_html=True,
+                )
         with _force_cols[1]:
             st.metric(
                 "Lift (Cl)",
@@ -2128,6 +2461,31 @@ if mode == "Real CFD (LBM)":
                     st.caption(
                         ":gray[How fast vortices peel off. ~0.2 for cylinders.]"
                     )
+                # St record-quality caption (card #5). The FFT samples
+                # frequencies at spacing 1/record_len; the St-axis bin
+                # width and the captured cycle count are how a senior
+                # reader judges whether the displayed St means anything.
+                # n_cycles < 20 = the bin width is on the order of the
+                # full Williamson St(Re) range -> any percent-error
+                # against the reference is coincidence, not measurement.
+                _st_bw = sim_result.get("strouhal_bin_width", float("nan"))
+                _st_nc = sim_result.get("strouhal_n_cycles", float("nan"))
+                if np.isfinite(_st_bw) and np.isfinite(_st_nc):
+                    _bw_lbl = f"bin &plusmn; {_st_bw:.3f}"
+                    _nc_lbl = f"{_st_nc:.1f} cycles"
+                    if _st_nc < 20:
+                        st.markdown(
+                            "<div style='color:#fbbf24;font-size:0.78rem;'>"
+                            f":material/info_outline: INSUFFICIENT RECORD &mdash; "
+                            f"{_nc_lbl} captured ({_bw_lbl}). Bin width "
+                            "is wide vs the Williamson range; treat as "
+                            "qualitative.</div>",
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.caption(
+                            f":gray[{_bw_lbl} &nbsp;·&nbsp; {_nc_lbl} captured]"
+                        )
             else:
                 st.metric(
                     "Shedding rhythm (St)", "—",
@@ -2322,9 +2680,18 @@ st.markdown(
     "##### Pick airfoils, set angle of attack, see lift and drag instantly "
     "-- powered by a neural network trained on millions of XFoil runs."
 )
+# Persistent ML-surrogate disclaimer (card #3). The numbers below are
+# NeuralFoil predictions: a neural network trained on XFoil / RANS data,
+# not a live simulation. A first-time visitor needs to know which mode is
+# the surrogate and which is the solver before they read a Cd value here.
+st.caption(
+    ":material/psychology: **[ML surrogate]** NeuralFoil prediction -- a "
+    "neural network trained on XFoil / RANS data, not a live simulation. "
+    "Use **CFD (LBM solver)** in the sidebar for time-resolved flow fields."
+)
 st.caption(
     ":material/bolt: For full fluid simulation with visible streamlines and "
-    "wake structure, switch to **Real CFD** in the sidebar."
+    "wake structure, switch to **CFD (LBM solver)** in the sidebar."
 )
 
 
@@ -2529,10 +2896,20 @@ geom_fig.update_yaxes(title_text="t/c (solid),  camber/c (dashed)", row=1, col=2
 
 geom_fig.update_layout(
     height=400,
+    # "[ML surrogate]" prefix (card #3) so a screenshot taken out of
+    # context still carries the mode label -- a first-time GitHub visitor
+    # who opens an Issue with this image attached must be able to tell
+    # which mode produced it.
+    title=dict(
+        text="<span style='font-size:0.78rem;color:#94a3b8;'>"
+             "[ML surrogate &middot; NeuralFoil]</span>",
+        x=0.0, xanchor="left", y=0.99, yanchor="top",
+        font=dict(size=11),
+    ),
     # Subplot titles sit at y~1.0 in paper coords; the legend has to clear
     # them, otherwise the "Airfoil shape" caption gets occluded by airfoil
     # name chips (reviewer-flagged collision, 2026-05-25).
-    margin=dict(t=90, l=50, r=20, b=50),
+    margin=dict(t=110, l=50, r=20, b=50),
     legend=dict(orientation="h", yanchor="bottom", y=1.18, xanchor="left", x=0),
     hovermode="x unified",
 )
@@ -2598,7 +2975,15 @@ polar_fig.update_yaxes(title_text="CL", row=1, col=3)
 
 polar_fig.update_layout(
     height=480,
-    margin=dict(t=90, l=50, r=20, b=50),
+    # "[ML surrogate]" prefix (card #3). See geom_fig.update_layout above
+    # for the rationale.
+    title=dict(
+        text="<span style='font-size:0.78rem;color:#94a3b8;'>"
+             "[ML surrogate &middot; NeuralFoil]</span>",
+        x=0.0, xanchor="left", y=0.99, yanchor="top",
+        font=dict(size=11),
+    ),
+    margin=dict(t=110, l=50, r=20, b=50),
     legend=dict(orientation="h", yanchor="bottom", y=1.18, xanchor="left", x=0),
     hovermode="x unified",
 )

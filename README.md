@@ -4,12 +4,18 @@
 
 ![NACA 4412 airfoil at Re=600, +15° AoA](assets/hero_naca4412_re600_aoa15.gif)
 
-Drop in a 2D shape (cylinder, square, ellipse, NACA 4-digit airfoil, **upload your own image**, or **sketch one in the browser**), set wind speed, watch the wake develop. Two modes:
+Drop in a 2D shape (cylinder, square, ellipse, NACA 4-digit airfoil, **upload your own image**, or **sketch one in the browser**), set wind speed, watch the wake develop. Two modes — one is a **neural-network surrogate**, the other is a **live simulation**, and the difference matters when you read the numbers:
 
-- **Fast (NeuralFoil)** — instant ML polar predictions for airfoils.
-- **Real CFD (LBM)** — full Lattice Boltzmann simulation rendered as an animated GIF, on any shape you can sketch.
+- **Fast (ML surrogate)** — NeuralFoil neural-network prediction of lift / drag polars for NACA airfoils. Trained on XFoil / RANS data; not a live simulation. Good for sweeping cases in &lt;1 s each.
+- **CFD (LBM solver)** — full 2D Lattice Boltzmann simulation rendered as an animated GIF, on any shape you can sketch. Validated against Williamson 1996 / Okajima 1982 in the laminar-shedding band; see [VALIDATION.md](VALIDATION.md).
 
 CPU-only, free to use, mobile-friendly.
+
+### About the two solver modes
+
+**Fast (ML surrogate).** Uses [NeuralFoil](https://github.com/peterdsharpe/NeuralFoil), a neural network trained on XFoil + RANS polars. Inference is ~1 ms per (airfoil, alpha, Re) tuple — so a 81-alpha polar lands in &lt;1 s. **Do not trust it for** anything off the NACA-4/5 + Re ≈ 10⁵–10⁷ training distribution: custom shapes, separated flow well into stall, or transonic / compressible effects.
+
+**CFD (LBM solver).** Real 2D Lattice Boltzmann simulation — D2Q9 MRT + Smagorinsky LES, Zou-He inflow / outflow, Bouzidi interpolated bounce-back on built-in shapes. ~30 s per case locally, ~2.5 min on the 1-vCPU Cloud container. **Do not trust the Cd numbers above Re ≈ 200** for bluff bodies: real flow becomes 3D (Williamson mode-A vortex dislocations) and a strictly 2D solver cannot capture that. The validated band is Re ≤ 200; see [VALIDATION.md](VALIDATION.md).
 
 **Live demo:** [aerolab-devansh.streamlit.app](https://aerolab-devansh.streamlit.app/) (no install, no signup)
 
