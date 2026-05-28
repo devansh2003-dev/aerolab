@@ -783,6 +783,7 @@ if view == "3D dev bench (local)":
         from src.lbm_3d_smoke_particles import (
             seed_inflow_particles,
             step_smoke,
+            trilerp_3d,
         )
 
         _sphere_suffix = ""
@@ -822,8 +823,14 @@ if view == "3D dev bench (local)":
             # The LBM solve produced a steady field; advection cost is
             # dominated by the trilerp inner loops (pure numpy,
             # ~few ms / frame at this particle count).
-            n_y_rows = max(3, ny // 4)
-            n_z_rows = max(3, nz // 4)
+            #
+            # Denser seeding rows than before (Ny / 3, Nz / 3 with a
+            # floor of 5) -- ported from the gallery so the smoke
+            # reads as a cloud rather than a constellation. Costs
+            # ~50 % more advection work per frame; still well inside
+            # the per-click budget at this grid size.
+            n_y_rows = max(5, ny // 3)
+            n_z_rows = max(5, nz // 3)
             y_rows_ad = np.linspace(2.0, ny - 3.0, n_y_rows)
             z_rows_ad = np.linspace(2.0, nz - 3.0, n_z_rows)
 
@@ -843,7 +850,28 @@ if view == "3D dev bench (local)":
             dt_per_frame = nx / float(target_cross_frames * max(u_in, 1e-6))
             max_age = int(1.6 * target_cross_frames)
             n_frames_ad = max(int(1.4 * target_cross_frames), 90)
-            for _ in range(n_frames_ad):
+
+            # Animation snapshot schedule (ported from the gallery,
+            # 2026-05-28). We capture ~28 keyframes during advection
+            # so the user can scrub / play through the development of
+            # the wake instead of seeing only the steady-state cloud.
+            # The first snapshot lands at target_cross_frames // 4
+            # (the warmup), giving the smoke time to fill the inflow
+            # band before frame 0 of the animation -- an animation
+            # that opens on an empty channel is just dead air.
+            n_keyframes = 28
+            warmup_frames_ad = target_cross_frames // 4
+            snapshot_stride = max(1, (n_frames_ad - warmup_frames_ad) // n_keyframes)
+
+            # Pre-cast the velocity field to float32 ONCE outside the
+            # loop; the previous code did this per-step which was a
+            # small but real waste at the new denser seeding.
+            ux_f32 = ux.astype(np.float32, copy=False)
+            uy_f32 = uy.astype(np.float32, copy=False)
+            uz_f32 = uz.astype(np.float32, copy=False)
+
+            snapshots_ad: list[tuple] = []   # (px, py, pz, speeds_at_capture)
+            for i in range(n_frames_ad):
                 seed = seed_inflow_particles(
                     n_per_row=1,
                     y_rows=y_rows_ad,
@@ -853,15 +881,21 @@ if view == "3D dev bench (local)":
                 )
                 px, py, pz, age = step_smoke(
                     px, py, pz, age,
-                    ux.astype(np.float32, copy=False),
-                    uy.astype(np.float32, copy=False),
-                    uz.astype(np.float32, copy=False),
+                    ux_f32, uy_f32, uz_f32,
                     body_mask=body_mask_3d,
                     dt=dt_per_frame,
                     n_substeps=4,
                     max_age=max_age,
                     inflow_seed_xyz=seed,
                 )
+                if i >= warmup_frames_ad and (
+                    (i - warmup_frames_ad) % snapshot_stride == 0
+                    or i == n_frames_ad - 1
+                ):
+                    snap_speeds = trilerp_3d(ux_f32, px, py, pz)
+                    snapshots_ad.append(
+                        (px.copy(), py.copy(), pz.copy(), snap_speeds.copy())
+                    )
 
             if len(px) == 0:
                 st.info(
@@ -870,13 +904,14 @@ if view == "3D dev bench (local)":
                     "steps."
                 )
             else:
-                # Colour by streamwise speed at the final position so
-                # the visualisation reads as "fast = brighter", same
-                # plasma convention 2D uses (matches CFD post-proc tools).
-                from src.lbm_3d_smoke_particles import trilerp_3d
-                sp = trilerp_3d(
-                    ux.astype(np.float32, copy=False), px, py, pz,
-                )
+                # The last snapshot (post-warmup, fully-developed) is
+                # what we show initially; the slider scrubs back into
+                # the earlier transient states. The snapshot tuple
+                # carries (px, py, pz, speeds) so the colour data is
+                # already paired with the positions -- no per-render
+                # trilerp_3d call needed here (the loop above already
+                # paid that cost at capture time).
+                px, py, pz, sp = snapshots_ad[-1]
 
                 # Phase A3 visual: Q-criterion isosurface overlay (the
                 # first reusable consumer-viz primitive). Compute Q from
@@ -909,23 +944,32 @@ if view == "3D dev bench (local)":
                              "Higher → only the most intense vortex cores.",
                     )
 
+                # Marker constants matched to the gallery (2026-05-28
+                # backport): size 2.4 + opacity 0.78 reads as a smoke
+                # cloud rather than discrete dots; cmax = 1.6 * u_in
+                # gives a touch more headroom than the channel inflow
+                # itself so the plasma ramp doesn't saturate near the
+                # body where the flow accelerates.
+                _marker_size = 2.4
+                _marker_opacity = 0.78
+                _marker_cmax = float(u_in) * 1.6
                 scene_traces = [
                     go.Scatter3d(
                         x=px, y=py, z=pz,
                         mode="markers",
                         name="smoke",
                         marker=dict(
-                            size=3.5,
+                            size=_marker_size,
                             color=sp,
                             colorscale="Plasma",
                             cmin=0.0,
-                            cmax=float(u_in) * 1.5,
+                            cmax=_marker_cmax,
                             colorbar=dict(
                                 title="u<sub>x</sub>",
                                 thickness=12,
                                 len=0.6,
                             ),
-                            opacity=0.85,
+                            opacity=_marker_opacity,
                         ),
                     )
                 ]
@@ -999,7 +1043,55 @@ if view == "3D dev bench (local)":
                             hoverinfo="skip",
                         )
                     )
-                smoke_fig = go.Figure(data=scene_traces)
+                # Build per-snapshot Frames. The smoke Scatter3d is
+                # trace 0 in ``scene_traces``; every frame overrides
+                # just that trace via ``traces=[0]``, leaving sphere
+                # + Q-criterion (static across time since the velocity
+                # field is steady) untouched. Marker template carries
+                # everything except ``color`` so each frame can swap
+                # the per-particle speed array without re-specifying
+                # the colorscale / colorbar / opacity. (Backported
+                # from the gallery, 2026-05-28.)
+                _smoke_marker_template = dict(
+                    size=_marker_size,
+                    colorscale="Plasma",
+                    cmin=0.0,
+                    cmax=_marker_cmax,
+                    opacity=_marker_opacity,
+                    colorbar=dict(title="u<sub>x</sub>", thickness=12, len=0.6),
+                )
+                frames_ad = []
+                for k, (snap_px, snap_py, snap_pz, snap_sp) in enumerate(snapshots_ad):
+                    frame_marker = dict(_smoke_marker_template)
+                    frame_marker["color"] = snap_sp
+                    frames_ad.append(
+                        go.Frame(
+                            data=[
+                                go.Scatter3d(
+                                    x=snap_px, y=snap_py, z=snap_pz,
+                                    mode="markers",
+                                    marker=frame_marker,
+                                    name="smoke",
+                                )
+                            ],
+                            name=str(k),
+                            traces=[0],
+                        )
+                    )
+                slider_steps = [
+                    dict(
+                        method="animate",
+                        args=[[str(k)], dict(
+                            mode="immediate",
+                            frame=dict(duration=0, redraw=True),
+                            transition=dict(duration=0),
+                        )],
+                        label=str(k),
+                    )
+                    for k in range(len(frames_ad))
+                ]
+
+                smoke_fig = go.Figure(data=scene_traces, frames=frames_ad)
                 smoke_fig.update_layout(
                     scene=dict(
                         xaxis=dict(title="x (streamwise)", range=[0, nx]),
@@ -1011,19 +1103,67 @@ if view == "3D dev bench (local)":
                             eye=dict(x=1.4, y=1.1, z=0.85),
                         ),
                     ),
-                    height=480,
-                    margin=dict(l=0, r=0, t=20, b=0),
+                    height=540,
+                    margin=dict(l=0, r=0, t=20, b=60),
                     paper_bgcolor="#0a0a0a",
+                    updatemenus=[dict(
+                        type="buttons",
+                        direction="left",
+                        x=0.02, y=-0.04, xanchor="left", yanchor="top",
+                        pad=dict(t=6, r=6, b=6, l=6),
+                        bgcolor="rgba(15,23,42,0.85)",
+                        bordercolor="#334155",
+                        font=dict(color="#e2e8f0", size=12),
+                        buttons=[
+                            dict(
+                                label="▶  Play",
+                                method="animate",
+                                args=[None, dict(
+                                    mode="immediate",
+                                    frame=dict(duration=70, redraw=True),
+                                    transition=dict(duration=0),
+                                    fromcurrent=True,
+                                    loop=True,
+                                )],
+                            ),
+                            dict(
+                                label="⏸  Pause",
+                                method="animate",
+                                args=[[None], dict(
+                                    mode="immediate",
+                                    frame=dict(duration=0, redraw=False),
+                                    transition=dict(duration=0),
+                                )],
+                            ),
+                        ],
+                    )],
+                    sliders=[dict(
+                        active=len(frames_ad) - 1,
+                        x=0.14, y=-0.04, len=0.82,
+                        xanchor="left", yanchor="top",
+                        pad=dict(t=6, b=0),
+                        bgcolor="rgba(15,23,42,0.7)",
+                        bordercolor="#334155",
+                        activebgcolor="#22d3ee",
+                        font=dict(color="#94a3b8", size=10),
+                        currentvalue=dict(
+                            visible=True, prefix="frame ",
+                            font=dict(color="#e2e8f0", size=11),
+                        ),
+                        steps=slider_steps,
+                    )],
                 )
                 st.plotly_chart(smoke_fig, use_container_width=True)
                 st.caption(
-                    f"{len(px):,} live particles after {n_frames_ad} "
-                    f"frames of RK4 advection (4 substeps / frame). "
-                    f"Tests: [test_lbm_3d_smoke_particles.py]"
+                    f"{len(px):,} live particles in the final snapshot of "
+                    f"a {n_frames_ad}-step RK4 advection (4 substeps / "
+                    f"frame). {len(snapshots_ad)} animation frames -- click "
+                    f"**▶ Play** to watch the wake develop, drag the slider "
+                    f"to scrub. Tests: [test_lbm_3d_smoke_particles.py]"
                     f"(https://github.com/devansh2003-dev/aerolab/blob/"
-                    f"main/tests/test_lbm_3d_smoke_particles.py) "
-                    f"-- 15 analytic-field gates including uniform-flow "
-                    f"drift and 3D Poiseuille centerline (D-8 reviewer "
+                    f"main/tests/test_lbm_3d_smoke_particles.py) -- 15 "
+                    f"analytic-field gates including uniform-flow drift "
+                    f"and 3D Poiseuille centerline (D-8 reviewer "
                     f"requirement, 2026-05-26)."
                 )
 
