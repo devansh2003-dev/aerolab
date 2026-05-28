@@ -37,7 +37,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from src.voxelize import read_stl, voxel_mask_for_lbm, voxelize_triangles
+from src.voxelize import (
+    read_stl,
+    voxel_mask_and_links_for_lbm,
+    voxel_mask_for_lbm,
+    voxel_wall_links,
+    voxelize_triangles,
+)
 
 # ---------------------------------------------------------------------------
 # STL writers used as test-fixture builders. Production code does not call
@@ -390,3 +396,150 @@ class TestVoxelMaskForLbm:
         )
         assert mask.dtype == np.bool_
         assert mask.shape == (32, 24, 24)
+
+
+# ---------------------------------------------------------------------------
+# Wall-link builder tests (D-9 Phase 3)
+# ---------------------------------------------------------------------------
+
+
+def _solid_sphere_mask(N: int, cx: float, cy: float, cz: float,
+                        R: float) -> np.ndarray:
+    """Boolean sphere mask matching src.lbm_3d_bouzidi.make_sphere_mask
+    convention -- cells whose centre lies AT OR INSIDE the sphere."""
+    xs = np.arange(N)[:, None, None]
+    ys = np.arange(N)[None, :, None]
+    zs = np.arange(N)[None, None, :]
+    return ((xs - cx) ** 2 + (ys - cy) ** 2 + (zs - cz) ** 2) <= R * R
+
+
+class TestVoxelWallLinks:
+    def test_empty_mask_yields_empty_links(self):
+        """No solid cells -> no fluid-to-solid links."""
+        mask = np.zeros((8, 8, 8), dtype=bool)
+        links = voxel_wall_links(mask)
+        assert links.n_links == 0
+
+    def test_full_mask_yields_empty_links(self):
+        """Every cell solid -> no fluid cells -> no fluid-to-solid links."""
+        mask = np.ones((8, 8, 8), dtype=bool)
+        links = voxel_wall_links(mask)
+        assert links.n_links == 0
+
+    def test_link_count_matches_boundary_count(self):
+        """Solid block in the middle of the grid: every fluid-to-solid
+        link should appear in the list exactly once."""
+        mask = np.zeros((10, 10, 10), dtype=bool)
+        mask[4:7, 4:7, 4:7] = True
+        links = voxel_wall_links(mask)
+        # Brute-force expected count: iterate every cell + non-rest
+        # direction, count (fluid_here AND solid_neighbour AND in-bounds).
+        from src.lbm_3d import LATTICE_VELOCITIES_3D
+        expected = 0
+        for d in range(1, len(LATTICE_VELOCITIES_3D)):
+            cx, cy, cz = (int(v) for v in LATTICE_VELOCITIES_3D[d])
+            for i in range(10):
+                for j in range(10):
+                    for k in range(10):
+                        if mask[i, j, k]:
+                            continue
+                        ni, nj, nk = i + cx, j + cy, k + cz
+                        if not (0 <= ni < 10 and 0 <= nj < 10 and 0 <= nk < 10):
+                            continue
+                        if mask[ni, nj, nk]:
+                            expected += 1
+        assert links.n_links == expected
+
+    def test_q_values_in_open_unit_interval(self):
+        """All q values must land in (0, 1]. A q of exactly 0 means the
+        wall is at the fluid-cell centre, which the Bouzidi kernel
+        treats as degenerate; the builder clips to 1e-3 as a floor."""
+        mask = _solid_sphere_mask(20, 10.0, 10.0, 10.0, 4.5)
+        links = voxel_wall_links(mask)
+        assert links.n_links > 0
+        assert (links.q > 0.0).all()
+        assert (links.q <= 1.0).all()
+        # Sphere is locally smooth -> the q distribution should span a
+        # range, not collapse to halfway.
+        assert links.q.std() > 0.05, (
+            f"Sphere wall-link q values collapsed to a near-constant "
+            f"distribution (std={links.q.std():.4f}); the smoothed-mask "
+            f"interpolation may be broken."
+        )
+
+    def test_q_average_near_half_for_axis_aligned_cube(self):
+        """For an axis-aligned cube body the surface is exactly
+        midway between adjacent voxels for face-direction links;
+        q on face links should average near 0.5."""
+        mask = np.zeros((12, 12, 12), dtype=bool)
+        mask[3:9, 3:9, 3:9] = True
+        links = voxel_wall_links(mask)
+        # Face-direction links (1..6 in the standard D3Q19 ordering --
+        # the cardinal +x, -x, +y, -y, +z, -z). Without depending on
+        # a specific ordering, we pick links whose |c| = 1 by parsing
+        # the LATTICE_VELOCITIES table.
+        from src.lbm_3d import LATTICE_VELOCITIES_3D
+        face_dirs = {
+            d for d in range(1, len(LATTICE_VELOCITIES_3D))
+            if int(np.sum(LATTICE_VELOCITIES_3D[d] ** 2)) == 1
+        }
+        is_face = np.isin(links.dir, list(face_dirs))
+        face_q = links.q[is_face]
+        assert face_q.size > 0
+        # The smoothed-mask 0.5-crossing for a face-aligned cube sits
+        # right at the fluid-solid boundary; q should average within
+        # +/- 15 % of 0.5.
+        assert 0.35 <= float(face_q.mean()) <= 0.65, (
+            f"Face-direction q mean = {face_q.mean():.3f}, expected "
+            f"~0.5 for an axis-aligned cube body."
+        )
+
+    def test_dtype_and_shape_match_sphere_path(self):
+        """The voxel WallLinkList must have the same dtype layout as
+        sphere_wall_links so the kernel can consume either transparently."""
+        from src.lbm_3d_bouzidi import sphere_wall_links
+        mask = _solid_sphere_mask(20, 10.0, 10.0, 10.0, 4.5)
+        voxel_links = voxel_wall_links(mask)
+        sphere_links = sphere_wall_links(20, 20, 20, 10.0, 10.0, 10.0, 4.5)
+        assert voxel_links.x.dtype == sphere_links.x.dtype == np.int32
+        assert voxel_links.y.dtype == sphere_links.y.dtype == np.int32
+        assert voxel_links.z.dtype == sphere_links.z.dtype == np.int32
+        assert voxel_links.dir.dtype == sphere_links.dir.dtype == np.int32
+        assert voxel_links.q.dtype == sphere_links.q.dtype == np.float32
+
+    def test_invalid_shape_raises(self):
+        """Builder rejects non-3D inputs early."""
+        with pytest.raises(ValueError, match="3-D"):
+            voxel_wall_links(np.zeros((10, 10), dtype=bool))
+
+
+class TestVoxelMaskAndLinksForLbm:
+    def test_returns_consistent_pair(self, tmp_path):
+        """Aggregate wrapper produces a mask + links that agree:
+        every link has a fluid cell whose neighbour in the link's
+        direction is solid."""
+        from tests.test_voxelize import _unit_cube_triangles, _write_binary_stl
+        stl = tmp_path / "cube.stl"
+        _write_binary_stl(stl, _unit_cube_triangles((0.0, 0.0, 0.0), side=4.0))
+
+        mask, links = voxel_mask_and_links_for_lbm(
+            stl, 32, 24, 24,
+            body_extent_cells=6.0,
+            padding_cells=(8.0, 8.0, 8.0),
+        )
+        assert mask.dtype == np.bool_
+        assert links.n_links > 0
+        # Spot-check every link points from fluid to solid.
+        from src.lbm_3d import LATTICE_VELOCITIES_3D
+        for i in range(0, links.n_links, max(1, links.n_links // 100)):
+            x_f, y_f, z_f = int(links.x[i]), int(links.y[i]), int(links.z[i])
+            d = int(links.dir[i])
+            cx, cy, cz = (int(v) for v in LATTICE_VELOCITIES_3D[d])
+            assert not mask[x_f, y_f, z_f], (
+                f"Link {i}: fluid endpoint ({x_f}, {y_f}, {z_f}) "
+                f"is actually solid."
+            )
+            assert mask[x_f + cx, y_f + cy, z_f + cz], (
+                f"Link {i}: solid endpoint ({x_f+cx}, {y_f+cy}, "
+                f"{z_f+cz}) is actually fluid."
+            )

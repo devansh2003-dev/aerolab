@@ -536,21 +536,31 @@ if view == "3D dev bench (local)":
         stl_bytes: bytes,
         Nx: int, Ny: int, Nz: int,
         body_extent_cells: float,
-    ) -> np.ndarray:
+    ):
+        """Returns ``(mask, links)``.
+
+        ``mask`` is the (Nx, Ny, Nz) bool body mask. ``links`` is the
+        Bouzidi-style WallLinkList (D-9 Phase 3, smoothed-mask q-field)
+        that the kernel consumes when Bouzidi BB is selected. The pair
+        is cached together because building the links is fast (~50 ms
+        even on a 100 k-voxel mask) and the kernel may want either or
+        both depending on the toggle.
+        """
         from pathlib import Path as _Path
         from tempfile import NamedTemporaryFile
 
-        from src.voxelize import voxel_mask_for_lbm
-        # voxel_mask_for_lbm takes a path; the uploaded bytes live in
-        # memory, so we land them in a temp file for the duration of
-        # the call, then remove it. We don't use NamedTemporaryFile's
-        # delete=True because Windows holds the file open inside the
-        # `with` block, blocking the voxeliser from reading it.
+        from src.voxelize import voxel_mask_and_links_for_lbm
+        # voxel_mask_and_links_for_lbm takes a path; the uploaded bytes
+        # live in memory, so we land them in a temp file for the
+        # duration of the call, then remove it. We don't use
+        # NamedTemporaryFile's delete=True because Windows holds the
+        # file open inside the `with` block, blocking the voxeliser
+        # from reading it.
         with NamedTemporaryFile(suffix=".stl", delete=False) as tf:
             tf.write(stl_bytes)
             tf_path = tf.name
         try:
-            return voxel_mask_for_lbm(
+            return voxel_mask_and_links_for_lbm(
                 tf_path, Nx, Ny, Nz,
                 body_extent_cells=body_extent_cells,
                 padding_cells=(max(8.0, Nx * 0.20), Ny * 0.10, Nz * 0.10),
@@ -596,11 +606,15 @@ if view == "3D dev bench (local)":
 
     # STL upload state (populated only when use_stl). Defaults make the
     # downstream Run block work uniformly whether or not the upload
-    # path is active.
+    # path is active. ``stl_links`` is the Bouzidi WallLinkList paired
+    # with the mask (D-9 Phase 3, voxel_wall_links via smoothed-mask
+    # interpolation); the kernel ignores it unless the BB toggle is
+    # set to Bouzidi.
     stl_bytes: bytes | None = None
     stl_filename: str | None = None
     stl_extent_cells = 8.0
     stl_mask: np.ndarray | None = None
+    stl_links = None
     stl_error: str | None = None
 
     if use_sphere:
@@ -640,8 +654,6 @@ if view == "3D dev bench (local)":
         )
         use_bouzidi = bc_choice.startswith("Bouzidi")
     elif use_stl:
-        use_bouzidi = False           # no analytic q-field for voxel walls
-
         uploaded = st.file_uploader(
             "STL file (binary or ASCII)",
             type=["stl"],
@@ -667,12 +679,38 @@ if view == "3D dev bench (local)":
                 "blockage; keep < ~0.5 × Ny for clean dev-bench runs."
             ),
         )
+        # D-9 Phase 3 (2026-05-28): Bouzidi toggle for STL bodies. The
+        # voxel WallLinkList carries a per-link q estimated by
+        # linear interpolation on a sigma=0.6 gaussian smoothing of
+        # the mask; the 0.5 level set approximates the true surface
+        # to sub-voxel accuracy. Halfway BB (q = 0.5 everywhere) is
+        # the cheap baseline; flip on Bouzidi for sharper Cd numbers
+        # on the uploaded mesh.
+        stl_bc_choice = st.radio(
+            "Bounce-back scheme",
+            ["Full-way (q = 0.5 everywhere)",
+             "Bouzidi (voxel-q from smoothed mask)"],
+            index=1,                         # default to Bouzidi
+            horizontal=True,
+            key="stl_bc_3d_choice",
+            help=(
+                "**Full-way**: halfway BB at every solid cell. Cheap, "
+                "but ~5 - 10 % Cd bias on smooth surfaces from the "
+                "stair-stepped voxel wall position.\n\n"
+                "**Bouzidi (voxel-q)**: per-link q estimated by "
+                "linear interpolation on a smoothed (sigma=0.6) "
+                "copy of the mask. Sub-voxel surface localisation -- "
+                "sharper Cd on smooth bodies. Triangle-exact q is a "
+                "future Phase 4."
+            ),
+        )
+        use_bouzidi = stl_bc_choice.startswith("Bouzidi")
 
         if uploaded is not None:
             stl_bytes = uploaded.getvalue()
             stl_filename = uploaded.name
             try:
-                stl_mask = _cached_voxelise_stl(
+                stl_mask, stl_links = _cached_voxelise_stl(
                     stl_bytes,
                     int(nx), int(ny), int(nz),
                     float(stl_extent_cells),
@@ -690,15 +728,19 @@ if view == "3D dev bench (local)":
                     if _n_solid > 0 else np.zeros(3, dtype=int)
                 )
                 _blockage_stl = float(_bbox_extent[1]) / ny if ny else 0.0
+                _bc_label = "Bouzidi (voxel-q)" if use_bouzidi else "halfway BB"
+                _n_links_str = (
+                    f" &middot; {stl_links.n_links:,} wall links built"
+                    if stl_links is not None else ""
+                )
                 st.caption(
                     f"STL: **{stl_filename}** "
                     f"({len(stl_bytes) / 1024:.1f} KB) &middot; "
                     f"voxelised to **{_n_solid:,} solid cells** &middot; "
                     f"body bbox {tuple(int(v) for v in _bbox_extent)} cells "
                     f"&middot; blockage (y-extent / Ny) = "
-                    f"{_blockage_stl:.2f}. "
-                    f"Halfway BB at the voxel surface; a Bouzidi q-field "
-                    f"for arbitrary polygons is the Phase 3 D-9 roadmap."
+                    f"{_blockage_stl:.2f} &middot; BC: {_bc_label}"
+                    f"{_n_links_str}."
                 )
         else:
             st.caption(
@@ -806,6 +848,11 @@ if view == "3D dev bench (local)":
             wall_links_3d = sphere_wall_links(
                 nx, ny, nz, sphere_cx, sphere_cy, sphere_cz, sphere_R,
             )
+        elif use_stl and use_bouzidi and stl_links is not None:
+            # D-9 Phase 3 voxel WallLinkList. Same dataclass as the
+            # analytic sphere path, so the kernel consumes it through
+            # the existing wall_links hook without further changes.
+            wall_links_3d = stl_links
         try:
             def _cb(frac, text):
                 progress.progress(frac, text=text)

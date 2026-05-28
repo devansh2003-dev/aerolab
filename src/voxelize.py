@@ -430,8 +430,189 @@ def voxel_mask_for_lbm(
     return mask
 
 
+def voxel_wall_links(body_mask: np.ndarray):
+    """Build a Bouzidi-style wall-link list from a voxel body mask.
+
+    For every fluid cell adjacent to at least one solid cell along a
+    D3Q19 lattice direction, emit a ``(x, y, z, dir, q)`` entry where
+    ``q`` is the approximate wall fraction in ``(0, 1]`` -- the
+    distance from the fluid cell centre to the wall, expressed as a
+    fraction of the link length ``|c_dir|``.
+
+    The ``q`` estimate uses linear interpolation on a smoothed copy of
+    the mask: smoothing the bool array with a small gaussian
+    (sigma = 0.6 cell) produces a scalar field whose 0.5 level set
+    approximates the surface to sub-voxel precision. Along each fluid-
+    to-solid link we sample the smoothed field at both endpoints and
+    solve linearly for the crossing position. The result is sharper
+    than halfway BB (which is q = 0.5 by construction) without paying
+    the per-link ray-triangle-intersection cost of a triangle-exact
+    builder.
+
+    This is the **voxel-side counterpart** of
+    :func:`src.lbm_3d_bouzidi.sphere_wall_links`; both return the same
+    ``WallLinkList`` dataclass so the LBM kernels can consume either
+    transparently. Triangle-exact q is roadmapped as Phase 4 of D-9
+    if the smoothed-mask approximation turns out to leave visible Cd
+    error in validation.
+
+    Parameters
+    ----------
+    body_mask : ndarray of shape ``(Nx, Ny, Nz)``, dtype bool
+        ``True`` cells are solid. Typically the output of
+        :func:`voxel_mask_for_lbm` (or :func:`voxelize_triangles`
+        followed by morphological close).
+
+    Returns
+    -------
+    links : WallLinkList
+        Sparse list of fluid-to-solid wall links with sub-voxel q.
+    """
+    from scipy.ndimage import gaussian_filter
+
+    # Lazy import to avoid a circular dependency between voxelize
+    # (sole consumer in the 3D pipeline) and lbm_3d_bouzidi (which
+    # owns the WallLinkList dataclass + D3Q19 constants).
+    from src.lbm_3d import LATTICE_VELOCITIES_3D
+    from src.lbm_3d_bouzidi import WallLinkList
+
+    if body_mask.ndim != 3:
+        raise ValueError(
+            f"body_mask must be 3-D; got shape {body_mask.shape}."
+        )
+    if body_mask.dtype != np.bool_:
+        body_mask = body_mask.astype(np.bool_, copy=False)
+
+    Nx, Ny, Nz = body_mask.shape
+    # Smoothed mask -> proxy for a signed distance field near the
+    # surface. sigma = 0.6 is enough to give one cell of crossover at
+    # the surface (the 0.5 level set falls inside the boundary voxel
+    # row) while still preserving sharp corners.
+    smoothed = gaussian_filter(body_mask.astype(np.float32), sigma=0.6)
+
+    # Walk each non-rest lattice direction; for each, identify fluid
+    # cells whose neighbour in that direction is in-bounds and solid.
+    # Vectorise the per-direction sweep via boolean slicing.
+    fluid = ~body_mask
+
+    xs_buf: list[int] = []
+    ys_buf: list[int] = []
+    zs_buf: list[int] = []
+    dirs_buf: list[int] = []
+    qs_buf: list[float] = []
+
+    for d_idx in range(1, len(LATTICE_VELOCITIES_3D)):           # skip rest
+        cx, cy, cz = (int(v) for v in LATTICE_VELOCITIES_3D[d_idx])
+        link_len = float(np.sqrt(cx * cx + cy * cy + cz * cz))
+
+        # Build a fluid-mask view restricted to cells whose neighbour
+        # at +c is in-bounds. Using slice ranges keeps the operation
+        # branchless and contiguous.
+        i_lo = max(0, -cx)
+        i_hi = Nx - max(0, cx)
+        j_lo = max(0, -cy)
+        j_hi = Ny - max(0, cy)
+        k_lo = max(0, -cz)
+        k_hi = Nz - max(0, cz)
+        if i_lo >= i_hi or j_lo >= j_hi or k_lo >= k_hi:
+            continue
+
+        fluid_here = fluid[i_lo:i_hi, j_lo:j_hi, k_lo:k_hi]
+        solid_there = body_mask[
+            i_lo + cx:i_hi + cx,
+            j_lo + cy:j_hi + cy,
+            k_lo + cz:k_hi + cz,
+        ]
+        wall_link_here = fluid_here & solid_there
+        if not wall_link_here.any():
+            continue
+        ii, jj, kk = np.where(wall_link_here)
+        # Translate back to global indices.
+        ii_g = ii + i_lo
+        jj_g = jj + j_lo
+        kk_g = kk + k_lo
+
+        # Smoothed-field samples at both endpoints. The endpoint
+        # values bracket 0.5 by construction (fluid endpoint < 0.5,
+        # solid endpoint > 0.5 in the bulk; the gaussian preserves
+        # this ordering at the surface).
+        s_fluid = smoothed[ii_g, jj_g, kk_g]
+        s_solid = smoothed[ii_g + cx, jj_g + cy, kk_g + cz]
+
+        # Linear interpolation for the 0.5 crossing parameter
+        # t in [0, 1]. The wall fraction q is t scaled by link length
+        # (so face-direction links return their natural q, edge
+        # directions return q in (0, sqrt(2)] -- the Bouzidi kernel
+        # already expects q in fraction-of-link units).
+        denom = s_solid - s_fluid
+        # Where the smoothed field is locally constant (interior of a
+        # block, very flat region), denom is tiny and the linear
+        # interpolation is unreliable -- fall back to q = 0.5 (the
+        # halfway-BB equivalent) so the kernel stays well-defined.
+        safe = np.abs(denom) > 1e-3
+        t = np.where(safe, (0.5 - s_fluid) / np.where(safe, denom, 1.0), 0.5)
+        # Clip to (0, 1]. A value at the open boundary q = 0 would
+        # mean the wall is AT the fluid cell centre, which is a
+        # degenerate Bouzidi case (sphere q-generator clips to 1e-3
+        # via its smaller-positive-root check). We adopt the same
+        # floor here.
+        t = np.clip(t, 1e-3, 1.0)
+        # q for the WallLinkList is the wall fraction along the
+        # link in fraction-of-link units. With t already in [0, 1]
+        # and the link spanning length |c|, q = t. The Bouzidi
+        # kernel multiplies q by lattice-cell distances internally
+        # so no extra scaling is needed here -- consistency with
+        # sphere_wall_links (which also returns q in [0, 1]).
+        del link_len   # unused; kept for clarity in the comment above
+
+        xs_buf.extend(ii_g.tolist())
+        ys_buf.extend(jj_g.tolist())
+        zs_buf.extend(kk_g.tolist())
+        dirs_buf.extend([d_idx] * len(ii_g))
+        qs_buf.extend(t.astype(np.float32).tolist())
+
+    return WallLinkList(
+        x=np.asarray(xs_buf, dtype=np.int32),
+        y=np.asarray(ys_buf, dtype=np.int32),
+        z=np.asarray(zs_buf, dtype=np.int32),
+        dir=np.asarray(dirs_buf, dtype=np.int32),
+        q=np.asarray(qs_buf, dtype=np.float32),
+    )
+
+
+def voxel_mask_and_links_for_lbm(
+    stl_path: str | Path,
+    Nx: int,
+    Ny: int,
+    Nz: int,
+    *,
+    body_extent_cells: float = 8.0,
+    padding_cells: tuple[float, float, float] = (16.0, 12.0, 12.0),
+    close_iters: int = 1,
+) -> tuple:
+    """Aggregate wrapper: STL -> ``(body_mask, wall_links)``.
+
+    Identical placement / scaling semantics as
+    :func:`voxel_mask_for_lbm`; just additionally returns the
+    Bouzidi-style wall-link list built by :func:`voxel_wall_links`.
+    Use this when the consumer wants Bouzidi BB on the uploaded mesh;
+    use :func:`voxel_mask_for_lbm` (mask-only) when halfway BB is
+    enough.
+    """
+    mask = voxel_mask_for_lbm(
+        stl_path, Nx, Ny, Nz,
+        body_extent_cells=body_extent_cells,
+        padding_cells=padding_cells,
+        close_iters=close_iters,
+    )
+    links = voxel_wall_links(mask)
+    return mask, links
+
+
 __all__ = [
     "read_stl",
     "voxelize_triangles",
     "voxel_mask_for_lbm",
+    "voxel_wall_links",
+    "voxel_mask_and_links_for_lbm",
 ]
