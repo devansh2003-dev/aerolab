@@ -1454,15 +1454,18 @@ if view == "3D gallery (preview)":
             "script once to populate `data/baked/`:"
         )
         st.code(
-            "python scripts/bake_3d_field.py --preset sphere_re40",
+            "python scripts/bake_3d_field.py --preset sphere_re40\n"
+            "python scripts/bake_3d_field.py --preset sphere_re100",
             language="bash",
         )
         st.caption(
             "The preset registry lives in [scripts/bake_3d_field.py]"
             "(https://github.com/devansh2003-dev/aerolab/blob/main/"
-            "scripts/bake_3d_field.py). Each preset bakes in ~10-20 s "
-            "on a laptop. Output is a compressed .npz with float16 "
-            "storage and a SHA-256 manifest hash."
+            "scripts/bake_3d_field.py). `sphere_re40` bakes in ~12 s "
+            "(steady wake, Guo NEEM outflow); `sphere_re100` in ~45 s "
+            "(higher-Re transient on the regularised outflow). Output "
+            "is a compressed .npz with float16 storage and a SHA-256 "
+            "manifest hash."
         )
         st.stop()
 
@@ -1508,6 +1511,15 @@ if view == "3D gallery (preview)":
         "Peak u_x", f"{_solver.get('u_peak', 0):.4f}",
         help="Maximum streamwise velocity in the domain (lattice "
              "units).",
+    )
+
+    _scheme = str(field.meta.get("scheme", "?")).upper()
+    _outflow = str(field.meta.get("outflow_scheme", "guo"))
+    _n_steps = int(field.meta.get("n_steps", 0))
+    st.caption(
+        f"*Solver: {_scheme} collision, "
+        f"{'Bouzidi' if field.meta.get('use_bouzidi') else 'half-way BB'} "
+        f"wall BC, {_outflow} outflow, {_n_steps} steps.*"
     )
 
     # Particle pool: heavier than the dev-bench because there is no
