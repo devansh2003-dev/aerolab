@@ -32,6 +32,17 @@ data/*
 # with every push would break the "see the numbers I cite" promise.
 !data/validation/
 data/validation/*_log*.txt
+# DO commit pre-baked 3D fields. Cloud has no GPU and runs the
+# 3D LBM kernel as a Numba serial loop -- the gallery's whole value
+# prop is consumer-mode replay of a pre-baked steady-state field, so
+# the .npz files are the SHIPPED ARTIFACT. They're float16-quantised
+# and small (~300 KB for sphere_re40 at 64x32x32). Re-baking via
+# scripts/bake_3d_field.py produces a different ts_baked stamp inside
+# the manifest (and zip-archive metadata timestamps), so a re-bake
+# will show as modified in git -- that is intended, revert with
+# `git restore data/baked/<name>.npz` if the re-bake wasn't meant to
+# update the shipped artifact.
+!data/baked/
 
 # Local venvs created by uv / pyenv for solver-local execution.
 # Project CI + Cloud deploy use requirements.txt, so these are local-only.

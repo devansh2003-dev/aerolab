@@ -23,6 +23,19 @@ classic LBM populations-go-negative instability around step 500-800.
 Adding scenes there will need a regularised outflow or a finer grid.
 
 To add a preset, add a new entry to ``PRESETS`` below.
+
+**Re-bake determinism note** (matters for the .gitignore exception that
+lets us ship pre-baked artifacts to Cloud). The hash in the manifest is
+content-deterministic -- two runs at the same parameters produce
+byte-identical hashes. The .npz file itself is NOT byte-identical
+across re-bakes because (1) ``save_baked_field`` stamps
+``ts_baked = datetime.now(UTC).isoformat()`` into the manifest, and
+(2) ``np.savez_compressed`` embeds zip-archive timestamps. So a fresh
+``python scripts/bake_3d_field.py --preset sphere_re40`` will produce
+a working file with the same hash as the committed one but different
+on-disk bytes -- git diff will flag it as modified. Revert with
+``git restore data/baked/sphere_re40.npz`` if the re-bake wasn't
+meant to update the shipped artifact.
 """
 from __future__ import annotations
 
