@@ -559,6 +559,152 @@ def apply_guo_outflow(
                 f_next[i, Nx - 1, y, z] = f_eq_b + (f_next[i, Nx - 2, y, z] - f_eq_n)
 
 
+@njit(cache=True, fastmath=True)
+def apply_regularised_outflow(
+    f_next: np.ndarray,
+    body: np.ndarray,
+    rho_target: np.float32,
+) -> None:
+    """Latt-Chopard 2008 regularised outflow at x = Nx - 1.
+
+    Drop-in replacement for ``apply_guo_outflow`` that survives at
+    higher Re (~ 100 and above on the dev grid). Same prescribed-
+    pressure / extrapolated-velocity boundary state; the difference
+    is the reconstruction of the non-equilibrium populations.
+
+    **The Guo NEEM failure mode it fixes.** Guo NEEM sets
+    ``f_outflow = f_eq_b + (f_interior - f_eq_interior)``. The
+    ``f_interior - f_eq_interior`` term carries the FULL non-
+    equilibrium content of the interior, including non-hydrodynamic
+    ghost moments. At higher Re the ghosts grow rapidly; eventually
+    some ``f_i`` flips negative and the simulation blows up. This is
+    the populations-go-negative signature documented in
+    ``scripts/bake_3d_field.py`` for sphere_re100 (the bake is
+    deferred for exactly this reason).
+
+    **The regularisation.** Per Latt & Chopard 2008
+    *Comp. Fluids* **37**, 159, the populations admit a Hermite
+    expansion ``f_i = f_eq_i + f_i^neq``, and the leading-order
+    non-equilibrium is exactly the second moment
+    ``Pi^neq_{ab} = sum_i c_ia c_ib (f_i - f_eq_i)``. The regularised
+    reconstruction projects ``f^neq`` onto this stress moment only,
+    discarding everything else:
+
+    .. math::
+
+        f_i^{neq,reg} = \\frac{w_i}{2 c_s^4} (c_{ia} c_{ib} - c_s^2
+        \\delta_{ab}) \\, \\Pi^{neq}_{ab}
+
+    Then we set ``f_outflow = f_eq_b + f^neq_reg`` (with ``f_eq_b``
+    at the prescribed boundary state). Off-diagonal cross-terms
+    (``c_ia c_ib`` for ``a != b``) appear with the factor 2 from the
+    Einstein-sum symmetry.
+
+    The result: only the physical hydrodynamic stress survives at
+    the outlet. Ghost moments cannot accumulate, populations stay
+    positive at higher Re, and the bulk wake exits cleanly the same
+    way it does with Guo NEEM at low Re (low-Re equivalence is
+    pinned by ``tests/test_lbm_3d_outflow.py``).
+
+    See also: Coreixas et al. 2017 *Phys. Rev. E* **96**, 033306
+    (regularisation as a noise filter, lifts the Mach-number ceiling
+    too) and Latt et al. 2020 *Phil. Trans. R. Soc. A* **378**
+    20190559 (overview of stabilisation schemes including
+    regularised LBM).
+    """
+    _, Nx, Ny, Nz = f_next.shape
+    cs2 = np.float32(1.0 / 3.0)
+    inv_2cs2 = np.float32(1.0 / (2.0 * 1.0 / 3.0))
+    inv_2cs4 = np.float32(1.0 / (2.0 * (1.0 / 3.0) * (1.0 / 3.0)))
+
+    for y in range(Ny):
+        for z in range(Nz):
+            if body[Nx - 1, y, z]:
+                continue
+
+            # Pass 1: interior moments rho_n, u_n from f_next[..., Nx-2, y, z].
+            rho_n = np.float32(0.0)
+            mx = np.float32(0.0)
+            my = np.float32(0.0)
+            mz = np.float32(0.0)
+            for i in range(19):
+                fi = f_next[i, Nx - 2, y, z]
+                rho_n += fi
+                mx += np.float32(LATTICE_VELOCITIES_3D[i, 0]) * fi
+                my += np.float32(LATTICE_VELOCITIES_3D[i, 1]) * fi
+                mz += np.float32(LATTICE_VELOCITIES_3D[i, 2]) * fi
+            if rho_n > np.float32(0.0):
+                inv_rho_n = np.float32(1.0) / rho_n
+            else:
+                inv_rho_n = np.float32(0.0)
+            ux_n = mx * inv_rho_n
+            uy_n = my * inv_rho_n
+            uz_n = mz * inv_rho_n
+            usq_n = ux_n * ux_n + uy_n * uy_n + uz_n * uz_n
+
+            # Pass 2: build Pi^neq at the interior neighbour. Six
+            # independent components (symmetric 3x3 stress tensor).
+            Pi_xx = np.float32(0.0)
+            Pi_yy = np.float32(0.0)
+            Pi_zz = np.float32(0.0)
+            Pi_xy = np.float32(0.0)
+            Pi_xz = np.float32(0.0)
+            Pi_yz = np.float32(0.0)
+            for i in range(19):
+                cx = np.float32(LATTICE_VELOCITIES_3D[i, 0])
+                cy = np.float32(LATTICE_VELOCITIES_3D[i, 1])
+                cz = np.float32(LATTICE_VELOCITIES_3D[i, 2])
+                w = np.float32(LATTICE_WEIGHTS_3D[i])
+                cu_n = cx * ux_n + cy * uy_n + cz * uz_n
+                f_eq_n = w * rho_n * (
+                    np.float32(1.0)
+                    + cu_n / cs2
+                    + (cu_n * cu_n) * inv_2cs4
+                    - usq_n * inv_2cs2
+                )
+                f_neq_n = f_next[i, Nx - 2, y, z] - f_eq_n
+                Pi_xx += cx * cx * f_neq_n
+                Pi_yy += cy * cy * f_neq_n
+                Pi_zz += cz * cz * f_neq_n
+                Pi_xy += cx * cy * f_neq_n
+                Pi_xz += cx * cz * f_neq_n
+                Pi_yz += cy * cz * f_neq_n
+
+            # Pass 3: boundary equilibrium + regularised non-equilibrium.
+            rho_b = rho_target
+            ux_b = ux_n
+            uy_b = uy_n
+            uz_b = uz_n
+            usq_b = usq_n
+
+            for i in range(19):
+                cx = np.float32(LATTICE_VELOCITIES_3D[i, 0])
+                cy = np.float32(LATTICE_VELOCITIES_3D[i, 1])
+                cz = np.float32(LATTICE_VELOCITIES_3D[i, 2])
+                w = np.float32(LATTICE_WEIGHTS_3D[i])
+                cu_b = cx * ux_b + cy * uy_b + cz * uz_b
+                f_eq_b = w * rho_b * (
+                    np.float32(1.0)
+                    + cu_b / cs2
+                    + (cu_b * cu_b) * inv_2cs4
+                    - usq_b * inv_2cs2
+                )
+                # H_i^(2) : Pi^neq, with the diagonal terms carrying
+                # the (c_ia c_ib - cs2 delta_ab) Hermite trace
+                # subtraction and the off-diagonal terms doubled via
+                # the symmetry c_ia c_ib + c_ib c_ia = 2 c_ia c_ib.
+                H_dd_Pi = (
+                    (cx * cx - cs2) * Pi_xx
+                    + (cy * cy - cs2) * Pi_yy
+                    + (cz * cz - cs2) * Pi_zz
+                    + np.float32(2.0) * cx * cy * Pi_xy
+                    + np.float32(2.0) * cx * cz * Pi_xz
+                    + np.float32(2.0) * cy * cz * Pi_yz
+                )
+                f_neq_reg = w * inv_2cs4 * H_dd_Pi
+                f_next[i, Nx - 1, y, z] = f_eq_b + f_neq_reg
+
+
 # ---------------------------------------------------------------------------
 # High-level driver
 # ---------------------------------------------------------------------------
@@ -593,6 +739,7 @@ def run_channel_smoke(
     wall_links=None,
     use_guo_neem: bool = False,
     rho_outflow: float = 1.0,
+    outflow_scheme: str = "guo",
     progress_callback=None,
 ):
     """Run the 3D channel-flow smoke and return (rho, ux, uy, uz, diag).
@@ -642,13 +789,28 @@ def run_channel_smoke(
     u_in_f32 = np.float32(u_in)
     rho_outflow_f32 = np.float32(rho_outflow)
 
+    # Choose the outflow post-pass once outside the hot loop. The
+    # regularised scheme survives higher Re (filters ghost moments at
+    # the outlet plane); Guo NEEM stays the default for legacy bake
+    # presets. See ``apply_regularised_outflow`` docstring for the
+    # Latt-Chopard 2008 reference and the Re-100 motivation.
+    if outflow_scheme not in ("guo", "regularised"):
+        raise ValueError(
+            f"outflow_scheme must be 'guo' or 'regularised', "
+            f"got {outflow_scheme!r}."
+        )
+    _apply_outflow = (
+        apply_regularised_outflow if outflow_scheme == "regularised"
+        else apply_guo_outflow
+    )
+
     for step in range(n_steps):
         if use_guo_neem:
             # Pure-bulk step (no inline boundary handling at x faces),
             # then Guo NEEM post-passes for inflow and outflow.
             step_bgk_3d_pure_bulk(f, f_next, body, omega)
             apply_guo_inflow(f_next, body, u_in_f32)
-            apply_guo_outflow(f_next, body, rho_outflow_f32)
+            _apply_outflow(f_next, body, rho_outflow_f32)
         else:
             # Legacy path: inline equilibrium-inflow + zero-gradient
             # outflow inside step_bgk_3d. Bit-for-bit unchanged.

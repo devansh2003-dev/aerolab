@@ -825,6 +825,7 @@ def run_channel_smoke_trt(
     wall_links=None,
     use_guo_neem: bool = True,
     rho_outflow: float = 1.0,
+    outflow_scheme: str = "guo",
     scheme: str = "trt",
     progress_callback=None,
 ):
@@ -849,6 +850,7 @@ def run_channel_smoke_trt(
     from src.lbm_3d import (
         apply_guo_inflow,
         apply_guo_outflow,
+        apply_regularised_outflow,
         init_population,
         macroscopic_3d,
     )
@@ -882,13 +884,27 @@ def run_channel_smoke_trt(
     u_in_f32 = np.float32(u_in)
     rho_outflow_f32 = np.float32(rho_outflow)
 
+    # Outflow-scheme selection mirrors run_channel_smoke (BGK driver).
+    # "regularised" filters ghost moments at the outlet via Latt-Chopard
+    # 2008 reconstruction; "guo" is the legacy non-equilibrium-
+    # extrapolation path that diverges around Re ~ 100 on the dev grid.
+    if outflow_scheme not in ("guo", "regularised"):
+        raise ValueError(
+            f"outflow_scheme must be 'guo' or 'regularised', "
+            f"got {outflow_scheme!r}."
+        )
+    _apply_outflow = (
+        apply_regularised_outflow if outflow_scheme == "regularised"
+        else apply_guo_outflow
+    )
+
     for step in range(n_steps):
         trt_channel_step(
             f, f_next, body, s_plus, s_minus, vel, weights, opp
         )
         if use_guo_neem:
             apply_guo_inflow(f_next, body, u_in_f32)
-            apply_guo_outflow(f_next, body, rho_outflow_f32)
+            _apply_outflow(f_next, body, rho_outflow_f32)
 
         if apply_bouzidi_correction_trt is not None:
             apply_bouzidi_correction_trt(
