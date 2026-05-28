@@ -16,11 +16,14 @@ files and replay each via the existing smoke-particle viz -- no kernel
 recompute, no Cloud-side compute pressure.
 
 The preset registry below is the source of truth for what we bake.
-The starter preset ``sphere_re40`` produces a clean steady wake in
-~12 s on a laptop CPU. Higher-Re scenes are an own task -- at Re ~ 100
-on our current grid + outflow combination the simulation develops the
-classic LBM populations-go-negative instability around step 500-800.
-Adding scenes there will need a regularised outflow or a finer grid.
+``sphere_re40`` is the conservative starter (clean steady wake, ~12 s
+on laptop CPU, default ``outflow_scheme="guo"``). ``sphere_re100``
+goes to Re ~ 100 -- a regime where the old Guo-NEEM-only outflow
+went populations-negative around step 500-800; it stays clean here
+because the preset opts into ``outflow_scheme="regularised"``
+(Latt-Chopard 2008), which filters the non-hydrodynamic ghost moments
+that drive the instability. See ``src/lbm_3d.py:apply_regularised_outflow``
+for the projection and ``tests/test_lbm_3d_outflow.py`` for the gate.
 
 To add a preset, add a new entry to ``PRESETS`` below.
 
@@ -81,14 +84,32 @@ PRESETS: dict[str, dict[str, Any]] = {
         "use_guo_neem": True,
         "use_bouzidi": True,
         "rho_outflow": 1.0,
+        "outflow_scheme": "guo",
     },
-    # sphere_re100 deferred: at 96x48x48 with TRT + Guo NEEM + Bouzidi,
-    # the simulation runs cleanly for ~500 steps then develops the
-    # classic LBM populations-go-negative instability (mass drift
-    # explodes by ~step 800 even though peak u stays finite). Needs
-    # either a higher-order BC at the outlet (regularized LBM) or a
-    # bigger grid that pushes tau further from 0.5 -- both are own
-    # tasks. Sphere_re40 is the working starter preset for the gallery.
+    # sphere_re100: same body geometry as sphere_re40 but 2.5x the
+    # Reynolds number on a 1.5x grid. The old Guo-NEEM-only outflow
+    # went populations-negative on this config by ~step 500-800; the
+    # regularised outflow holds the field steady through step 800
+    # (u_peak ~ 0.044, mass drift < 0.25%). A separate late-onset
+    # instability sets in between step 800-1000 -- own task; for now
+    # the bake stops at n_steps=800. That is ~2.7 advective times
+    # (D/u_in = 300 lattice steps), so the wake is past startup but
+    # NOT yet the asymptotic steady Re=100 wake -- it is a transient
+    # snapshot with a recognisable recirculation downstream of the
+    # body. Cost ~45 s on laptop CPU.
+    "sphere_re100": {
+        "body_type": "sphere",
+        "Nx": 96, "Ny": 48, "Nz": 48,
+        "body_params": {"cx": 24.0, "cy": 24.0, "cz": 24.0, "R": 6.0},
+        "u_in": 0.04,
+        "nu": 0.0048,                    # Re = 0.04 * 12 / 0.0048 = 100
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
 }
 
 
@@ -142,6 +163,7 @@ def bake(preset_name: str, out_dir: Path) -> Path:
         wall_links=wall_links if use_bouzidi else None,
         use_guo_neem=params["use_guo_neem"],
         rho_outflow=params.get("rho_outflow", 1.0),
+        outflow_scheme=params.get("outflow_scheme", "guo"),
         scheme=params["scheme"],
     )
     elapsed = time.time() - t0
