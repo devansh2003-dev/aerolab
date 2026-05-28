@@ -523,24 +523,68 @@ if view == "3D dev bench (local)":
         f"Reynolds, low-Re smoke regime)."
     )
 
+    # Cached voxelisation: a single STL upload + grid + extent combo
+    # should not re-voxelise every time the user nudges another slider.
+    # Cache key includes the raw bytes (so two STLs with identical
+    # geometry but different metadata still hit the same entry), grid
+    # extents, and body extent. Max 4 entries -- four different uploads
+    # at a time is plenty for an interactive session, and each entry
+    # is a ~1 MB bool array on the dev-grid sizes. (D-9 Phase 2,
+    # 2026-05-28.)
+    @st.cache_data(show_spinner=False, max_entries=4)
+    def _cached_voxelise_stl(
+        stl_bytes: bytes,
+        Nx: int, Ny: int, Nz: int,
+        body_extent_cells: float,
+    ) -> np.ndarray:
+        from pathlib import Path as _Path
+        from tempfile import NamedTemporaryFile
+
+        from src.voxelize import voxel_mask_for_lbm
+        # voxel_mask_for_lbm takes a path; the uploaded bytes live in
+        # memory, so we land them in a temp file for the duration of
+        # the call, then remove it. We don't use NamedTemporaryFile's
+        # delete=True because Windows holds the file open inside the
+        # `with` block, blocking the voxeliser from reading it.
+        with NamedTemporaryFile(suffix=".stl", delete=False) as tf:
+            tf.write(stl_bytes)
+            tf_path = tf.name
+        try:
+            return voxel_mask_for_lbm(
+                tf_path, Nx, Ny, Nz,
+                body_extent_cells=body_extent_cells,
+                padding_cells=(max(8.0, Nx * 0.20), Ny * 0.10, Nz * 0.10),
+                close_iters=1,
+            )
+        finally:
+            _Path(tf_path).unlink(missing_ok=True)
+
     # Phase A2 (2026-05-26): body selector. The existing lbm_3d.py
     # kernel already takes a `body` bool mask and does full-way
     # bounce-back on solid cells. Wiring the sphere here is what
     # turns the channel-flow demo into a recognisable wind-tunnel
-    # scene: smoke deflecting around an obstacle.
+    # scene: smoke deflecting around an obstacle. D-9 Phase 2
+    # (2026-05-28) adds the "Upload STL" path: the STL is voxelised
+    # via src/voxelize.py and the resulting bool mask feeds into the
+    # same kernel slot as the analytic sphere.
     body_choice = st.radio(
         "Body",
-        ["None (channel only)", "Sphere"],
+        ["None (channel only)", "Sphere", "Upload STL"],
         index=1,                   # default to sphere -- the dramatic demo
         horizontal=True,
         key="body_3d_choice",
         help=(
             "**None**: plain channel flow, baseline Poiseuille profile.\n\n"
-            "**Sphere**: a sphere placed ~30 % downstream of the inflow. "
-            "Smoke particles deflect around it (Phase A2 demo)."
+            "**Sphere**: an analytic sphere placed ~30 % downstream of "
+            "the inflow. Carries an exact q-field for Bouzidi BB.\n\n"
+            "**Upload STL**: voxelise a user-supplied STL onto the grid "
+            "via odd-parity ray casting. Halfway bounce-back at the "
+            "voxel surface (Bouzidi q-field for arbitrary polygons is "
+            "Phase 3 of the D-9 roadmap)."
         ),
     )
     use_sphere = body_choice == "Sphere"
+    use_stl = body_choice == "Upload STL"
     # Radius scales with the wall-normal dimension so the sphere fits
     # comfortably regardless of grid choice. ~Ny/5 leaves ~2 Ny/5 cells
     # of clearance on each side -- well outside the bounce-back wall
@@ -549,6 +593,16 @@ if view == "3D dev bench (local)":
     sphere_cx = int(nx * 0.30)
     sphere_cy = ny // 2
     sphere_cz = nz // 2
+
+    # STL upload state (populated only when use_stl). Defaults make the
+    # downstream Run block work uniformly whether or not the upload
+    # path is active.
+    stl_bytes: bytes | None = None
+    stl_filename: str | None = None
+    stl_extent_cells = 8.0
+    stl_mask: np.ndarray | None = None
+    stl_error: str | None = None
+
     if use_sphere:
         _blockage = 2 * sphere_R / ny
         st.caption(
@@ -585,6 +639,73 @@ if view == "3D dev bench (local)":
             ),
         )
         use_bouzidi = bc_choice.startswith("Bouzidi")
+    elif use_stl:
+        use_bouzidi = False           # no analytic q-field for voxel walls
+
+        uploaded = st.file_uploader(
+            "STL file (binary or ASCII)",
+            type=["stl"],
+            key="stl_uploader_3d",
+            help=(
+                "Drop an STL (.stl). The mesh is centred in the channel, "
+                "scaled so its longest axis spans the chosen extent, and "
+                "voxelised onto the LBM grid via odd-parity ray casting. "
+                "Closed manifolds work best; small holes get filled by "
+                "one round of morphological closing."
+            ),
+        )
+        _max_extent = max(4.0, float(min(ny, nz)) * 0.45)
+        stl_extent_cells = st.slider(
+            "Body extent (cells, longest axis)",
+            min_value=4.0, max_value=_max_extent,
+            value=min(8.0, _max_extent),
+            step=0.5,
+            key="stl_extent_3d",
+            help=(
+                "Longest-axis extent of the body after scaling onto the "
+                "LBM grid. Bigger -> richer wake structure but higher "
+                "blockage; keep < ~0.5 × Ny for clean dev-bench runs."
+            ),
+        )
+
+        if uploaded is not None:
+            stl_bytes = uploaded.getvalue()
+            stl_filename = uploaded.name
+            try:
+                stl_mask = _cached_voxelise_stl(
+                    stl_bytes,
+                    int(nx), int(ny), int(nz),
+                    float(stl_extent_cells),
+                )
+            except ValueError as exc:
+                stl_error = str(exc)
+
+            if stl_error is not None:
+                st.error(f":material/error: {stl_error}")
+            elif stl_mask is not None:
+                _n_solid = int(stl_mask.sum())
+                _solid_idx = np.argwhere(stl_mask)
+                _bbox_extent = (
+                    _solid_idx.max(axis=0) - _solid_idx.min(axis=0) + 1
+                    if _n_solid > 0 else np.zeros(3, dtype=int)
+                )
+                _blockage_stl = float(_bbox_extent[1]) / ny if ny else 0.0
+                st.caption(
+                    f"STL: **{stl_filename}** "
+                    f"({len(stl_bytes) / 1024:.1f} KB) &middot; "
+                    f"voxelised to **{_n_solid:,} solid cells** &middot; "
+                    f"body bbox {tuple(int(v) for v in _bbox_extent)} cells "
+                    f"&middot; blockage (y-extent / Ny) = "
+                    f"{_blockage_stl:.2f}. "
+                    f"Halfway BB at the voxel surface; a Bouzidi q-field "
+                    f"for arbitrary polygons is the Phase 3 D-9 roadmap."
+                )
+        else:
+            st.caption(
+                ":material/upload_file: Drop an STL above to voxelise it "
+                "onto the LBM grid. No file = no body; the Run button "
+                "below will refuse to launch."
+            )
     else:
         use_bouzidi = False
 
@@ -644,16 +765,41 @@ if view == "3D dev bench (local)":
     )
     use_trt = collision_choice.startswith("TRT")
 
+    # Refuse to launch when STL was selected but no file is loaded or
+    # the upload failed to voxelise -- otherwise the user clicks Run
+    # and either gets a confusing channel-only result or a hard error
+    # mid-kernel. The button is shown but disabled with a help string
+    # so the user knows WHY they cannot run.
+    _run_disabled = use_stl and (stl_mask is None or stl_error is not None)
+    if _run_disabled:
+        _run_help = (
+            stl_error
+            if stl_error
+            else "Upload an STL above before running."
+        )
+    else:
+        _run_help = "Compile the kernel and stream particles through it."
     if st.button(":material/play_arrow: &nbsp; Run smoke",
-                 use_container_width=True):
+                 use_container_width=True,
+                 disabled=_run_disabled,
+                 help=_run_help):
         import time as _time
 
         from src.lbm_3d import _make_sphere_mask, run_channel_smoke
         progress = st.progress(0.0, text="Compiling kernel + streaming...")
-        body_mask_3d = (
-            _make_sphere_mask(nx, ny, nz, sphere_cx, sphere_cy, sphere_cz, sphere_R)
-            if use_sphere else None
-        )
+        if use_sphere:
+            body_mask_3d = _make_sphere_mask(
+                nx, ny, nz, sphere_cx, sphere_cy, sphere_cz, sphere_R,
+            )
+        elif use_stl and stl_mask is not None:
+            # Cached voxel mask from src/voxelize.py. Halfway BB is
+            # implicit at every solid cell; no wall_links since voxel
+            # walls have no analytic q-field. (Phase 3 D-9 will wire
+            # an approximate q-field via 1-cell ray casts to neighbour
+            # solids.)
+            body_mask_3d = stl_mask
+        else:
+            body_mask_3d = None
         wall_links_3d = None
         if use_sphere and use_bouzidi:
             from src.lbm_3d_bouzidi import sphere_wall_links
@@ -1043,6 +1189,50 @@ if view == "3D dev bench (local)":
                             hoverinfo="skip",
                         )
                     )
+                elif use_stl and stl_mask is not None:
+                    # Render the uploaded body via marching cubes on the
+                    # bool mask at level 0.5 -- same primitive the
+                    # Q-criterion overlay uses, just on a different
+                    # scalar field. Same translucent slate-grey palette
+                    # as the sphere so the user reads "body" not "data".
+                    # (D-9 Phase 2, 2026-05-28.)
+                    from skimage.measure import marching_cubes
+                    try:
+                        body_verts, body_faces, _, _ = marching_cubes(
+                            stl_mask.astype(np.float32),
+                            level=0.5,
+                            spacing=(1.0, 1.0, 1.0),
+                        )
+                        scene_traces.append(
+                            go.Mesh3d(
+                                x=body_verts[:, 0],
+                                y=body_verts[:, 1],
+                                z=body_verts[:, 2],
+                                i=body_faces[:, 0],
+                                j=body_faces[:, 1],
+                                k=body_faces[:, 2],
+                                color="#475569",         # same slate as sphere
+                                opacity=0.55,
+                                flatshading=True,
+                                name="body (voxel)",
+                                hoverinfo="name",
+                                lighting=dict(
+                                    ambient=0.55, diffuse=0.7,
+                                    specular=0.25, roughness=0.5,
+                                ),
+                                lightposition=dict(x=100, y=200, z=0),
+                            )
+                        )
+                    except (ValueError, RuntimeError):
+                        # Empty mask or single-voxel artefact -- shouldn't
+                        # happen since the uploader already gated on
+                        # n_solid > 0, but be defensive.
+                        st.caption(
+                            ":material/info: Could not extract a body "
+                            "surface from the voxel mask -- the smoke "
+                            "still renders but the body outline is "
+                            "hidden."
+                        )
                 # Build per-snapshot Frames. The smoke Scatter3d is
                 # trace 0 in ``scene_traces``; every frame overrides
                 # just that trace via ``traces=[0]``, leaving sphere
