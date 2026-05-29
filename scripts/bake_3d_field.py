@@ -272,6 +272,80 @@ PRESETS: dict[str, dict[str, Any]] = {
         "rho_outflow": 1.0,
         "outflow_scheme": "regularised",
     },
+    # ---- AoA = 10 deg bakes (2026-05-29) ----------------------------
+    # NACA wings at 10 deg angle of attack. The mask voxeliser tilts the
+    # airfoil about its chord midpoint; the inflow stays horizontal so
+    # the wake develops asymmetrically (upper-surface flow is sucked
+    # downward by the camber + AoA, lower face stagnates harder). Same
+    # n_steps and stability headroom as the AoA = 0 variants.
+    "naca0012_aoa10_re40": {
+        "body_type": "naca",
+        "Nx": 80, "Ny": 40, "Nz": 32,
+        "body_params": {
+            "x_le": 12.0, "y_chord": 20.0, "chord": 20.0,
+            "m": 0.0, "p": 0.0, "thickness": 0.12,
+            "aoa_deg": 10.0,
+        },
+        "u_in": 0.04,
+        "nu": 0.02,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "naca0012_aoa10_re100": {
+        "body_type": "naca",
+        "Nx": 96, "Ny": 48, "Nz": 32,
+        "body_params": {
+            "x_le": 14.0, "y_chord": 24.0, "chord": 24.0,
+            "m": 0.0, "p": 0.0, "thickness": 0.12,
+            "aoa_deg": 10.0,
+        },
+        "u_in": 0.04,
+        "nu": 0.0096,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "naca4412_aoa10_re40": {
+        "body_type": "naca",
+        "Nx": 80, "Ny": 40, "Nz": 32,
+        "body_params": {
+            "x_le": 12.0, "y_chord": 20.0, "chord": 20.0,
+            "m": 0.04, "p": 0.40, "thickness": 0.12,
+            "aoa_deg": 10.0,
+        },
+        "u_in": 0.04,
+        "nu": 0.02,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "naca4412_aoa10_re100": {
+        "body_type": "naca",
+        "Nx": 96, "Ny": 48, "Nz": 32,
+        "body_params": {
+            "x_le": 14.0, "y_chord": 24.0, "chord": 24.0,
+            "m": 0.04, "p": 0.40, "thickness": 0.12,
+            "aoa_deg": 10.0,
+        },
+        "u_in": 0.04,
+        "nu": 0.0096,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
 }
 
 
@@ -315,15 +389,17 @@ def _build_body(
         return mask, wall_links
     if body_type == "naca":
         # NACA 4-digit airfoil extruded along the spanwise z axis.
-        # body_params: x_le, y_chord, chord, m, p, thickness.
+        # body_params: x_le, y_chord, chord, m, p, thickness, aoa_deg.
         x_le = float(body_params["x_le"])
         y_chord = float(body_params["y_chord"])
         chord = float(body_params["chord"])
         m = float(body_params["m"])
         p = float(body_params["p"])
         thickness = float(body_params["thickness"])
+        aoa_deg = float(body_params.get("aoa_deg", 0.0))
         mask = make_naca_mask(
             Nx, Ny, Nz, x_le, y_chord, chord, m, p, thickness,
+            aoa_deg=aoa_deg,
         )
         wall_links = voxel_wall_links(mask)
         return mask, wall_links

@@ -217,11 +217,17 @@ def _naca_camber(
 
 def naca_outline(
     m: float, p: float, thickness: float, n_pts: int = 81,
+    aoa_deg: float = 0.0,
 ) -> np.ndarray:
     """Return a closed (n_pts, 2) polyline tracing the airfoil
     surface in chord-normalised (x/c, y/c) coordinates. Used by both
     the 3D mask voxeliser and the Plotly mesh renderer so the body
-    rendering matches the simulated body exactly."""
+    rendering matches the simulated body exactly.
+
+    With ``aoa_deg`` non-zero the polyline is rotated about the chord
+    midpoint (x/c = 0.5) by the given angle of attack -- positive
+    rotates the leading edge UP (nose-up convention, matches 2D).
+    """
     # Cosine spacing on the chord so the leading edge (where the
     # surface curvature is highest) is sampled finely.
     beta = np.linspace(0.0, np.pi, max(8, n_pts // 2))
@@ -240,40 +246,60 @@ def naca_outline(
         np.stack([upper_x[::-1], upper_y[::-1]], axis=1),
         np.stack([lower_x[1:], lower_y[1:]], axis=1),
         np.stack([upper_x[:1], upper_y[:1]], axis=1),  # close
-    ])
-    return poly.astype(np.float64)
+    ]).astype(np.float64)
+    if abs(aoa_deg) > 1e-9:
+        # Rotate the chord midpoint about itself. Positive AoA tilts
+        # the leading edge up, matching the 2D convention.
+        ang = np.deg2rad(aoa_deg)
+        c, s = np.cos(ang), np.sin(ang)
+        pivot = np.array([0.5, 0.0])
+        d = poly - pivot
+        poly = pivot + np.stack([
+            d[:, 0] * c - d[:, 1] * s,
+            d[:, 0] * s + d[:, 1] * c,
+        ], axis=1)
+    return poly
 
 
 def make_naca_mask(
     Nx: int, Ny: int, Nz: int,
     x_le: float, y_chord: float, chord: float,
     m: float, p: float, thickness: float,
+    aoa_deg: float = 0.0,
 ) -> np.ndarray:
     """Boolean solid mask for a NACA 4-digit airfoil, extruded along
     the spanwise z axis. Leading edge at lattice x = x_le, chord aligned
     with +x and length ``chord`` cells, mean camber line at y = y_chord.
 
-    For each fluid (x, y) cell, test if it sits between the upper and
-    lower airfoil surfaces at the local x. The airfoil is constant
-    along z so we broadcast the 2D test across the full span.
+    With ``aoa_deg`` non-zero the airfoil is rotated about its chord
+    midpoint (positive = leading edge up, nose-up convention). The
+    voxel test inverse-rotates each query point back to the airfoil's
+    canonical frame before checking the upper/lower bounds, so the
+    same analytic thickness + camber formulas apply unchanged.
     """
-    xs = (np.arange(Nx) - x_le) / max(chord, 1.0)
-    ys = (np.arange(Ny) - y_chord) / max(chord, 1.0)
-    # Per-column surface bounds.
-    yt = _naca_thickness(xs, thickness)
-    yc, dyc = _naca_camber(xs, m, p)
-    in_chord = (xs >= 0.0) & (xs <= 1.0)
-    # Approx upper / lower bounds in (x, y) frame ignoring the small
-    # rotation correction -- visually indistinguishable from the exact
-    # surface at the voxel scale used here, and avoids per-(x, y) cell
-    # angle math. The camber line plus / minus half-thickness is the
-    # canonical "thickness distribution about the camber line" rule.
-    y_upper = yc + yt
-    y_lower = yc - yt
+    pivot_x = x_le + chord * 0.5
+    pivot_y = y_chord
+    cos_a = float(np.cos(np.deg2rad(aoa_deg)))
+    sin_a = float(np.sin(np.deg2rad(aoa_deg)))
+    xs_grid = np.arange(Nx, dtype=np.float64)[:, None]
+    ys_grid = np.arange(Ny, dtype=np.float64)[None, :]
+    # Inverse rotation (rotate query points by -aoa) to align with the
+    # un-rotated airfoil.
+    dx = xs_grid - pivot_x
+    dy = ys_grid - pivot_y
+    x_local = pivot_x + dx * cos_a + dy * sin_a
+    y_local = pivot_y + (-dx * sin_a + dy * cos_a)
+    xc = (x_local - x_le) / max(chord, 1.0)
+    yc_norm = (y_local - y_chord) / max(chord, 1.0)
+    yt = _naca_thickness(xc, thickness)
+    camber_y, _ = _naca_camber(xc, m, p)
+    in_chord = (xc >= 0.0) & (xc <= 1.0)
+    y_upper = camber_y + yt
+    y_lower = camber_y - yt
     inside_2d = (
-        in_chord[:, None]
-        & (ys[None, :] <= y_upper[:, None])
-        & (ys[None, :] >= y_lower[:, None])
+        in_chord
+        & (yc_norm <= y_upper)
+        & (yc_norm >= y_lower)
     )
     return np.broadcast_to(
         inside_2d[:, :, None], (Nx, Ny, Nz)

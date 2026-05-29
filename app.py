@@ -809,6 +809,93 @@ def _closed_box_mesh(cx, cy, cz, hx, hy, hz):
     return vx, vy, vz, tris[:, 0], tris[:, 1], tris[:, 2]
 
 
+@st.cache_data(show_spinner=False)
+def _shape_preview_png_3d(
+    shape_key: str, aoa_deg: int, w_px: int = 260, h_px: int = 130,
+) -> bytes:
+    """Render a small top-down silhouette of the 3D body for the
+    sidebar preview. Returns PNG bytes. Cached per (shape, AoA) so
+    the slider feels instant -- one render per unique configuration.
+    """
+    import io
+
+    import matplotlib.pyplot as plt
+    fig = plt.figure(figsize=(w_px / 100.0, h_px / 100.0), dpi=100)
+    ax = fig.add_axes([0.02, 0.05, 0.96, 0.90])
+    ax.set_facecolor("#0a0a0a")
+    fig.patch.set_facecolor("#0a0a0a")
+    ax.set_aspect("equal")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for _spine in ax.spines.values():
+        _spine.set_color("#1f2937")
+    # Tunnel frame: a chamber of aspect ~2:1 with the body in the
+    # upstream third so the wake fits inside the frame.
+    _xL, _xR, _yB, _yT = 0.0, 2.0, -0.5, 0.5
+    ax.set_xlim(_xL, _xR)
+    ax.set_ylim(_yB, _yT)
+    # Inflow arrow on the LEFT edge -> reminds the user the wind
+    # always blows + x in the 3D scene.
+    ax.annotate(
+        "", xy=(0.18, 0.0), xytext=(0.02, 0.0),
+        arrowprops=dict(arrowstyle="->", color="#64748b", lw=1.2),
+    )
+    ax.text(
+        0.02, 0.36, "wind", color="#64748b", fontsize=7,
+        ha="left", va="bottom",
+    )
+    # Body silhouette. All bodies sit centred at (0.55, 0) with a
+    # nominal half-extent of 0.20 so they read at the same visual scale
+    # across shapes.
+    body_color = "#cbd5e1"
+    body_edge = "#94a3b8"
+    if shape_key == "sphere":
+        from matplotlib.patches import Circle
+        ax.add_patch(Circle(
+            (0.55, 0.0), 0.22, facecolor=body_color,
+            edgecolor=body_edge, lw=0.8,
+        ))
+    elif shape_key == "cylinder":
+        from matplotlib.patches import Circle
+        ax.add_patch(Circle(
+            (0.55, 0.0), 0.22, facecolor=body_color,
+            edgecolor=body_edge, lw=0.8,
+        ))
+    elif shape_key == "cube":
+        from matplotlib.patches import Rectangle
+        ax.add_patch(Rectangle(
+            (0.33, -0.22), 0.44, 0.44,
+            facecolor=body_color, edgecolor=body_edge, lw=0.8,
+        ))
+    elif shape_key in ("naca0012", "naca4412"):
+        from matplotlib.patches import Polygon
+
+        from src.lbm_3d_bouzidi import naca_outline
+        _m = 0.04 if shape_key == "naca4412" else 0.0
+        _p = 0.40 if shape_key == "naca4412" else 0.0
+        _poly = naca_outline(_m, _p, 0.12, n_pts=81, aoa_deg=aoa_deg)
+        # Map (x/c, y/c) -> tunnel coords with chord length 0.55 and
+        # leading edge at x = 0.30.
+        _scale_c = 0.55
+        _lx = 0.30 + _poly[:, 0] * _scale_c
+        _ly = 0.0 + _poly[:, 1] * _scale_c
+        ax.add_patch(Polygon(
+            np.stack([_lx, _ly], axis=1),
+            facecolor=body_color, edgecolor=body_edge, lw=0.8,
+        ))
+    else:
+        # Custom / unknown -> nothing to draw; just leave the empty
+        # tunnel frame so the user still sees the preview slot.
+        pass
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=100,
+                facecolor=fig.get_facecolor())
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()
+
+
 if view == "3D gallery (preview)":
     from pathlib import Path
 
@@ -836,25 +923,47 @@ if view == "3D gallery (preview)":
     # no metric strips, no engineering chrome above the fold.
     preset_options = {p.stem: p for p in available}
 
-    # Build {shape: {Re: path}} from filename pattern "{shape}_re{N}".
-    # The Flow speed slider maps a continuous velocity (m/s) to the
-    # nearest pre-baked Re band for the chosen shape.
-    # Use rfind('_re') instead of a letters-only regex so shape names
-    # that include digits (e.g. "naca0012", "naca4412") are recognised
-    # -- otherwise the wing bakes get silently skipped and never reach
-    # the selectbox.
-    _shape_re_map: dict[str, dict[int, Path]] = {}
+    # Parse filenames in the form ``<shape>[_aoa<deg>]_re<N>``.  The
+    # optional ``_aoa<deg>`` segment carries the angle of attack for
+    # wing presets; non-wing scenes (sphere, cylinder, cube) skip it
+    # and read as AoA=0. Result is a nested dict keyed by (shape, AoA)
+    # then Reynolds:
+    #
+    #   _shape_aoa_re_map[shape][aoa_deg][Re] = Path
+    #
+    # Used by the sidebar to (a) show only available AoA values for the
+    # current shape and (b) snap the m/s slider to the nearest baked Re.
+    _shape_aoa_re_map: dict[
+        str, dict[int, dict[int, Path]]
+    ] = {}
     for _stem, _path in preset_options.items():
         _i = _stem.rfind("_re")
         if _i <= 0:
             continue
-        _shape_part = _stem[:_i].lower()
-        _re_part = _stem[_i + 3:]
         try:
-            _Re_val = int(_re_part)
+            _Re_val = int(_stem[_i + 3:])
         except ValueError:
             continue
-        _shape_re_map.setdefault(_shape_part, {})[_Re_val] = _path
+        _prefix = _stem[:_i]
+        _aoa_val = 0
+        _j = _prefix.rfind("_aoa")
+        if _j > 0:
+            try:
+                _aoa_val = int(_prefix[_j + 4:])
+                _shape_part = _prefix[:_j].lower()
+            except ValueError:
+                _shape_part = _prefix.lower()
+        else:
+            _shape_part = _prefix.lower()
+        _shape_aoa_re_map.setdefault(_shape_part, {}).setdefault(
+            _aoa_val, {}
+        )[_Re_val] = _path
+    # Legacy alias kept for the rest of the code paths that only need
+    # the (shape -> Re bands) map; defaults to AoA=0 entries.
+    _shape_re_map: dict[str, dict[int, Path]] = {
+        _sh: _aoa_map.get(0, next(iter(_aoa_map.values())))
+        for _sh, _aoa_map in _shape_aoa_re_map.items()
+    }
 
     # Display labels for the shape selector. NACA wings ship as
     # first-class shapes now; only Custom upload remains a placeholder
@@ -987,16 +1096,55 @@ if view == "3D gallery (preview)":
             shape_for_loader = None
             re_actual = 100
             shape_re_options = [100]
-        elif chosen_shape not in _shape_re_map:
+            aoa_actual = 0
+            aoa_options = [0]
+        elif chosen_shape not in _shape_aoa_re_map:
             # Shape selected from the list but no bake found on disk
             # (e.g. deploy missed the .npz). Surface as placeholder.
             shape_for_loader = None
             re_actual = 100
             shape_re_options = [100]
+            aoa_actual = 0
+            aoa_options = [0]
         else:
             shape_for_loader = chosen_shape
-            shape_re_options = sorted(_shape_re_map[chosen_shape].keys())
-            re_actual = shape_re_options[-1]  # initial guess
+            aoa_options = sorted(_shape_aoa_re_map[chosen_shape].keys())
+            aoa_actual = aoa_options[0]
+            # If multiple AoA bands are available the slider below will
+            # pick one; for now seed shape_re_options off the lowest
+            # AoA band so the Re-band setup is valid before the AoA
+            # widget runs.
+            shape_re_options = sorted(
+                _shape_aoa_re_map[chosen_shape][aoa_actual].keys()
+            )
+            re_actual = shape_re_options[-1]
+
+        # --- AoA slider (only when more than one AoA band is baked) --
+        # For NACA wings we ship AoA = 0 and AoA = 10 deg snapshots; the
+        # slider snaps to whichever band is closest. For non-wing
+        # shapes the body is rotationally symmetric (sphere) or the
+        # tunnel mounts the body at a fixed orientation (cylinder,
+        # cube), so the slider is hidden.
+        if shape_for_loader is not None and len(aoa_options) > 1:
+            st.markdown("")
+            st.markdown(":material/rotate_left: **Angle of attack**")
+            aoa_actual = st.select_slider(
+                "Angle of attack (deg)",
+                options=aoa_options,
+                value=aoa_options[0],
+                key=f"gallery_aoa_{chosen_shape}",
+                label_visibility="collapsed",
+                help=(
+                    "Tilt of the wing's chord line relative to the "
+                    "incoming wind. Higher AoA -> more lift, until the "
+                    "flow separates and the wing stalls."
+                ),
+            )
+            # Re bands available at this AoA might differ -- recompute.
+            shape_re_options = sorted(
+                _shape_aoa_re_map[chosen_shape][aoa_actual].keys()
+            )
+            re_actual = shape_re_options[-1]
 
         st.markdown("")
         st.markdown(":material/speed: **Flow speed** &nbsp; :gray[(m/s)]")
@@ -1069,6 +1217,18 @@ if view == "3D gallery (preview)":
                 "static pressure."
             ),
         )
+
+        # Preview: small top-down silhouette of the body in the
+        # tunnel, so the user confirms the shape + AoA they've picked
+        # before scrolling down to read the streamlines. Same widget
+        # placement as the 2D playground -- the consumer's eye flows
+        # Shape -> Flow -> Color -> Preview -> Run.
+        st.markdown("")
+        st.caption(":material/preview: Preview on the LBM grid:")
+        _preview_png = _shape_preview_png_3d(
+            chosen_shape, int(aoa_actual),
+        )
+        st.image(_preview_png, width="stretch")
 
         st.divider()
         st.markdown("### :material/air: &nbsp; Streamlines")
@@ -1144,7 +1304,13 @@ if view == "3D gallery (preview)":
         )
         st.stop()
 
-    chosen_name = f"{chosen_shape}_re{re_actual}"
+    # Compose the preset file stem. Wings tagged with non-zero AoA get
+    # the explicit ``_aoa<deg>_`` segment; AoA=0 keeps the legacy
+    # ``shape_re<N>`` form so the existing bake files still match.
+    if aoa_actual and aoa_actual != 0:
+        chosen_name = f"{chosen_shape}_aoa{aoa_actual}_re{re_actual}"
+    else:
+        chosen_name = f"{chosen_shape}_re{re_actual}"
     st.session_state["gallery_preset_choice"] = chosen_name
 
     # Progress bar: gives the user visible feedback during scene swap.
@@ -1428,8 +1594,10 @@ if view == "3D gallery (preview)":
             _m_cam = float(bp.get("m", 0.0))
             _p_cam = float(bp.get("p", 0.0))
             _thk = float(bp["thickness"])
+            _aoa_render = float(bp.get("aoa_deg", 0.0))
             _profile_norm = naca_outline(
                 _m_cam, _p_cam, _thk, n_pts=81,
+                aoa_deg=_aoa_render,
             )
             # Map from chord-normalised (x/c, y/c) into lattice coords.
             _profile = np.stack(
@@ -1501,7 +1669,14 @@ if view == "3D gallery (preview)":
     _frames = []
     _stream_trace_index = 0  # the streamlines are the FIRST trace
     if animate_flow:
-        _ANIM_FRAMES = 30
+        # 60 frames at 80 ms per frame = ~12.5 fps, ~4.8 s per cycle.
+        # The previous 30 frames @ 220 ms (4.5 fps) felt like a
+        # stuttering GIF -- each frame the streamline head jumped
+        # ~7 vertices, a visibly discontinuous step. At 60 frames
+        # the head advances ~3 vertices per frame; combined with the
+        # 120 ms linear transition between frames, the eye reads
+        # continuous flow instead of frame-by-frame snapshots.
+        _ANIM_FRAMES = 60
         # Phase pattern: DRAIN first (tail sweeps 0->1 while head holds
         # at 1) then GROW (head sweeps 0->1 while tail stays 0). With
         # this ordering frame 0 = full streamline, so when the user
@@ -1658,10 +1833,10 @@ if view == "3D gallery (preview)":
                             label="▶ Animate",
                             method="animate",
                             args=[None, dict(
-                                frame=dict(duration=220, redraw=True),
+                                frame=dict(duration=80, redraw=True),
                                 fromcurrent=True,
                                 transition=dict(
-                                    duration=120, easing="linear",
+                                    duration=60, easing="linear",
                                 ),
                                 mode="immediate",
                             )],
