@@ -25,3 +25,11 @@ after Allen-Vincenti blockage correction (Standard preset, B = 0.350).
 - Cases run: 14
 - Cd within +/- 25 %: **12 / 14** (median abs error 6.4 %, max 40.2 %)
 - St within +/- 30 %: **13 / 14** (median abs error 23.4 %, max 51.7 %)
+
+### Strouhal FFT diagnostics
+
+- FFT record length: **5250 lattice steps** (last half of each run).
+- St-axis bin width: **0.053** across all rows (uniform record length and char_length D = 28).
+- Captured cycles at the measured peak: **2 - 7** across all rows -- **every row below the 20-cycle "informative" threshold** (Press et al. *Numerical Recipes*; FFT bin width must be < 1/5 of the dynamic range to resolve features).
+- Implication: at this record length the FFT can only place the peak on one of ~4 - 5 bins covering the full Williamson St(Re) range; a percent-error figure on a near-flat reference is coincidence, not measurement. VALIDATION.md §3.4 spells this out.
+- Per-row diagnostics (`strouhal_bin_width`, `strouhal_n_cycles`, `strouhal_record_len`, `strouhal_insufficient_record`) live in the JSON sibling of this file and are gated by `tests/test_validation_st.py`.

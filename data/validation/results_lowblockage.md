@@ -20,3 +20,10 @@ after Allen-Vincenti blockage correction (Standard preset, B = 0.350).
 - Cases run: 9
 - Cd within +/- 25 %: **6 / 9** (median abs error 10.9 %, max 37.2 %)
 - St within +/- 35 %: **9 / 9** (median abs error 7.9 %, max 16.8 %)
+
+### Strouhal FFT diagnostics
+
+- St-axis bin width: ~**0.038 - 0.046** (Validation preset D = 20, longer record than Standard).
+- Captured cycles at the measured peak: **3 - 5** across all rows -- still below the 20-cycle "informative" threshold despite the longer record, because the shedding period scales with D/U and our D is small.
+- The St columns above happen to land within +/-17 % of Williamson / Okajima, but that agreement is the FFT pinning the peak to the nearest discrete bin -- not a measurement of the solver's St(Re) curve. VALIDATION.md §3.4 has the long-form discussion.
+- Per-row diagnostics live in the JSON sibling; `tests/test_validation_st.py` gates them.

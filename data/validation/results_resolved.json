@@ -23,7 +23,11 @@
       "st_pass": true,
       "n_frames": 300,
       "n_steps": 10500,
-      "runtime_sec": 1122.97615981102
+      "runtime_sec": 1122.97615981102,
+      "strouhal_record_len": 5250,
+      "strouhal_bin_width": 0.07619,
+      "strouhal_n_cycles": 2.0,
+      "strouhal_insufficient_record": true
     },
     {
       "shape": "Cylinder",
@@ -48,7 +52,11 @@
       "st_pass": true,
       "n_frames": 300,
       "n_steps": 10500,
-      "runtime_sec": 1126.839866399765
+      "runtime_sec": 1126.839866399765,
+      "strouhal_record_len": 5250,
+      "strouhal_bin_width": 0.07619,
+      "strouhal_n_cycles": 3.0,
+      "strouhal_insufficient_record": true
     },
     {
       "shape": "Cylinder",
@@ -73,7 +81,11 @@
       "st_pass": true,
       "n_frames": 300,
       "n_steps": 10500,
-      "runtime_sec": 1061.1760835647583
+      "runtime_sec": 1061.1760835647583,
+      "strouhal_record_len": 5250,
+      "strouhal_bin_width": 0.07619,
+      "strouhal_n_cycles": 3.0,
+      "strouhal_insufficient_record": true
     },
     {
       "shape": "Square",
@@ -98,7 +110,11 @@
       "st_pass": true,
       "n_frames": 300,
       "n_steps": 10500,
-      "runtime_sec": 1060.8045189380646
+      "runtime_sec": 1060.8045189380646,
+      "strouhal_record_len": 5250,
+      "strouhal_bin_width": 0.07619,
+      "strouhal_n_cycles": 2.0,
+      "strouhal_insufficient_record": true
     },
     {
       "shape": "Square",
@@ -123,7 +139,11 @@
       "st_pass": true,
       "n_frames": 300,
       "n_steps": 10500,
-      "runtime_sec": 1050.5070865154266
+      "runtime_sec": 1050.5070865154266,
+      "strouhal_record_len": 5250,
+      "strouhal_bin_width": 0.07619,
+      "strouhal_n_cycles": 2.0,
+      "strouhal_insufficient_record": true
     }
   ],
   "tolerance_cd_pct": 25.0,

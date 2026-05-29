@@ -16,3 +16,11 @@ after Allen-Vincenti blockage correction (Standard preset, B = 0.350).
 - Cases run: 5
 - Cd within +/- 25 %: **4 / 5** (median abs error 14.9 %, max 24.7 %)
 - St within +/- 35 %: **5 / 5** (median abs error 13.7 %, max 24.1 %)
+
+### Strouhal FFT diagnostics
+
+- FFT record length depends on n_steps; resolved-preset rows here used **~3675 lattice steps** for the FFT half.
+- St-axis bin width: **0.076** across all rows (uniform record length and char_length D = 40).
+- Captured cycles at the measured peak: **2 - 3** across all rows -- well below the 20-cycle "informative" threshold.
+- Implication: same as the Standard table -- the FFT bin width is the same order as the Williamson St(Re) range across our Re band, so the displayed St error is dominated by bin quantisation, not by solver fidelity. The St columns are reported for completeness only; the validated quantity in this doc is Cd. VALIDATION.md §3.4 has the long-form discussion.
+- Per-row diagnostics live in the JSON sibling; `tests/test_validation_st.py` gates them.

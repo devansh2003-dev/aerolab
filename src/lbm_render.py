@@ -715,15 +715,28 @@ def solve_lbm(shape_preset, reynolds_target, aoa_deg, res_key,
     # St = f * L / U where f is in cycles per lattice step.
     cl_tail = cl_history[len(cl_history) // 2:]
     cl_tail_centered = cl_tail - cl_tail.mean()
-    if len(cl_tail_centered) >= 16:
+    # Strouhal diagnostics surfaced for senior-review honesty (card #5,
+    # 2026-05-27). The FFT samples frequencies at spacing 1/record_len
+    # (cycles per lattice step); the corresponding St-axis spacing is
+    # bin_width_St = (1/record_len) * L/U. n_cycles_captured is how many
+    # shedding periods fit in the record window at the measured peak.
+    # n_cycles < 20 -> the FFT bin width approaches or exceeds the
+    # Williamson St(Re) range, and a percent-error figure on a near-flat
+    # reference is coincidence, not measurement.
+    record_len = len(cl_tail_centered)
+    if record_len >= 16:
         fft_mag = np.abs(np.fft.rfft(cl_tail_centered))
-        freqs_per_step = np.fft.rfftfreq(len(cl_tail_centered), d=1.0)
+        freqs_per_step = np.fft.rfftfreq(record_len, d=1.0)
         # Skip DC bin (index 0); pick the loudest non-DC frequency.
         peak_idx = int(np.argmax(fft_mag[1:])) + 1
         peak_freq = float(freqs_per_step[peak_idx])
         strouhal = peak_freq * char_length / U_INFLOW
+        strouhal_bin_width = (1.0 / record_len) * char_length / U_INFLOW
+        strouhal_n_cycles = peak_freq * record_len
     else:
         strouhal = float("nan")
+        strouhal_bin_width = float("nan")
+        strouhal_n_cycles = float("nan")
 
     # Time-series plot of Cd + Cl on the same axis. Dark-theme to match the
     # vorticity GIF; fixed size that reads nicely under the GIF.
@@ -771,6 +784,12 @@ def solve_lbm(shape_preset, reynolds_target, aoa_deg, res_key,
         "cd_mean": cd_mean,
         "cl_mean": cl_mean,
         "strouhal": float(strouhal),
+        # Bin width on the St axis and the cycle count at the measured
+        # peak -- enables an honest "St_meas +/- bin_width (n cycles)"
+        # display, and a sentinel n_cycles < 20 caveat. See card #5.
+        "strouhal_bin_width": float(strouhal_bin_width),
+        "strouhal_n_cycles": float(strouhal_n_cycles),
+        "strouhal_record_len": int(record_len),
         "force_plot_bytes": force_plot_bytes,
         "n_frames": int(n_frames_local),
         "n_steps": int(n_steps_local),
