@@ -873,7 +873,20 @@ def _shape_preview_png_3d(
         from src.lbm_3d_bouzidi import naca_outline
         _m = 0.04 if shape_key == "naca4412" else 0.0
         _p = 0.40 if shape_key == "naca4412" else 0.0
-        _poly = naca_outline(_m, _p, 0.12, n_pts=81, aoa_deg=aoa_deg)
+        # Defensive: call naca_outline with positional-only args so we
+        # don't depend on the deployed module exposing ``aoa_deg``.
+        # Apply rotation inline -- the chord-midpoint rotation is
+        # version-independent.
+        _poly = naca_outline(_m, _p, 0.12, n_pts=81)
+        if abs(aoa_deg) > 1e-9:
+            _ang = np.deg2rad(float(aoa_deg))
+            _c, _s = np.cos(_ang), np.sin(_ang)
+            _pivot = np.array([0.5, 0.0])
+            _d = _poly - _pivot
+            _poly = _pivot + np.column_stack([
+                _d[:, 0] * _c - _d[:, 1] * _s,
+                _d[:, 0] * _s + _d[:, 1] * _c,
+            ])
         # Map (x/c, y/c) -> tunnel coords with chord length 0.55 and
         # leading edge at x = 0.30.
         _scale_c = 0.55
@@ -989,15 +1002,16 @@ if view == "3D gallery (preview)":
         _shape_label_to_key[_label] = _key
 
     # Velocity (m/s) -> Reynolds, matching 2D's NU_AIR + L_REAL maths.
-    # L is tuned so the 0.30 - 4.50 m/s slider range maps across the
-    # full set of pre-baked Re bands (40 and 100 at present): with
-    # L = 0.3 mm and nu_air = 1.5e-5 m^2/s, 0.30 m/s -> Re 6,
-    # 1.50 m/s -> Re 30, 4.50 m/s -> Re 90 -- the snap-to-nearest
-    # logic then picks Re=40 below the midpoint and Re=100 above it.
-    # Display Re is the SNAPPED value so the user sees the actual
-    # bake regime, not a notional continuous Re that doesn't exist.
+    # Use the SAME characteristic length the 2D playground uses
+    # (5 mm in standard air with nu = 1.5e-5 m^2/s) so that, say,
+    # 1.5 m/s reads as Re = 500 in BOTH solvers. Mismatched
+    # conventions confused users -- "in 2D this was Re 500, why is
+    # 3D calling it Re 50?". The 3D side only ships pre-baked Re = 40
+    # and Re = 100, so above ~0.3 m/s every nominal Re snaps to the
+    # closest baked field. The Re readout shows BOTH the nominal Re
+    # the slider implies AND the snapped Re actually being rendered.
     NU_AIR_3D = 1.5e-5
-    L_REAL_3D = 5e-4  # 0.5 mm characteristic; needle-scale wind-tunnel
+    L_REAL_3D = 5e-3  # 5 mm, matches the 2D playground convention
 
     def _regime_label_3d(re_val: int) -> tuple[str, str]:
         if re_val <= 40:
@@ -1148,55 +1162,61 @@ if view == "3D gallery (preview)":
 
         st.markdown("")
         st.markdown(":material/speed: **Flow speed** &nbsp; :gray[(m/s)]")
-        # Velocity (m/s) -> nominal Re via Re = U * L / nu, but the
-        # 3D gallery only has 2 snapshots per shape -- so we snap.
-        # Default sits at the middle Re band.
-        _v_default = 1.5
+        # Velocity (m/s) -> Re using the 2D L_REAL convention so the
+        # readout matches what users saw in the 2D playground. Slider
+        # extends down to 0.10 m/s so Re=40 (the lower baked band) is
+        # reachable cleanly; default 0.30 m/s lands exactly at Re=100.
+        _v_default = 0.30
         _v_state = st.session_state.get("gallery_velocity", _v_default)
+        _v_state = float(max(0.10, min(4.50, _v_state)))
         velocity_mps_3d = st.slider(
             "Flow speed (m/s)",
-            min_value=0.30, max_value=4.50,
-            value=float(_v_state),
+            min_value=0.10, max_value=4.50,
+            value=_v_state,
             step=0.05,
             label_visibility="collapsed",
             key="gallery_velocity",
             disabled=(shape_for_loader is None),
             help=(
-                "Wind speed across the body.\n\n"
-                "- **Slow** (left): laminar -- streamlines pass "
-                "smoothly around the body.\n"
-                "- **Fast** (right): transitional -- you'll see a "
-                "longer recirculation bubble behind the body.\n\n"
-                "Snaps to the nearest pre-baked Reynolds number "
-                "({:s}).".format(
+                "Wind speed past the body, in m/s. Same convention "
+                "as the 2D playground (Re = U · 5 mm / 1.5e-5).\n\n"
+                "- **0.12 m/s** ~ Re 40 (creep)\n"
+                "- **0.30 m/s** ~ Re 100 (transitional)\n"
+                "- Above ~0.30: the nominal Re exceeds the highest "
+                "baked field, so the render snaps to the closest "
+                "available snapshot ({:s}).".format(
                     ", ".join(str(r) for r in shape_re_options)
                 )
             ),
         )
-        # Snap nominal Re from the slider to the nearest baked band.
-        _re_nominal = velocity_mps_3d * L_REAL_3D / NU_AIR_3D * 1000  # scale to slider range
-        # Linear map: v in [0.30, 4.50] -> Re in [min_band, max_band].
-        if len(shape_re_options) == 1:
-            re_actual = shape_re_options[0]
-        else:
-            _t = (velocity_mps_3d - 0.30) / (4.50 - 0.30)
-            _re_interp = (
-                shape_re_options[0]
-                + _t * (shape_re_options[-1] - shape_re_options[0])
-            )
-            re_actual = min(shape_re_options, key=lambda r: abs(r - _re_interp))
-        _regime_text, _regime_feel = _regime_label_3d(re_actual)
+        # Nominal Re from the slider velocity, using the same 5 mm
+        # characteristic length the 2D playground uses. The closest
+        # baked Re band is used for the actual render -- 3D doesn't
+        # have a continuous Re ladder yet.
+        _re_nominal = velocity_mps_3d * L_REAL_3D / NU_AIR_3D
+        re_actual = min(
+            shape_re_options, key=lambda r: abs(r - _re_nominal)
+        )
+        _regime_text, _regime_feel = _regime_label_3d(int(round(_re_nominal)))
         st.markdown(
             f"**{velocity_mps_3d:.2f} m/s** &nbsp; · &nbsp; "
-            f"Re &approx; **{re_actual}** &nbsp; · &nbsp; "
+            f"Re &approx; **{int(round(_re_nominal))}** &nbsp; · &nbsp; "
             f"<span style='color:#94a3b8;font-size:0.9rem;'>"
             f"{_regime_text}</span>",
             unsafe_allow_html=True,
         )
-        st.caption(
-            ":gray[*Pre-baked field replay -- the slider snaps to a "
-            "real LBM snapshot at the nearest Re.*]"
-        )
+        if int(round(_re_nominal)) != re_actual:
+            st.caption(
+                ":gray[*Snapped to the nearest pre-baked snapshot at "
+                f"**Re = {re_actual}** "
+                f"({', '.join(str(r) for r in shape_re_options)} "
+                "available).*]"
+            )
+        else:
+            st.caption(
+                ":gray[*Showing pre-baked snapshot at "
+                f"**Re = {re_actual}**.*]"
+            )
 
         st.markdown("")
         st.markdown(
@@ -1595,10 +1615,22 @@ if view == "3D gallery (preview)":
             _p_cam = float(bp.get("p", 0.0))
             _thk = float(bp["thickness"])
             _aoa_render = float(bp.get("aoa_deg", 0.0))
+            # Defensive: call naca_outline without the aoa_deg kwarg
+            # so we don't depend on the deployed src/lbm_3d_bouzidi.py
+            # exposing it. Apply the rotation inline (same maths the
+            # bake-time mask uses -- about the chord midpoint).
             _profile_norm = naca_outline(
                 _m_cam, _p_cam, _thk, n_pts=81,
-                aoa_deg=_aoa_render,
             )
+            if abs(_aoa_render) > 1e-9:
+                _ang = np.deg2rad(_aoa_render)
+                _crot, _srot = np.cos(_ang), np.sin(_ang)
+                _pivot_uv = np.array([0.5, 0.0])
+                _dxy = _profile_norm - _pivot_uv
+                _profile_norm = _pivot_uv + np.column_stack([
+                    _dxy[:, 0] * _crot - _dxy[:, 1] * _srot,
+                    _dxy[:, 0] * _srot + _dxy[:, 1] * _crot,
+                ])
             # Map from chord-normalised (x/c, y/c) into lattice coords.
             _profile = np.stack(
                 [
