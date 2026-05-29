@@ -1434,73 +1434,6 @@ if view == "3D dev bench (local)":
 # ---------------------------------------------------------------------------
 
 
-# Module-level cached helper: scene swap on the gallery dropdown was
-# crashing (2026-05-29) when this function was defined inside the
-# `if view == "3D gallery (preview)":` block -- @st.cache_data's
-# function-identity hashing got confused by the closure binding to
-# load_baked_field in the enclosing scope, surfacing as a Streamlit
-# rerun error when the user changed scenes. Hoisted to module level
-# with lazy imports inside the body so the function has no closure
-# dependencies on the gallery view block.
-@st.cache_data(
-    show_spinner=":material/auto_awesome: Computing smoke tracers...",
-    max_entries=4,
-)
-def _gallery_smoke_snapshots(scene_path_str: str):
-    """Run the RK4 particle advection through a baked field and
-    return a list of (px, py, pz, speeds) snapshots for the animation.
-
-    Caching is keyed by the .npz path -- swapping scenes invalidates,
-    toggling viz overlays does not.
-    """
-    from src.baked_fields import load_baked_field
-    from src.lbm_3d_smoke_particles import (
-        seed_inflow_particles,
-        step_smoke,
-        trilerp_3d,
-    )
-
-    f = load_baked_field(scene_path_str)
-    u_in = float(f.meta.get("u_in", 0.05))
-    target_cross_frames = max(40, f.Nx)
-    dt_per_frame = f.Nx / float(target_cross_frames * max(u_in, 1e-6))
-    n_frames_inner = max(int(1.4 * target_cross_frames), 90)
-    n_keyframes_inner = 28
-    warmup = target_cross_frames // 4
-    stride = max(1, (n_frames_inner - warmup) // n_keyframes_inner)
-
-    y_rows = np.linspace(3.0, f.Ny - 4.0, 6)
-    z_rows = np.linspace(3.0, f.Nz - 4.0, 6)
-
-    rng_local = np.random.default_rng(7)
-    ppx = np.empty(0, dtype=np.float64)
-    ppy = np.empty(0, dtype=np.float64)
-    ppz = np.empty(0, dtype=np.float64)
-    page = np.empty(0, dtype=np.int32)
-
-    snaps_local = []
-    for i_step in range(n_frames_inner):
-        seed = seed_inflow_particles(
-            n_per_row=1, y_rows=y_rows, z_rows=z_rows,
-            x=2.0, rng=rng_local,
-        )
-        ppx, ppy, ppz, page = step_smoke(
-            ppx, ppy, ppz, page, f.ux, f.uy, f.uz,
-            body_mask=f.body, dt=dt_per_frame, n_substeps=4,
-            max_age=int(1.6 * target_cross_frames),
-            inflow_seed_xyz=seed,
-        )
-        if i_step >= warmup and (
-            (i_step - warmup) % stride == 0
-            or i_step == n_frames_inner - 1
-        ):
-            snap_speed = trilerp_3d(f.ux, ppx, ppy, ppz)
-            snaps_local.append(
-                (ppx.copy(), ppy.copy(), ppz.copy(), snap_speed.copy())
-            )
-    return snaps_local
-
-
 if view == "3D gallery (preview)":
     from pathlib import Path
 
@@ -1619,23 +1552,32 @@ if view == "3D gallery (preview)":
         unsafe_allow_html=True,
     )
     st.caption(
-        "Streamline ribbons trace the shape of the flow; bright tracers "
-        "move along them in time. The chamber and body stay fixed -- "
-        "only the air moves. Click **▶ Play** to start. Drag to "
-        "rotate, scroll to zoom."
+        "Streamline ribbons trace how the air wraps around the body. "
+        "Colour shows speed (Plasma colormap: purple slow, yellow fast). "
+        "Drag to rotate, scroll to zoom."
     )
 
     # --- Streamtube construction --------------------------------------
     # go.Streamtube takes the velocity field on a regular grid plus
     # seed positions; each tube traces the path a tracer would follow
-    # from its seed under the steady velocity field. This is the
-    # "wind-tunnel smoke" look: translucent ribbons that visualise
-    # the flow structure, not animated particles. Static, but the
-    # streamlines themselves communicate motion spatially.
-    _gx = np.arange(Nx, dtype=np.float32)
-    _gy = np.arange(Ny, dtype=np.float32)
-    _gz = np.arange(Nz, dtype=np.float32)
+    # from its seed under the steady velocity field. Static (the field
+    # is steady), but the streamlines themselves communicate motion
+    # spatially -- you SEE where the air goes.
+    #
+    # Grid is subsampled by factor 2 in each dimension before being
+    # handed to Plotly. The full 96x48x48 = 220 k-cell field would
+    # push ~5 MB per scene to the browser; subsampled to 48x24x24 =
+    # 27.6 k cells, payload drops 8x. Plotly's streamline integrator
+    # interpolates between grid points anyway, so the subsampled tube
+    # paths are visually indistinguishable.
+    _sub = 2
+    _gx = np.arange(0, Nx, _sub, dtype=np.float32)
+    _gy = np.arange(0, Ny, _sub, dtype=np.float32)
+    _gz = np.arange(0, Nz, _sub, dtype=np.float32)
     _X, _Y, _Z = np.meshgrid(_gx, _gy, _gz, indexing="ij")
+    _ux_sub = field.ux[::_sub, ::_sub, ::_sub]
+    _uy_sub = field.uy[::_sub, ::_sub, ::_sub]
+    _uz_sub = field.uz[::_sub, ::_sub, ::_sub]
 
     # Seed positions on the inflow plane (x = 2 cells from the inlet).
     # Spaced as a regular grid in (y, z) with density set by the
@@ -1663,9 +1605,9 @@ if view == "3D gallery (preview)":
             x=_X.flatten(),
             y=_Y.flatten(),
             z=_Z.flatten(),
-            u=field.ux.flatten(),
-            v=field.uy.flatten(),
-            w=field.uz.flatten(),
+            u=_ux_sub.flatten(),
+            v=_uy_sub.flatten(),
+            w=_uz_sub.flatten(),
             starts=dict(x=seeds_x, y=seeds_y, z=seeds_z),
             sizeref=float(tube_thickness),
             colorscale="Plasma",
@@ -1676,12 +1618,12 @@ if view == "3D gallery (preview)":
                 thickness=10, len=0.45,
                 x=1.02, xanchor="left",
             ),
-            opacity=0.55,
+            opacity=0.85,
             lighting=dict(
                 ambient=0.55, diffuse=0.7, specular=0.25,
                 roughness=0.4,
             ),
-            maxdisplayed=10000,
+            maxdisplayed=3000,
             name="streamlines",
             hoverinfo="skip",
         )
@@ -1831,82 +1773,20 @@ if view == "3D gallery (preview)":
             )
         )
 
-    # --- Animated tracer overlay -------------------------------------
-    # Streamtubes above are static. Tracers laid on top give the air-
-    # visibly-moving sense: small bright dots seeded at the inflow,
-    # advected through the steady field, replayed as Plotly frames
-    # via the standard updatemenus + slider pattern. This mirrors the
-    # 2D playground's "stationary frame + animated content" model.
-    #
-    # Snapshots cached at module level (see _gallery_smoke_snapshots
-    # above the if-blocks). Cache key is the scene path; toggling
-    # overlays / density / Q etc does NOT invalidate.
-    snapshots = _gallery_smoke_snapshots(str(preset_options[chosen_name]))
-    last_px, last_py, last_pz, last_sp = snapshots[-1]
+    # Animation REMOVED (2026-05-29). The animated tracer overlay was
+    # causing the page to hang on scene-dropdown change -- either the
+    # particle advection JIT compile blocked the thread on Cloud, or
+    # Plotly's per-frame Scatter3d data (28 frames x 3600 markers)
+    # overwhelmed the browser's WebGL pipeline on a fresh scene load.
+    # The static streamtubes already deliver the "streamlines wrapping
+    # around the body" visual the user asked for -- their structural
+    # form communicates flow direction without temporal animation.
+    # Will re-introduce motion in a follow-up using a lighter-weight
+    # approach (e.g. animated seed phase-shift on the streamtubes, or
+    # a much smaller tracer count) once the static version is confirmed
+    # stable on Cloud.
 
-    # Initial tracer trace = the developed (last) snapshot. Speed-coloured
-    # to match the streamtube colorbar.
-    scene_traces.append(
-        go.Scatter3d(
-            x=last_px, y=last_py, z=last_pz,
-            mode="markers",
-            marker=dict(
-                size=4.0,
-                color=last_sp,
-                colorscale="Plasma",
-                cmin=0.0, cmax=cmax_speed,
-                opacity=0.9,
-                line=dict(width=0),
-            ),
-            name="tracers",
-            hoverinfo="skip",
-            showlegend=False,
-        )
-    )
-    tracer_idx = len(scene_traces) - 1
-
-    # Per-frame override touches ONLY the tracer trace -- streamtubes,
-    # body, box, Q-shell stay frozen across frames (they're functions
-    # of the steady velocity field, not time).
-    frames = [
-        go.Frame(
-            data=[
-                go.Scatter3d(
-                    x=snap_px, y=snap_py, z=snap_pz,
-                    mode="markers",
-                    marker=dict(
-                        size=4.0, color=snap_sp,
-                        colorscale="Plasma",
-                        cmin=0.0, cmax=cmax_speed,
-                        opacity=0.9, line=dict(width=0),
-                    ),
-                    name="tracers",
-                )
-            ],
-            name=str(k),
-            traces=[tracer_idx],
-        )
-        for k, (snap_px, snap_py, snap_pz, snap_sp) in enumerate(snapshots)
-    ]
-
-    slider_steps = [
-        dict(
-            method="animate",
-            args=[[str(k)], dict(
-                mode="immediate",
-                frame=dict(duration=0, redraw=True),
-                transition=dict(duration=0),
-            )],
-            label=str(k),
-        )
-        for k in range(len(frames))
-    ]
-
-    fig = go.Figure(data=scene_traces, frames=frames)
-    # Axis ranges extended slightly past the domain edges so streamtubes
-    # that flare at the inlet/outlet aren't clipped at the visual frame.
-    # The wireframe box still lives at [0, N*] so the chamber outline
-    # stays aligned with the domain.
+    fig = go.Figure(data=scene_traces)
     fig.update_layout(
         scene=dict(
             # Hide axis ticks/labels entirely -- the wireframe box
@@ -1920,52 +1800,9 @@ if view == "3D gallery (preview)":
             camera=dict(eye=dict(x=1.5, y=1.15, z=0.9)),
         ),
         height=640,
-        margin=dict(l=0, r=0, t=10, b=60),
+        margin=dict(l=0, r=0, t=10, b=10),
         paper_bgcolor="#0a0a0a",
         showlegend=False,
-        updatemenus=[dict(
-            type="buttons",
-            direction="left",
-            x=0.02, y=-0.04, xanchor="left", yanchor="top",
-            pad=dict(t=6, r=6, b=6, l=6),
-            bgcolor="rgba(15,23,42,0.85)",
-            bordercolor="#334155",
-            font=dict(color="#e2e8f0", size=12),
-            buttons=[
-                dict(
-                    label="▶  Play", method="animate",
-                    args=[None, dict(
-                        mode="immediate",
-                        frame=dict(duration=80, redraw=True),
-                        transition=dict(duration=0),
-                        fromcurrent=True, loop=True,
-                    )],
-                ),
-                dict(
-                    label="⏸  Pause", method="animate",
-                    args=[[None], dict(
-                        mode="immediate",
-                        frame=dict(duration=0, redraw=False),
-                        transition=dict(duration=0),
-                    )],
-                ),
-            ],
-        )],
-        sliders=[dict(
-            active=len(frames) - 1,
-            x=0.14, y=-0.04, len=0.82,
-            xanchor="left", yanchor="top",
-            pad=dict(t=6, b=0),
-            bgcolor="rgba(15,23,42,0.7)",
-            bordercolor="#334155",
-            activebgcolor="#22d3ee",
-            font=dict(color="#94a3b8", size=10),
-            currentvalue=dict(
-                visible=True, prefix="frame ",
-                font=dict(color="#e2e8f0", size=11),
-            ),
-            steps=slider_steps,
-        )],
     )
     st.plotly_chart(fig, width="stretch")
 
