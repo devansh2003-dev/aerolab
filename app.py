@@ -822,7 +822,7 @@ if view == "3D dev bench (local)":
     else:
         _run_help = "Compile the kernel and stream particles through it."
     if st.button(":material/play_arrow: &nbsp; Run smoke",
-                 use_container_width=True,
+                 width="stretch",
                  disabled=_run_disabled,
                  help=_run_help):
         import time as _time
@@ -895,7 +895,7 @@ if view == "3D dev bench (local)":
             ],
             columns=["Metric", "Value"],
         )
-        st.dataframe(diag_table, hide_index=True, use_container_width=True)
+        st.dataframe(diag_table, hide_index=True, width="stretch")
 
         # Midplane slice (z = Nz/2) of ux. Plotly heatmap is fast and
         # works without matplotlib; the 2D playground already pulls
@@ -918,7 +918,7 @@ if view == "3D dev bench (local)":
             margin=dict(l=40, r=20, t=50, b=40),
         )
         fig.update_yaxes(scaleanchor="x", scaleratio=1)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
         # Centerline y-profile vs the analytic plane-Poiseuille parabola.
         mid_x = nx // 2
@@ -943,7 +943,7 @@ if view == "3D dev bench (local)":
             height=300,
             margin=dict(l=40, r=20, t=50, b=40),
         )
-        st.plotly_chart(prof_fig, use_container_width=True)
+        st.plotly_chart(prof_fig, width="stretch")
 
         if abs(diag["mass_drift_rel"]) > 0.05:
             st.warning(
@@ -1390,7 +1390,7 @@ if view == "3D dev bench (local)":
                         steps=slider_steps,
                     )],
                 )
-                st.plotly_chart(smoke_fig, use_container_width=True)
+                st.plotly_chart(smoke_fig, width="stretch")
                 st.caption(
                     f"{len(px):,} live particles in the final snapshot of "
                     f"a {n_frames_ad}-step RK4 advection (4 substeps / "
@@ -1831,7 +1831,7 @@ if view == "3D gallery (preview)":
             steps=slider_steps,
         )],
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     st.caption(
         f"Click **▶ Play** to watch the smoke develop; drag the slider "
         f"to scrub through the {len(snapshots)} keyframes. Drag the "
