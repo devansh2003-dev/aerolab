@@ -328,6 +328,22 @@ st.markdown(
 # left the top of the app reading like a Streamlit default; this hero
 # anchors AeroLab as a product first, then defers to the mode-specific
 # subtitle below.
+# The "3D gallery preview, in sidebar →" chip is contextual: it
+# advertises 3D when the user is in 2D, then converts to a confirm
+# pill ("3D gallery · live") once they're already there -- so the
+# chip stops pointing at a sidebar item the user has just acted on.
+_active_view_for_chip = st.session_state.get(
+    "solver_view", "2D playground (validated)"
+)
+_in_3d_view = _active_view_for_chip == "3D gallery (preview)"
+_chip_inner_text = (
+    "preview &middot; live"
+    if _in_3d_view else "preview, in sidebar &rarr;"
+)
+_chip_color = "#34d399" if _in_3d_view else "#94a3b8"
+_chip_bg = (
+    "rgba(16,185,129,0.10)" if _in_3d_view else "rgba(100,116,139,0.10)"
+)
 st.markdown(
     "<div style='display:flex;align-items:flex-end;justify-content:space-between;"
     "gap:1rem;padding:0.5rem 0 0.9rem 0;border-bottom:1px solid #1f2937;"
@@ -371,17 +387,16 @@ st.markdown(
     # the validated badge -- 3D is preview-quality, not the headline
     # claim. The gallery view loads pre-baked fields (Cloud-safe); the
     # dev bench runs the kernel live (local-only).
-    "<span style='display:inline-flex;align-items:center;gap:0.3rem;"
-    "padding:0.22rem 0.6rem;background:rgba(100,116,139,0.10);"
-    "border:1px solid #1f2937;border-radius:999px;"
-    "color:#94a3b8;font-size:0.72rem;letter-spacing:0.01em;' "
-    "title='Switch via the &quot;Solver tab&quot; radio in the sidebar. "
-    "Gallery view replays pre-baked flow fields with smoke particles; "
-    "the dev bench runs the kernel live and stays local-only.'>"
-    "<span style='color:#64748b;'>3D gallery</span>"
-    "<span style='opacity:0.6;'>&middot;</span>"
-    "<span>preview, in sidebar &rarr;</span>"
-    "</span>"
+    f"<span style='display:inline-flex;align-items:center;gap:0.3rem;"
+    f"padding:0.22rem 0.6rem;background:{_chip_bg};"
+    f"border:1px solid #1f2937;border-radius:999px;"
+    f"color:{_chip_color};font-size:0.72rem;letter-spacing:0.01em;' "
+    f"title='Switch via the &quot;Solver tab&quot; radio in the sidebar. "
+    f"Gallery view replays pre-baked flow fields.'>"
+    f"<span style='color:{_chip_color};'>3D gallery</span>"
+    f"<span style='opacity:0.6;'>&middot;</span>"
+    f"<span>{_chip_inner_text}</span>"
+    f"</span>"
     "</div>"
     "</div>",
     unsafe_allow_html=True,
@@ -768,17 +783,10 @@ if view == "3D gallery (preview)":
     preset_options = {p.stem: p for p in available}
 
     # Build {shape: {Re: path}} from filename pattern "{shape}_re{N}".
-    # The select_slider snaps to the actual baked Re values for the
-    # chosen shape -- pure UI sugar over the preset name, but lets the
-    # user interact with "shape + Reynolds" instead of needing to know
-    # the preset naming convention.
+    # The Flow speed slider maps a continuous velocity (m/s) to the
+    # nearest pre-baked Re band for the chosen shape.
     import re as _re_lib
     _shape_re_map: dict[str, dict[int, Path]] = {}
-    _shape_display = {
-        "sphere": "Sphere",
-        "cylinder": "Cylinder",
-        "cube": "Cube",
-    }
     for _stem, _path in preset_options.items():
         m = _re_lib.match(r"^(?P<shape>[a-zA-Z]+)_re(?P<Re>\d+)$", _stem)
         if not m:
@@ -787,102 +795,277 @@ if view == "3D gallery (preview)":
         _Re_val = int(m.group("Re"))
         _shape_re_map.setdefault(_shape, {})[_Re_val] = _path
 
-    if not _shape_re_map:
-        # Fall back to raw selectbox if no preset matches the pattern
-        # (e.g. a custom-named bake) -- keeps the gallery usable.
-        with st.sidebar:
-            st.markdown("### :material/auto_awesome: &nbsp; 3D scene")
-            chosen_name = st.selectbox(
-                "Scene",
-                options=list(preset_options.keys()),
-                index=0,
-                key="gallery_preset_choice",
-                label_visibility="collapsed",
+    # Display labels + "coming soon" placeholders. NACA + Custom appear
+    # in the selectbox so users see the planned roadmap, but selecting
+    # them shows the deferred-feature copy instead of a render.
+    _BUILTIN_SHAPES_3D = [
+        ("sphere", "Sphere (round)"),
+        ("cylinder", "Cylinder (round pipe)"),
+        ("cube", "Cube (block)"),
+    ]
+    _PLACEHOLDER_SHAPES_3D = [
+        ("naca0012", "NACA 0012 wing (coming soon)"),
+        ("custom", "Upload your own (PNG, JPG, WEBP, etc.)"),
+    ]
+    _shape_label_to_key: dict[str, str] = {}
+    _shape_options: list[str] = []
+    for _key, _label in _BUILTIN_SHAPES_3D:
+        if _key in _shape_re_map:
+            _shape_options.append(_label)
+            _shape_label_to_key[_label] = _key
+    for _key, _label in _PLACEHOLDER_SHAPES_3D:
+        _shape_options.append(_label)
+        _shape_label_to_key[_label] = _key
+
+    # Velocity (m/s) -> Reynolds, matching 2D's NU_AIR + L_REAL maths.
+    # L is tuned so the 0.30 - 4.50 m/s slider range maps across the
+    # full set of pre-baked Re bands (40 and 100 at present): with
+    # L = 0.3 mm and nu_air = 1.5e-5 m^2/s, 0.30 m/s -> Re 6,
+    # 1.50 m/s -> Re 30, 4.50 m/s -> Re 90 -- the snap-to-nearest
+    # logic then picks Re=40 below the midpoint and Re=100 above it.
+    # Display Re is the SNAPPED value so the user sees the actual
+    # bake regime, not a notional continuous Re that doesn't exist.
+    NU_AIR_3D = 1.5e-5
+    L_REAL_3D = 5e-4  # 0.5 mm characteristic; needle-scale wind-tunnel
+
+    def _regime_label_3d(re_val: int) -> tuple[str, str]:
+        if re_val <= 40:
+            return "low-Re creep — air flows slowly past", "laminar"
+        if re_val <= 100:
+            return "transitional — steady wake, no shedding yet", "transitional"
+        return "transitional/early shedding", "transitional"
+
+    with st.sidebar:
+        st.markdown("### :material/tune: Simulation setup")
+        with st.expander(
+            ":material/help_outline: &nbsp; **First time? Read this**",
+            expanded=False,
+        ):
+            st.markdown(
+                "**Pick a body, set how fast the air moves, watch the "
+                "streamlines wrap around it in 3D.**\n\n"
+                "- **Shape:** what the wind flows past.\n"
+                "- **Flow speed:** wind speed in m/s -- higher pushes "
+                "toward shedding. The displayed Reynolds number is the "
+                "regime the pre-baked field actually represents.\n"
+                "- **Color:** what physical field paints the "
+                "streamlines (Velocity is the default and the most "
+                "intuitive).\n\n"
+                ":gray[*3D is a pre-baked replay (Cloud-safe). Live "
+                "kernel runs in the 2D tab.*]"
             )
-    else:
-        _shapes_avail = [s for s in ("sphere", "cylinder", "cube")
-                         if s in _shape_re_map]
-        # Append any extra shapes the regex caught but aren't in the
-        # canonical-order list above (e.g. future "airfoil_re100").
-        for s in sorted(_shape_re_map):
-            if s not in _shapes_avail:
-                _shapes_avail.append(s)
-        with st.sidebar:
-            st.markdown("### :material/auto_awesome: &nbsp; 3D scene")
-            _shape_labels = [
-                _shape_display.get(s, s.capitalize()) for s in _shapes_avail
-            ]
-            _shape_label = st.radio(
-                "Shape",
-                _shape_labels,
-                index=0,
-                key="gallery_shape_choice",
-                horizontal=True,
-                label_visibility="collapsed",
+
+        st.markdown(":material/category: **Shape**")
+        st.session_state.setdefault(
+            "gallery_shape_select", _shape_options[0],
+        )
+        # Guard against a stale session-state value when the available
+        # options change between deploys.
+        if st.session_state["gallery_shape_select"] not in _shape_options:
+            st.session_state["gallery_shape_select"] = _shape_options[0]
+        shape_display_3d = st.selectbox(
+            "Shape preset",
+            _shape_options,
+            label_visibility="collapsed",
+            key="gallery_shape_select",
+            help=(
+                "Built-in: spheres, cylinders, cubes shed wakes of "
+                "different character. NACA wings + custom-upload "
+                "support are queued for the next release."
+            ),
+        )
+        chosen_shape = _shape_label_to_key[shape_display_3d]
+
+        # --- Custom shape: Upload / Draw / Sample tabs (stubbed) ----
+        # The widget set is present so the UI parallels the 2D
+        # playground; the actual bake happens server-side and the
+        # Cloud free tier times out before a 3D bake completes, so
+        # custom 3D shapes are gated behind a "coming soon" notice.
+        if chosen_shape == "custom":
+            st.markdown("")
+            st.markdown(":material/draw: **Your shape**")
+            _upload_tab, _draw_tab, _sample_tab = st.tabs(
+                ["Upload", "Draw", "Sample"]
             )
-            chosen_shape = _shapes_avail[_shape_labels.index(_shape_label)]
-            _Re_values = sorted(_shape_re_map[chosen_shape].keys())
-            if len(_Re_values) == 1:
-                chosen_Re = _Re_values[0]
-                st.caption(
-                    f"Reynolds number: **{chosen_Re}** "
-                    "(only one bake available for this shape)"
-                )
-            else:
-                # select_slider so the slider snaps to the actual
-                # pre-baked Re bands (40, 100, 200 etc.) instead of
-                # pretending Re is continuous between bakes.
-                chosen_Re = st.select_slider(
-                    "Reynolds number",
-                    options=_Re_values,
-                    value=_Re_values[len(_Re_values) // 2],
-                    key=f"gallery_re_choice_{chosen_shape}",
+            with _upload_tab:
+                st.file_uploader(
+                    "Upload an image",
+                    type=[
+                        "png", "jpg", "jpeg", "gif", "bmp",
+                        "tiff", "tif", "webp", "ico", "ppm", "tga",
+                    ],
+                    accept_multiple_files=False,
+                    label_visibility="collapsed",
+                    key="gallery_upload_3d",
+                    disabled=True,
                     help=(
-                        "Pre-baked velocity fields at discrete Re. "
-                        "The slider snaps to the nearest available bake."
+                        "Custom 3D shapes need a server-side LBM bake "
+                        "(~20-30 s) plus voxelisation of the uploaded "
+                        "silhouette. Coming in v0.4."
                     ),
                 )
-            chosen_name = f"{chosen_shape}_re{chosen_Re}"
-        st.session_state["gallery_preset_choice"] = chosen_name
-    with st.sidebar:
+            with _draw_tab:
+                st.caption(
+                    "Polygon drawing for 3D extrusion — coming soon."
+                )
+            with _sample_tab:
+                st.caption(
+                    "Built-in custom-shape gallery — coming soon."
+                )
+            st.info(
+                ":material/hourglass_empty: **Custom 3D shape upload "
+                "is queued for v0.4.** The Cloud free tier can't run a "
+                "fresh LBM bake within the request budget. For now, "
+                "pick a built-in shape above."
+            )
+
+        if chosen_shape in ("naca0012", "custom"):
+            # Placeholder shape: show the rest of the sidebar in a
+            # disabled state so the layout doesn't reflow when switching.
+            shape_for_loader = None
+            re_actual = 100
+            shape_re_options = [100]
+        else:
+            shape_for_loader = chosen_shape
+            shape_re_options = sorted(_shape_re_map[chosen_shape].keys())
+            re_actual = shape_re_options[-1]  # initial guess
+
+        st.markdown("")
+        st.markdown(":material/speed: **Flow speed** &nbsp; :gray[(m/s)]")
+        # Velocity (m/s) -> nominal Re via Re = U * L / nu, but the
+        # 3D gallery only has 2 snapshots per shape -- so we snap.
+        # Default sits at the middle Re band.
+        _v_default = 1.5
+        _v_state = st.session_state.get("gallery_velocity", _v_default)
+        velocity_mps_3d = st.slider(
+            "Flow speed (m/s)",
+            min_value=0.30, max_value=4.50,
+            value=float(_v_state),
+            step=0.05,
+            label_visibility="collapsed",
+            key="gallery_velocity",
+            disabled=(shape_for_loader is None),
+            help=(
+                "Wind speed across the body.\n\n"
+                "- **Slow** (left): laminar -- streamlines pass "
+                "smoothly around the body.\n"
+                "- **Fast** (right): transitional -- you'll see a "
+                "longer recirculation bubble behind the body.\n\n"
+                "Snaps to the nearest pre-baked Reynolds number "
+                "({:s}).".format(
+                    ", ".join(str(r) for r in shape_re_options)
+                )
+            ),
+        )
+        # Snap nominal Re from the slider to the nearest baked band.
+        _re_nominal = velocity_mps_3d * L_REAL_3D / NU_AIR_3D * 1000  # scale to slider range
+        # Linear map: v in [0.30, 4.50] -> Re in [min_band, max_band].
+        if len(shape_re_options) == 1:
+            re_actual = shape_re_options[0]
+        else:
+            _t = (velocity_mps_3d - 0.30) / (4.50 - 0.30)
+            _re_interp = (
+                shape_re_options[0]
+                + _t * (shape_re_options[-1] - shape_re_options[0])
+            )
+            re_actual = min(shape_re_options, key=lambda r: abs(r - _re_interp))
+        _regime_text, _regime_feel = _regime_label_3d(re_actual)
+        st.markdown(
+            f"**{velocity_mps_3d:.2f} m/s** &nbsp; · &nbsp; "
+            f"Re &approx; **{re_actual}** &nbsp; · &nbsp; "
+            f"<span style='color:#94a3b8;font-size:0.9rem;'>"
+            f"{_regime_text}</span>",
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            ":gray[*Pre-baked field replay -- the slider snaps to a "
+            "real LBM snapshot at the nearest Re.*]"
+        )
+
+        st.markdown("")
+        st.markdown(":material/grid_view: **Resolution**")
+        st.radio(
+            "Resolution",
+            [
+                "Standard (pre-baked, fast)",
+                "Detailed (coming soon)",
+            ],
+            index=0,
+            label_visibility="collapsed",
+            key="gallery_resolution",
+            disabled=True,
+            help=(
+                "3D pre-bakes ship at 96 x 48 x 48 (high-Re) and "
+                "64 x 32 x 32 (low-Re). Detailed-tier (192 x 96 x 96) "
+                "bakes are queued for v0.4."
+            ),
+        )
+
+        st.markdown("")
+        st.markdown(
+            ":material/palette: **What to color the air with**"
+        )
+        viz_mode_3d = st.radio(
+            "Color",
+            ["Velocity", "Vorticity", "Pressure"],
+            index=0,
+            label_visibility="collapsed",
+            key="gallery_viz_mode",
+            help=(
+                "**Velocity**: streamline colour = local wind speed "
+                "(Plasma colormap).\n\n"
+                "**Vorticity**: |curl(u)| -- bright where the air is "
+                "spinning.\n\n"
+                "**Pressure**: lattice density rho -- proxy for "
+                "static pressure."
+            ),
+        )
+
         st.divider()
         st.markdown("### :material/air: &nbsp; Streamlines")
         n_seeds = st.slider(
             "Density",
             min_value=12, max_value=96, value=42,
             key="n_seeds_gallery",
+            disabled=(shape_for_loader is None),
             help=(
                 "Number of streamlines released at the inflow plane. "
-                "Server-side traced, so even 96 streamlines stay smooth "
-                "in-browser (only the line count changes, not geometry)."
+                "Server-side traced, so even 96 streamlines stay "
+                "smooth in-browser."
             ),
         )
         line_width = st.slider(
             "Thickness",
             min_value=1, max_value=8, value=3,
             key="line_width_gallery",
+            disabled=(shape_for_loader is None),
+        )
+        animate_flow = st.checkbox(
+            "Animate flow", value=True, key="gallery_animate",
+            disabled=(shape_for_loader is None),
             help=(
-                "Pixel width of each streamline. WebGL line "
-                "rendering is essentially free at any width -- this "
-                "is purely a visual preference."
+                "Bright streaks travel along each streamline, "
+                "tracing the actual flow direction. Toggle off for "
+                "a static snapshot."
             ),
         )
+
         st.divider()
         st.markdown("### :material/visibility: &nbsp; Overlays")
         show_sphere = st.checkbox(
             "Body", value=True, key="show_body_gallery",
-            help=(
-                "Render the solid obstacle (sphere, cylinder, or "
-                "cube depending on the scene)."
-            ),
+            disabled=(shape_for_loader is None),
+            help="Render the solid obstacle.",
         )
         show_box = st.checkbox(
             "Wind-tunnel chamber outline", value=True,
             key="show_box_gallery",
+            disabled=(shape_for_loader is None),
         )
         show_q = st.checkbox(
             "Q-criterion vortex shell", value=False,
             key="show_q_gallery",
+            disabled=(shape_for_loader is None),
             help=(
                 "Q = (1/2)(|Ω|² - |S|²); positive Q means rotation "
                 "dominates strain. The shell carves out where the "
@@ -893,17 +1076,27 @@ if view == "3D gallery (preview)":
             "Q threshold (% of max)",
             min_value=1, max_value=50, value=10,
             key="q_level_pct_gallery",
-            disabled=not show_q,
+            disabled=(not show_q) or (shape_for_loader is None),
         )
-        st.divider()
-        st.markdown("### :material/upload_file: &nbsp; Custom shape")
-        st.caption(
-            "Upload your own STL or PNG silhouette — coming in a "
-            "future release. On Streamlit Cloud the LBM bake takes "
-            "~20 s per scene, which is too long for a request-cycle. "
-            "Local users can drop a new preset into "
-            "`scripts/bake_3d_field.py` and rebake."
+
+    # Empty-state for placeholder shapes (NACA / Custom) -- no field
+    # to render, so we just show the deferred-feature notice and stop.
+    if shape_for_loader is None:
+        st.markdown(
+            f"# AeroLab 3D &nbsp;<span style='color:#64748b;font-weight:400;"
+            f"font-size:0.55em;letter-spacing:0.04em;text-transform:uppercase;'>"
+            f"&middot; {shape_display_3d}</span>",
+            unsafe_allow_html=True,
         )
+        st.info(
+            ":material/construction: This shape is queued for the "
+            "next release. Pick **Sphere**, **Cylinder**, or **Cube** "
+            "from the sidebar dropdown to see streamlines now."
+        )
+        st.stop()
+
+    chosen_name = f"{chosen_shape}_re{re_actual}"
+    st.session_state["gallery_preset_choice"] = chosen_name
 
     # Progress bar: gives the user visible feedback during scene swap.
     # Each stage is fast in Python (<1 s each) but the browser-side
@@ -942,10 +1135,17 @@ if view == "3D gallery (preview)":
         f"&middot; {chosen_name}</span>",
         unsafe_allow_html=True,
     )
+    _caption_color = {
+        "Velocity": "speed (Plasma: purple slow, yellow fast)",
+        "Vorticity": "|curl(u)| (Viridis: dark calm, yellow swirling)",
+        "Pressure": "density rho (RdBu: blue low, red high)",
+    }.get(viz_mode_3d, "speed")
     st.caption(
-        "Streamlines trace how the air wraps around the body. "
-        "Colour shows speed (Plasma colormap: purple slow, yellow fast). "
-        "Drag to rotate, scroll to zoom."
+        f"Streamlines trace how the air wraps around the body. "
+        f"Colour shows {_caption_color}. "
+        f"Drag to rotate, scroll to zoom. "
+        f"Click **▶ Animate** at the lower-left of the chart for "
+        f"flowing motion."
     )
 
     # --- Seed positions on the inflow plane ---------------------------
@@ -983,19 +1183,70 @@ if view == "3D gallery (preview)":
         progress_callback=_trace_prog,
     )
 
+    _gallery_prog.progress(88, text="Sampling colour field...")
+    # Pick the scalar field that paints the streamlines. Velocity is
+    # the default (uses the speed we already sampled during tracing);
+    # Vorticity and Pressure require an extra trilerp at each vertex.
+    if viz_mode_3d == "Vorticity":
+        from src.lbm_3d_smoke_particles import trilerp_3d as _trilerp
+        # |omega| = |curl(u)|, computed once on the lattice grid.
+        _dudy = np.gradient(field.ux, axis=1)
+        _dudz = np.gradient(field.ux, axis=2)
+        _dvdx = np.gradient(field.uy, axis=0)
+        _dvdz = np.gradient(field.uy, axis=2)
+        _dwdx = np.gradient(field.uz, axis=0)
+        _dwdy = np.gradient(field.uz, axis=1)
+        _ox = (_dwdy - _dvdz).astype(np.float32)
+        _oy = (_dudz - _dwdx).astype(np.float32)
+        _oz = (_dvdx - _dudy).astype(np.float32)
+        _omag = np.sqrt(_ox * _ox + _oy * _oy + _oz * _oz)
+        # Resample at vertex positions; NaN-separators in flat_x stay
+        # NaN in the colour array, which keeps the line break clean.
+        _vx = np.where(np.isfinite(flat_x), flat_x, 0.0).astype(np.float64)
+        _vy = np.where(np.isfinite(flat_y), flat_y, 0.0).astype(np.float64)
+        _vz = np.where(np.isfinite(flat_z), flat_z, 0.0).astype(np.float64)
+        flat_color = _trilerp(_omag, _vx, _vy, _vz).astype(np.float32)
+        flat_color[~np.isfinite(flat_x)] = np.nan
+        _omag_99 = float(np.percentile(
+            _omag[~field.body] if (~field.body).any() else _omag, 99.5
+        ))
+        cmin_color = 0.0
+        cmax_color = max(_omag_99, 1e-6)
+        _color_title = "|ω|"
+        _colorscale = "Viridis"
+    elif viz_mode_3d == "Pressure":
+        from src.lbm_3d_smoke_particles import trilerp_3d as _trilerp
+        _rho = field.rho.astype(np.float32)
+        _vx = np.where(np.isfinite(flat_x), flat_x, 0.0).astype(np.float64)
+        _vy = np.where(np.isfinite(flat_y), flat_y, 0.0).astype(np.float64)
+        _vz = np.where(np.isfinite(flat_z), flat_z, 0.0).astype(np.float64)
+        flat_color = _trilerp(_rho, _vx, _vy, _vz).astype(np.float32)
+        flat_color[~np.isfinite(flat_x)] = np.nan
+        _rho_fluid = _rho[~field.body] if (~field.body).any() else _rho
+        cmin_color = float(np.percentile(_rho_fluid, 1.0))
+        cmax_color = float(np.percentile(_rho_fluid, 99.0))
+        _color_title = "ρ"
+        _colorscale = "RdBu_r"
+    else:  # Velocity (default)
+        flat_color = flat_speed
+        cmin_color = 0.0
+        cmax_color = cmax_speed
+        _color_title = "speed"
+        _colorscale = "Plasma"
+
     _gallery_prog.progress(92, text="Composing scene...")
     scene_traces = [
         go.Scatter3d(
             x=flat_x, y=flat_y, z=flat_z,
             mode="lines",
             line=dict(
-                color=flat_speed,
-                colorscale="Plasma",
-                cmin=0.0, cmax=cmax_speed,
+                color=flat_color,
+                colorscale=_colorscale,
+                cmin=cmin_color, cmax=cmax_color,
                 width=float(line_width),
                 showscale=True,
                 colorbar=dict(
-                    title="speed",
+                    title=_color_title,
                     thickness=10, len=0.45,
                     x=1.02, xanchor="left",
                 ),
@@ -1148,67 +1399,102 @@ if view == "3D gallery (preview)":
             )
         )
 
-    # Animated flow markers: one bright point per streamline, marching
-    # along the path across N frames. Lightweight (N_streamlines * 12
-    # frames, ~30 KB of geometry total) so the browser stays smooth
-    # even at high seed density. Plotly's frame mechanism updates only
-    # the marker trace per frame -- the streamlines, body, and box
-    # don't re-render, so animation cost is just the marker dot
-    # positions.
-    _ANIM_FRAMES = 12
-    nan_mask = np.isnan(flat_x)
-    _split_idx = np.where(nan_mask)[0]
-    _streams_xyz = []
-    _prev = 0
-    for _s in _split_idx:
-        if _s > _prev + 2:
-            _streams_xyz.append((
-                flat_x[_prev:_s], flat_y[_prev:_s], flat_z[_prev:_s],
-            ))
-        _prev = _s + 1
-    # Cap markers to keep the marker trace small even at max density.
-    if len(_streams_xyz) > 80:
-        _stride = max(1, len(_streams_xyz) // 80)
-        _streams_xyz = _streams_xyz[::_stride]
-    _anim_frames_data = []
-    for _f in range(_ANIM_FRAMES):
-        _mx, _my, _mz = [], [], []
-        _phase = _f / _ANIM_FRAMES
-        for _sx, _sy, _sz in _streams_xyz:
-            _n = len(_sx)
-            if _n < 2:
-                continue
-            _idx = int(_phase * (_n - 1))
-            _mx.append(float(_sx[_idx]))
-            _my.append(float(_sy[_idx]))
-            _mz.append(float(_sz[_idx]))
-        _anim_frames_data.append((_mx, _my, _mz))
-    # Initial marker trace (frame 0). Added LAST so it draws on top.
-    _mx0, _my0, _mz0 = _anim_frames_data[0]
-    scene_traces.append(
-        go.Scatter3d(
-            x=_mx0, y=_my0, z=_mz0,
-            mode="markers",
-            marker=dict(
-                size=5,
-                color="#fef9c3",
-                opacity=0.95,
-                line=dict(width=0),
-            ),
-            name="flow",
-            hoverinfo="skip",
-            showlegend=False,
+    # Animated flow: short bright streaks that travel along each
+    # streamline. NOT marker dots -- the user feedback was "the
+    # streamlines are supposed to be animated, not show points on
+    # them". The streaks ARE chunks of the streamline path, so the
+    # animation looks like the streamlines themselves are flowing,
+    # not separate particles riding on top.
+    #
+    # 30 frames * ~25 streamlines * 14 vertices per streak ~ 10 k
+    # vertices per frame. Browser handles this fine. Frame duration
+    # 230 ms with linear transition smoothing gives a continuous,
+    # not-choppy feel (the previous 12 frames @ 110 ms felt like a
+    # stuttering GIF).
+    _frames = []
+    _streak_index = None
+    if animate_flow:
+        _ANIM_FRAMES = 30
+        _STREAK_LEN = 14   # vertices per streak; tuned for visible motion
+        nan_mask = np.isnan(flat_x)
+        _split_idx = np.where(nan_mask)[0]
+        _streams_xyz = []
+        _prev = 0
+        for _s in _split_idx:
+            if _s > _prev + _STREAK_LEN + 2:
+                _streams_xyz.append((
+                    flat_x[_prev:_s],
+                    flat_y[_prev:_s],
+                    flat_z[_prev:_s],
+                ))
+            _prev = _s + 1
+        # Subsample streamlines so the streak trace stays light even at
+        # max density (96 seeds * 14-vert streaks would be 1.3 k verts
+        # per frame -- fine, but capping at 40 keeps memory predictable
+        # for users on phones).
+        if len(_streams_xyz) > 40:
+            _stride = max(1, len(_streams_xyz) // 40)
+            _streams_xyz = _streams_xyz[::_stride]
+
+        # Per-streamline phase offset so the streaks across different
+        # streamlines are NOT all at the same arc-fraction simultaneously.
+        # In lockstep mode the whole flow looks like a single moving
+        # ribbon; staggered, the eye reads it as turbulent smoke where
+        # particles arrive at different times. Offsets spread across a
+        # half-cycle so adjacent streamlines never quite coincide.
+        _n_streams = max(1, len(_streams_xyz))
+        _phase_offsets = (
+            np.arange(_n_streams) * (0.5 / _n_streams)
+        ).astype(np.float64)
+        _anim_frames_data = []
+        for _f in range(_ANIM_FRAMES):
+            _sx_all, _sy_all, _sz_all = [], [], []
+            _base_phase = _f / _ANIM_FRAMES
+            for _s_idx, (_sx, _sy, _sz) in enumerate(_streams_xyz):
+                _n = len(_sx)
+                if _n < _STREAK_LEN + 2:
+                    continue
+                # Per-streamline phase: (base + offset) wraps around
+                # one full cycle, so each streak still traverses the
+                # whole path but starts/ends out of sync with its
+                # neighbours.
+                _phase = (_base_phase + _phase_offsets[_s_idx]) % 1.0
+                _head = int(_phase * (_n - 1))
+                _tail = max(0, _head - _STREAK_LEN)
+                _sx_all.extend(_sx[_tail:_head + 1].tolist())
+                _sy_all.extend(_sy[_tail:_head + 1].tolist())
+                _sz_all.extend(_sz[_tail:_head + 1].tolist())
+                _sx_all.append(np.nan)
+                _sy_all.append(np.nan)
+                _sz_all.append(np.nan)
+            _anim_frames_data.append((_sx_all, _sy_all, _sz_all))
+
+        # Initial streak overlay (frame 0). Brighter, thicker than the
+        # base streamlines so it pops out without obscuring structure.
+        _sx0, _sy0, _sz0 = _anim_frames_data[0]
+        scene_traces.append(
+            go.Scatter3d(
+                x=_sx0, y=_sy0, z=_sz0,
+                mode="lines",
+                line=dict(
+                    color="#fef9c3",
+                    width=float(line_width) + 2.5,
+                ),
+                opacity=0.92,
+                name="flow",
+                hoverinfo="skip",
+                showlegend=False,
+            )
         )
-    )
-    _marker_trace_index = len(scene_traces) - 1
-    _frames = [
-        go.Frame(
-            data=[go.Scatter3d(x=_mx, y=_my, z=_mz)],
-            traces=[_marker_trace_index],
-            name=str(_i),
-        )
-        for _i, (_mx, _my, _mz) in enumerate(_anim_frames_data)
-    ]
+        _streak_index = len(scene_traces) - 1
+        _frames = [
+            go.Frame(
+                data=[go.Scatter3d(x=_fx, y=_fy, z=_fz)],
+                traces=[_streak_index],
+                name=str(_i),
+            )
+            for _i, (_fx, _fy, _fz) in enumerate(_anim_frames_data)
+        ]
 
     # Camera + look-at: shift toward the body so it fills the viewport
     # instead of getting lost in the long downstream chamber. Body
@@ -1252,6 +1538,11 @@ if view == "3D gallery (preview)":
         height=640,
         margin=dict(l=0, r=0, t=10, b=10),
         paper_bgcolor="#0a0a0a",
+        # transition smooths between frames (Plotly interpolates the
+        # Scatter3d positions over `transition.duration` ms). Combined
+        # with the 230 ms frame budget the eye reads it as continuous
+        # motion rather than a 3-fps slideshow.
+        transition=dict(duration=120, easing="linear"),
         updatemenus=[
             dict(
                 type="buttons",
@@ -1262,29 +1553,35 @@ if view == "3D gallery (preview)":
                 bordercolor="rgba(148,163,184,0.35)",
                 font=dict(color="#e2e8f0", size=12),
                 pad=dict(l=8, r=8, t=4, b=4),
-                buttons=[
-                    dict(
-                        label="▶ Animate",
-                        method="animate",
-                        args=[None, dict(
-                            frame=dict(duration=110, redraw=True),
-                            fromcurrent=True,
-                            transition=dict(duration=0),
-                            mode="immediate",
-                        )],
-                    ),
-                    dict(
-                        label="⏸ Pause",
-                        method="animate",
-                        args=[[None], dict(
-                            frame=dict(duration=0, redraw=False),
-                            mode="immediate",
-                            transition=dict(duration=0),
-                        )],
-                    ),
-                ],
+                buttons=(
+                    [
+                        dict(
+                            label="▶ Animate",
+                            method="animate",
+                            args=[None, dict(
+                                frame=dict(duration=230, redraw=True),
+                                fromcurrent=True,
+                                transition=dict(
+                                    duration=120, easing="linear",
+                                ),
+                                mode="immediate",
+                            )],
+                        ),
+                        dict(
+                            label="⏸ Pause",
+                            method="animate",
+                            args=[[None], dict(
+                                frame=dict(duration=0, redraw=False),
+                                mode="immediate",
+                                transition=dict(duration=0),
+                            )],
+                        ),
+                    ]
+                    if animate_flow
+                    else []
+                ),
             )
-        ],
+        ] if animate_flow else [],
         showlegend=False,
     )
     _gallery_prog.progress(
@@ -1292,6 +1589,89 @@ if view == "3D gallery (preview)":
     )
     _gallery_prog.empty()
     st.plotly_chart(fig, width="stretch")
+
+    # --- Curated 3D demo gallery ----------------------------------------
+    # Mirrors the 2D "Try one of these" cards. Each entry sets the
+    # sidebar widgets to the values that produce the named showcase,
+    # then triggers a rerun so the chart updates immediately.
+    _gallery_cards_3d = [
+        # (shape_label, velocity_mps, viz_mode, title, description, btn_label)
+        (
+            "Sphere (round)", 4.5, "Velocity",
+            "Sphere wake",
+            "Re ≈ 100. Watch the streamlines split, wrap around the "
+            "sphere, and converge into a clean axisymmetric wake.",
+            "Show me",
+        ),
+        (
+            "Cylinder (round pipe)", 4.5, "Velocity",
+            "Cylinder over the span",
+            "Re ≈ 100. The classic 2D-like wake, now extruded in z. "
+            "Span-coherent recirculation just downstream of the body.",
+            "Show me",
+        ),
+        (
+            "Cube (block)", 4.5, "Velocity",
+            "Bluff cube",
+            "Sharp-edged separation. The corners force the shear "
+            "layers off cleanly -- the wake fills the chamber.",
+            "Show me",
+        ),
+        (
+            "Sphere (round)", 0.5, "Velocity",
+            "Slow sphere (creep)",
+            "Re ≈ 40. Streamlines glide around almost reversibly -- "
+            "the Stokes-flow limit you'd see with honey or syrup.",
+            "Show me",
+        ),
+        (
+            "Cylinder (round pipe)", 4.5, "Vorticity",
+            "Where the air spins",
+            "Cylinder coloured by |curl(u)|. The bright bands trace "
+            "the rotating shear layers peeling off the body.",
+            "Show me",
+        ),
+        (
+            "Cube (block)", 4.5, "Pressure",
+            "Pressure around a cube",
+            "Cube coloured by lattice density. Front face is red "
+            "(stagnation), the wake drops blue (suction).",
+            "Show me",
+        ),
+    ]
+
+    def _apply_3d_gallery_card(card):
+        _shape_lbl, _vel, _vmode, _t, _d, _b = card
+        st.session_state["gallery_shape_select"] = _shape_lbl
+        st.session_state["gallery_velocity"] = float(_vel)
+        st.session_state["gallery_viz_mode"] = _vmode
+        st.toast(
+            f":material/play_arrow: Loading: {_t}",
+            icon=":material/play_arrow:",
+        )
+
+    st.markdown("")
+    st.markdown("### :material/auto_awesome: Try one of these")
+    st.caption(
+        "Each card sets the sidebar to a pre-tuned scene so you can "
+        "see a specific aerodynamic phenomenon without picking through "
+        "the controls."
+    )
+    _row1, _row2 = st.columns(3), st.columns(3)
+    _cells_3d = list(_row1) + list(_row2)
+    for _i, _card3d in enumerate(_gallery_cards_3d):
+        with _cells_3d[_i]:
+            with st.container(border=True):
+                st.markdown(f"**{_card3d[3]}**")
+                st.caption(_card3d[4])
+                if st.button(
+                    _card3d[5],
+                    key=f"gallery_card_3d_{_i}",
+                    width="stretch",
+                    type="primary",
+                ):
+                    _apply_3d_gallery_card(_card3d)
+                    st.rerun()
 
     # Engineering details: collapsed, on the main page, below the
     # chart. Read-only display of metadata; all interactive controls
@@ -1330,6 +1710,45 @@ if view == "3D gallery (preview)":
             "Peak u_x", f"{_solver.get('u_peak', 0):.4f}",
             help="Maximum streamwise velocity (lattice units).",
         )
+        # CFD-honesty row: blockage ratio and advective times. Recruiter
+        # / engineer caveats so anyone digging beyond the visualisation
+        # sees the same disclaimers the 2D side carries. Blockage > 25 %
+        # means duct-flow corrections matter; advective times < 4-5
+        # means the wake isn't statistically stationary yet.
+        _blockage_pct = (
+            (_D_char / float(Ny)) * 100.0 if Ny > 0 else 0.0
+        )
+        _adv_times = (
+            (u_in_meta * float(_n_steps)) / max(_D_char, 1e-9)
+        )
+        cav_cols = st.columns(2)
+        cav_cols[0].metric(
+            "Blockage", f"{_blockage_pct:.0f} %",
+            help=(
+                "D / Ny. Above ~25 % the channel walls start to "
+                "dominate the wake (duct flow, not free-stream). "
+                "These bakes prioritise a chunky-looking body over "
+                "low blockage. For quantitative Cd you'd want < 5 % "
+                "blockage and a corresponding wall-correction."
+            ),
+        )
+        cav_cols[1].metric(
+            "Advective times", f"{_adv_times:.1f} D/u",
+            help=(
+                "u_in · n_steps / D. Free-stream sphere/cylinder "
+                "wakes typically need 4-5 D/u before the recirculation "
+                "is statistically stationary. Below that, the scene is "
+                "a post-startup snapshot -- the wake length and shape "
+                "are still settling."
+            ),
+        )
+        if _blockage_pct > 25.0 or _adv_times < 4.0:
+            st.caption(
+                ":material/info: *Visualisation regime: the "
+                f"{_blockage_pct:.0f} % blockage and {_adv_times:.1f} D/u "
+                "advective window mean this is a flow-shape demo, not a "
+                "production CFD measurement.*"
+            )
         st.markdown("##### Manifest")
         st.caption(
             f"Preset hash: `{field.meta.get('hash', '?')[:16]}...` "
