@@ -263,44 +263,70 @@ def naca_outline(
 
 def make_naca_mask(
     Nx: int, Ny: int, Nz: int,
-    x_le: float, y_chord: float, chord: float,
+    x_le: float, chord_offset: float, chord: float,
     m: float, p: float, thickness: float,
     aoa_deg: float = 0.0,
+    span_axis: str = "y",
 ) -> np.ndarray:
     """Boolean solid mask for a NACA 4-digit airfoil, extruded along
-    the spanwise z axis. Leading edge at lattice x = x_le, chord aligned
-    with +x and length ``chord`` cells, mean camber line at y = y_chord.
+    a chosen span axis. Leading edge at lattice x = x_le, chord aligned
+    with +x and length ``chord`` cells, mean camber line at
+    ``chord_offset`` along the cross-section's perpendicular axis.
+
+    Parameters
+    ----------
+    span_axis : {"y", "z"}
+        Which lattice axis the wing extrudes along.
+        - ``"y"`` (default, horizontal wing): the airfoil cross-section
+          lives in the ``(x, z)`` plane and the wing extrudes spanwise
+          along ``y``. From the default Plotly camera the wing reads
+          as a chord profile extending side-to-side -- the conventional
+          aircraft-wing photo orientation.
+        - ``"z"`` (legacy, vertical wing): cross-section in ``(x, y)``,
+          extrude along ``z``. Kept for compatibility with the original
+          3D bakes.
 
     With ``aoa_deg`` non-zero the airfoil is rotated about its chord
     midpoint (positive = leading edge up, nose-up convention). The
     voxel test inverse-rotates each query point back to the airfoil's
-    canonical frame before checking the upper/lower bounds, so the
-    same analytic thickness + camber formulas apply unchanged.
+    canonical frame, so the analytic thickness + camber formulas apply
+    unchanged.
     """
+    if span_axis not in ("y", "z"):
+        raise ValueError(
+            f"span_axis must be 'y' or 'z', got {span_axis!r}."
+        )
     pivot_x = x_le + chord * 0.5
-    pivot_y = y_chord
+    pivot_n = chord_offset            # perpendicular-axis chord midline
     cos_a = float(np.cos(np.deg2rad(aoa_deg)))
     sin_a = float(np.sin(np.deg2rad(aoa_deg)))
     xs_grid = np.arange(Nx, dtype=np.float64)[:, None]
-    ys_grid = np.arange(Ny, dtype=np.float64)[None, :]
-    # Inverse rotation (rotate query points by -aoa) to align with the
-    # un-rotated airfoil.
+    if span_axis == "y":
+        # Cross-section in (x, z). Extrude along y.
+        ns_grid = np.arange(Nz, dtype=np.float64)[None, :]
+    else:
+        # Cross-section in (x, y). Extrude along z (legacy behavior).
+        ns_grid = np.arange(Ny, dtype=np.float64)[None, :]
     dx = xs_grid - pivot_x
-    dy = ys_grid - pivot_y
-    x_local = pivot_x + dx * cos_a + dy * sin_a
-    y_local = pivot_y + (-dx * sin_a + dy * cos_a)
+    dn = ns_grid - pivot_n
+    x_local = pivot_x + dx * cos_a + dn * sin_a
+    n_local = pivot_n + (-dx * sin_a + dn * cos_a)
     xc = (x_local - x_le) / max(chord, 1.0)
-    yc_norm = (y_local - y_chord) / max(chord, 1.0)
+    n_norm = (n_local - pivot_n) / max(chord, 1.0)
     yt = _naca_thickness(xc, thickness)
-    camber_y, _ = _naca_camber(xc, m, p)
+    camber_n, _ = _naca_camber(xc, m, p)
     in_chord = (xc >= 0.0) & (xc <= 1.0)
-    y_upper = camber_y + yt
-    y_lower = camber_y - yt
+    upper = camber_n + yt
+    lower = camber_n - yt
     inside_2d = (
-        in_chord
-        & (yc_norm <= y_upper)
-        & (yc_norm >= y_lower)
+        in_chord & (n_norm <= upper) & (n_norm >= lower)
     )
+    if span_axis == "y":
+        # inside_2d shape is (Nx, Nz). Broadcast across y.
+        return np.broadcast_to(
+            inside_2d[:, None, :], (Nx, Ny, Nz)
+        ).copy()
+    # span_axis == 'z': inside_2d is (Nx, Ny). Broadcast across z.
     return np.broadcast_to(
         inside_2d[:, :, None], (Nx, Ny, Nz)
     ).copy()
@@ -310,19 +336,32 @@ def make_cube_mask(
     Nx: int, Ny: int, Nz: int,
     cx: float, cy: float, cz: float,
     half_extent: float,
+    aoa_deg: float = 0.0,
 ) -> np.ndarray:
-    """Boolean solid mask for an axis-aligned cube centred at
-    (cx, cy, cz) with half-edge ``half_extent``. Cells whose centres
-    fall inside the cube (chebyshev distance from centre <= h) are
-    solid. Voxel-stair walls are handled by ``voxel_wall_links``.
+    """Boolean solid mask for an axis-aligned cube (optionally rotated
+    about the y axis by ``aoa_deg``). Centred at (cx, cy, cz) with
+    half-edge ``half_extent``.
+
+    AoA convention: positive AoA rotates the cube nose-up in the
+    (x, z) plane, same as the wing convention. At ``aoa_deg = 45``
+    the cube reads as a 3D diamond -- the leading and trailing edges
+    point at the flow.
     """
-    xs = np.arange(Nx)[:, None, None]
-    ys = np.arange(Ny)[None, :, None]
-    zs = np.arange(Nz)[None, None, :]
+    cos_a = float(np.cos(np.deg2rad(aoa_deg)))
+    sin_a = float(np.sin(np.deg2rad(aoa_deg)))
+    xs = np.arange(Nx, dtype=np.float64)[:, None, None]
+    ys = np.arange(Ny, dtype=np.float64)[None, :, None]
+    zs = np.arange(Nz, dtype=np.float64)[None, None, :]
+    # Inverse rotation: rotate query point by -aoa about the y axis,
+    # i.e. in the (x, z) plane.
+    dx = xs - cx
+    dz = zs - cz
+    x_local = cx + dx * cos_a + dz * sin_a
+    z_local = cz + (-dx * sin_a + dz * cos_a)
     return (
-        (np.abs(xs - cx) <= half_extent)
+        (np.abs(x_local - cx) <= half_extent)
         & (np.abs(ys - cy) <= half_extent)
-        & (np.abs(zs - cz) <= half_extent)
+        & (np.abs(z_local - cz) <= half_extent)
     )
 
 

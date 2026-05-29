@@ -201,19 +201,62 @@ PRESETS: dict[str, dict[str, Any]] = {
         "rho_outflow": 1.0,
         "outflow_scheme": "regularised",
     },
-    # NACA 0012 (symmetric): the canonical "wing at zero AoA" -- the
-    # streamlines glide cleanly past with attached flow over the entire
-    # chord. Re = u_in * chord / nu = 0.04 * 24 / 0.0096 = 100.
-    # Chord 24 spanning x in [10, 34] of a 96 x 48 x 32 grid.
-    "naca0012_re100": {
+    # NACA 4-digit wings, span axis = y (horizontal wing --
+    # the conventional aircraft-photo orientation). AoA bands
+    # at {-30, -15, -5, 0, +5, +15, +30} deg per Re band so the
+    # sidebar AoA slider can land on a real baked snapshot within
+    # ~5 deg of any 1-deg slider position. NACA 0012 (symmetric)
+    # and NACA 4412 (cambered: 4 % camber at 40 % chord, 12 %
+    # thickness). chord_offset is the z coordinate of the chord
+    # midline; with span_axis='y' the airfoil cross-section lives
+    # in (x, z) and the wing extrudes side-to-side in y.
+    "naca0012_aoa-30_re40": {
         "body_type": "naca",
-        "Nx": 96, "Ny": 48, "Nz": 32,
+        "Nx": 80, "Ny": 40, "Nz": 32,
         "body_params": {
-            "x_le": 14.0, "y_chord": 24.0, "chord": 24.0,
+            "x_le": 12.0, "chord_offset": 16.0, "chord": 20.0,
             "m": 0.0, "p": 0.0, "thickness": 0.12,
+            "aoa_deg": -30.0,
+            "span_axis": "y",
         },
         "u_in": 0.04,
-        "nu": 0.0096,
+        "nu": 0.02,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "naca0012_aoa-15_re40": {
+        "body_type": "naca",
+        "Nx": 80, "Ny": 40, "Nz": 32,
+        "body_params": {
+            "x_le": 12.0, "chord_offset": 16.0, "chord": 20.0,
+            "m": 0.0, "p": 0.0, "thickness": 0.12,
+            "aoa_deg": -15.0,
+            "span_axis": "y",
+        },
+        "u_in": 0.04,
+        "nu": 0.02,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "naca0012_aoa-5_re40": {
+        "body_type": "naca",
+        "Nx": 80, "Ny": 40, "Nz": 32,
+        "body_params": {
+            "x_le": 12.0, "chord_offset": 16.0, "chord": 20.0,
+            "m": 0.0, "p": 0.0, "thickness": 0.12,
+            "aoa_deg": -5.0,
+            "span_axis": "y",
+        },
+        "u_in": 0.04,
+        "nu": 0.02,
         "n_steps": 800,
         "scheme": "trt",
         "use_guo_neem": True,
@@ -225,11 +268,13 @@ PRESETS: dict[str, dict[str, Any]] = {
         "body_type": "naca",
         "Nx": 80, "Ny": 40, "Nz": 32,
         "body_params": {
-            "x_le": 12.0, "y_chord": 20.0, "chord": 20.0,
+            "x_le": 12.0, "chord_offset": 16.0, "chord": 20.0,
             "m": 0.0, "p": 0.0, "thickness": 0.12,
+            "aoa_deg": 0.0,
+            "span_axis": "y",
         },
         "u_in": 0.04,
-        "nu": 0.02,                      # Re = 0.04 * 20 / 0.02 = 40
+        "nu": 0.02,
         "n_steps": 800,
         "scheme": "trt",
         "use_guo_neem": True,
@@ -237,18 +282,233 @@ PRESETS: dict[str, dict[str, Any]] = {
         "rho_outflow": 1.0,
         "outflow_scheme": "regularised",
     },
-    # NACA 4412 (cambered): 4 % camber at 40 % chord, 12 % thickness.
-    # The asymmetry diverts the flow downward -> lift, even at zero
-    # geometric AoA. Same Re ladder as NACA 0012.
-    "naca4412_re100": {
+    "naca0012_aoa5_re40": {
+        "body_type": "naca",
+        "Nx": 80, "Ny": 40, "Nz": 32,
+        "body_params": {
+            "x_le": 12.0, "chord_offset": 16.0, "chord": 20.0,
+            "m": 0.0, "p": 0.0, "thickness": 0.12,
+            "aoa_deg": 5.0,
+            "span_axis": "y",
+        },
+        "u_in": 0.04,
+        "nu": 0.02,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "naca0012_aoa15_re40": {
+        "body_type": "naca",
+        "Nx": 80, "Ny": 40, "Nz": 32,
+        "body_params": {
+            "x_le": 12.0, "chord_offset": 16.0, "chord": 20.0,
+            "m": 0.0, "p": 0.0, "thickness": 0.12,
+            "aoa_deg": 15.0,
+            "span_axis": "y",
+        },
+        "u_in": 0.04,
+        "nu": 0.02,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "naca0012_aoa30_re40": {
+        "body_type": "naca",
+        "Nx": 80, "Ny": 40, "Nz": 32,
+        "body_params": {
+            "x_le": 12.0, "chord_offset": 16.0, "chord": 20.0,
+            "m": 0.0, "p": 0.0, "thickness": 0.12,
+            "aoa_deg": 30.0,
+            "span_axis": "y",
+        },
+        "u_in": 0.04,
+        "nu": 0.02,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "naca0012_aoa-30_re100": {
         "body_type": "naca",
         "Nx": 96, "Ny": 48, "Nz": 32,
         "body_params": {
-            "x_le": 14.0, "y_chord": 24.0, "chord": 24.0,
-            "m": 0.04, "p": 0.40, "thickness": 0.12,
+            "x_le": 14.0, "chord_offset": 16.0, "chord": 24.0,
+            "m": 0.0, "p": 0.0, "thickness": 0.12,
+            "aoa_deg": -30.0,
+            "span_axis": "y",
         },
         "u_in": 0.04,
         "nu": 0.0096,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "naca0012_aoa-15_re100": {
+        "body_type": "naca",
+        "Nx": 96, "Ny": 48, "Nz": 32,
+        "body_params": {
+            "x_le": 14.0, "chord_offset": 16.0, "chord": 24.0,
+            "m": 0.0, "p": 0.0, "thickness": 0.12,
+            "aoa_deg": -15.0,
+            "span_axis": "y",
+        },
+        "u_in": 0.04,
+        "nu": 0.0096,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "naca0012_aoa-5_re100": {
+        "body_type": "naca",
+        "Nx": 96, "Ny": 48, "Nz": 32,
+        "body_params": {
+            "x_le": 14.0, "chord_offset": 16.0, "chord": 24.0,
+            "m": 0.0, "p": 0.0, "thickness": 0.12,
+            "aoa_deg": -5.0,
+            "span_axis": "y",
+        },
+        "u_in": 0.04,
+        "nu": 0.0096,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "naca0012_re100": {
+        "body_type": "naca",
+        "Nx": 96, "Ny": 48, "Nz": 32,
+        "body_params": {
+            "x_le": 14.0, "chord_offset": 16.0, "chord": 24.0,
+            "m": 0.0, "p": 0.0, "thickness": 0.12,
+            "aoa_deg": 0.0,
+            "span_axis": "y",
+        },
+        "u_in": 0.04,
+        "nu": 0.0096,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "naca0012_aoa5_re100": {
+        "body_type": "naca",
+        "Nx": 96, "Ny": 48, "Nz": 32,
+        "body_params": {
+            "x_le": 14.0, "chord_offset": 16.0, "chord": 24.0,
+            "m": 0.0, "p": 0.0, "thickness": 0.12,
+            "aoa_deg": 5.0,
+            "span_axis": "y",
+        },
+        "u_in": 0.04,
+        "nu": 0.0096,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "naca0012_aoa15_re100": {
+        "body_type": "naca",
+        "Nx": 96, "Ny": 48, "Nz": 32,
+        "body_params": {
+            "x_le": 14.0, "chord_offset": 16.0, "chord": 24.0,
+            "m": 0.0, "p": 0.0, "thickness": 0.12,
+            "aoa_deg": 15.0,
+            "span_axis": "y",
+        },
+        "u_in": 0.04,
+        "nu": 0.0096,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "naca0012_aoa30_re100": {
+        "body_type": "naca",
+        "Nx": 96, "Ny": 48, "Nz": 32,
+        "body_params": {
+            "x_le": 14.0, "chord_offset": 16.0, "chord": 24.0,
+            "m": 0.0, "p": 0.0, "thickness": 0.12,
+            "aoa_deg": 30.0,
+            "span_axis": "y",
+        },
+        "u_in": 0.04,
+        "nu": 0.0096,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "naca4412_aoa-30_re40": {
+        "body_type": "naca",
+        "Nx": 80, "Ny": 40, "Nz": 32,
+        "body_params": {
+            "x_le": 12.0, "chord_offset": 16.0, "chord": 20.0,
+            "m": 0.04, "p": 0.4, "thickness": 0.12,
+            "aoa_deg": -30.0,
+            "span_axis": "y",
+        },
+        "u_in": 0.04,
+        "nu": 0.02,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "naca4412_aoa-15_re40": {
+        "body_type": "naca",
+        "Nx": 80, "Ny": 40, "Nz": 32,
+        "body_params": {
+            "x_le": 12.0, "chord_offset": 16.0, "chord": 20.0,
+            "m": 0.04, "p": 0.4, "thickness": 0.12,
+            "aoa_deg": -15.0,
+            "span_axis": "y",
+        },
+        "u_in": 0.04,
+        "nu": 0.02,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "naca4412_aoa-5_re40": {
+        "body_type": "naca",
+        "Nx": 80, "Ny": 40, "Nz": 32,
+        "body_params": {
+            "x_le": 12.0, "chord_offset": 16.0, "chord": 20.0,
+            "m": 0.04, "p": 0.4, "thickness": 0.12,
+            "aoa_deg": -5.0,
+            "span_axis": "y",
+        },
+        "u_in": 0.04,
+        "nu": 0.02,
         "n_steps": 800,
         "scheme": "trt",
         "use_guo_neem": True,
@@ -260,8 +520,10 @@ PRESETS: dict[str, dict[str, Any]] = {
         "body_type": "naca",
         "Nx": 80, "Ny": 40, "Nz": 32,
         "body_params": {
-            "x_le": 12.0, "y_chord": 20.0, "chord": 20.0,
-            "m": 0.04, "p": 0.40, "thickness": 0.12,
+            "x_le": 12.0, "chord_offset": 16.0, "chord": 20.0,
+            "m": 0.04, "p": 0.4, "thickness": 0.12,
+            "aoa_deg": 0.0,
+            "span_axis": "y",
         },
         "u_in": 0.04,
         "nu": 0.02,
@@ -272,19 +534,14 @@ PRESETS: dict[str, dict[str, Any]] = {
         "rho_outflow": 1.0,
         "outflow_scheme": "regularised",
     },
-    # ---- AoA = 10 deg bakes (2026-05-29) ----------------------------
-    # NACA wings at 10 deg angle of attack. The mask voxeliser tilts the
-    # airfoil about its chord midpoint; the inflow stays horizontal so
-    # the wake develops asymmetrically (upper-surface flow is sucked
-    # downward by the camber + AoA, lower face stagnates harder). Same
-    # n_steps and stability headroom as the AoA = 0 variants.
-    "naca0012_aoa10_re40": {
+    "naca4412_aoa5_re40": {
         "body_type": "naca",
         "Nx": 80, "Ny": 40, "Nz": 32,
         "body_params": {
-            "x_le": 12.0, "y_chord": 20.0, "chord": 20.0,
-            "m": 0.0, "p": 0.0, "thickness": 0.12,
-            "aoa_deg": 10.0,
+            "x_le": 12.0, "chord_offset": 16.0, "chord": 20.0,
+            "m": 0.04, "p": 0.4, "thickness": 0.12,
+            "aoa_deg": 5.0,
+            "span_axis": "y",
         },
         "u_in": 0.04,
         "nu": 0.02,
@@ -295,13 +552,50 @@ PRESETS: dict[str, dict[str, Any]] = {
         "rho_outflow": 1.0,
         "outflow_scheme": "regularised",
     },
-    "naca0012_aoa10_re100": {
+    "naca4412_aoa15_re40": {
+        "body_type": "naca",
+        "Nx": 80, "Ny": 40, "Nz": 32,
+        "body_params": {
+            "x_le": 12.0, "chord_offset": 16.0, "chord": 20.0,
+            "m": 0.04, "p": 0.4, "thickness": 0.12,
+            "aoa_deg": 15.0,
+            "span_axis": "y",
+        },
+        "u_in": 0.04,
+        "nu": 0.02,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "naca4412_aoa30_re40": {
+        "body_type": "naca",
+        "Nx": 80, "Ny": 40, "Nz": 32,
+        "body_params": {
+            "x_le": 12.0, "chord_offset": 16.0, "chord": 20.0,
+            "m": 0.04, "p": 0.4, "thickness": 0.12,
+            "aoa_deg": 30.0,
+            "span_axis": "y",
+        },
+        "u_in": 0.04,
+        "nu": 0.02,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "naca4412_aoa-30_re100": {
         "body_type": "naca",
         "Nx": 96, "Ny": 48, "Nz": 32,
         "body_params": {
-            "x_le": 14.0, "y_chord": 24.0, "chord": 24.0,
-            "m": 0.0, "p": 0.0, "thickness": 0.12,
-            "aoa_deg": 10.0,
+            "x_le": 14.0, "chord_offset": 16.0, "chord": 24.0,
+            "m": 0.04, "p": 0.4, "thickness": 0.12,
+            "aoa_deg": -30.0,
+            "span_axis": "y",
         },
         "u_in": 0.04,
         "nu": 0.0096,
@@ -312,16 +606,17 @@ PRESETS: dict[str, dict[str, Any]] = {
         "rho_outflow": 1.0,
         "outflow_scheme": "regularised",
     },
-    "naca4412_aoa10_re40": {
+    "naca4412_aoa-15_re100": {
         "body_type": "naca",
-        "Nx": 80, "Ny": 40, "Nz": 32,
+        "Nx": 96, "Ny": 48, "Nz": 32,
         "body_params": {
-            "x_le": 12.0, "y_chord": 20.0, "chord": 20.0,
-            "m": 0.04, "p": 0.40, "thickness": 0.12,
-            "aoa_deg": 10.0,
+            "x_le": 14.0, "chord_offset": 16.0, "chord": 24.0,
+            "m": 0.04, "p": 0.4, "thickness": 0.12,
+            "aoa_deg": -15.0,
+            "span_axis": "y",
         },
         "u_in": 0.04,
-        "nu": 0.02,
+        "nu": 0.0096,
         "n_steps": 800,
         "scheme": "trt",
         "use_guo_neem": True,
@@ -329,16 +624,249 @@ PRESETS: dict[str, dict[str, Any]] = {
         "rho_outflow": 1.0,
         "outflow_scheme": "regularised",
     },
-    "naca4412_aoa10_re100": {
+    "naca4412_aoa-5_re100": {
         "body_type": "naca",
         "Nx": 96, "Ny": 48, "Nz": 32,
         "body_params": {
-            "x_le": 14.0, "y_chord": 24.0, "chord": 24.0,
-            "m": 0.04, "p": 0.40, "thickness": 0.12,
-            "aoa_deg": 10.0,
+            "x_le": 14.0, "chord_offset": 16.0, "chord": 24.0,
+            "m": 0.04, "p": 0.4, "thickness": 0.12,
+            "aoa_deg": -5.0,
+            "span_axis": "y",
         },
         "u_in": 0.04,
         "nu": 0.0096,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "naca4412_re100": {
+        "body_type": "naca",
+        "Nx": 96, "Ny": 48, "Nz": 32,
+        "body_params": {
+            "x_le": 14.0, "chord_offset": 16.0, "chord": 24.0,
+            "m": 0.04, "p": 0.4, "thickness": 0.12,
+            "aoa_deg": 0.0,
+            "span_axis": "y",
+        },
+        "u_in": 0.04,
+        "nu": 0.0096,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "naca4412_aoa5_re100": {
+        "body_type": "naca",
+        "Nx": 96, "Ny": 48, "Nz": 32,
+        "body_params": {
+            "x_le": 14.0, "chord_offset": 16.0, "chord": 24.0,
+            "m": 0.04, "p": 0.4, "thickness": 0.12,
+            "aoa_deg": 5.0,
+            "span_axis": "y",
+        },
+        "u_in": 0.04,
+        "nu": 0.0096,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "naca4412_aoa15_re100": {
+        "body_type": "naca",
+        "Nx": 96, "Ny": 48, "Nz": 32,
+        "body_params": {
+            "x_le": 14.0, "chord_offset": 16.0, "chord": 24.0,
+            "m": 0.04, "p": 0.4, "thickness": 0.12,
+            "aoa_deg": 15.0,
+            "span_axis": "y",
+        },
+        "u_in": 0.04,
+        "nu": 0.0096,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "naca4412_aoa30_re100": {
+        "body_type": "naca",
+        "Nx": 96, "Ny": 48, "Nz": 32,
+        "body_params": {
+            "x_le": 14.0, "chord_offset": 16.0, "chord": 24.0,
+            "m": 0.04, "p": 0.4, "thickness": 0.12,
+            "aoa_deg": 30.0,
+            "span_axis": "y",
+        },
+        "u_in": 0.04,
+        "nu": 0.0096,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    # Cube with AoA rotation about the y axis. AoA=0 is the existing
+    # ``cube_re{N}`` preset. AoA=45 reads as the classic 3D diamond
+    # (corners pointing at the flow); 90 deg symmetry means the band
+    # {0, 15, 30, 45} covers every unique orientation.
+    "cube_aoa15_re40": {
+        "body_type": "cube",
+        "Nx": 64, "Ny": 32, "Nz": 32,
+        "body_params": {"cx": 16.0, "cy": 16.0, "cz": 16.0, "half_extent": 7.0, "aoa_deg": 15.0},
+        "u_in": 0.04,
+        "nu": 0.014,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "cube_aoa30_re40": {
+        "body_type": "cube",
+        "Nx": 64, "Ny": 32, "Nz": 32,
+        "body_params": {"cx": 16.0, "cy": 16.0, "cz": 16.0, "half_extent": 7.0, "aoa_deg": 30.0},
+        "u_in": 0.04,
+        "nu": 0.014,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "cube_aoa45_re40": {
+        "body_type": "cube",
+        "Nx": 64, "Ny": 32, "Nz": 32,
+        "body_params": {"cx": 16.0, "cy": 16.0, "cz": 16.0, "half_extent": 7.0, "aoa_deg": 45.0},
+        "u_in": 0.04,
+        "nu": 0.014,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "cube_aoa15_re100": {
+        "body_type": "cube",
+        "Nx": 96, "Ny": 48, "Nz": 48,
+        "body_params": {"cx": 24.0, "cy": 24.0, "cz": 24.0, "half_extent": 9.0, "aoa_deg": 15.0},
+        "u_in": 0.04,
+        "nu": 0.0072,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "cube_aoa30_re100": {
+        "body_type": "cube",
+        "Nx": 96, "Ny": 48, "Nz": 48,
+        "body_params": {"cx": 24.0, "cy": 24.0, "cz": 24.0, "half_extent": 9.0, "aoa_deg": 30.0},
+        "u_in": 0.04,
+        "nu": 0.0072,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "cube_aoa45_re100": {
+        "body_type": "cube",
+        "Nx": 96, "Ny": 48, "Nz": 48,
+        "body_params": {"cx": 24.0, "cy": 24.0, "cz": 24.0, "half_extent": 9.0, "aoa_deg": 45.0},
+        "u_in": 0.04,
+        "nu": 0.0072,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "cube_aoa-15_re40": {
+        "body_type": "cube",
+        "Nx": 64, "Ny": 32, "Nz": 32,
+        "body_params": {"cx": 16.0, "cy": 16.0, "cz": 16.0, "half_extent": 7.0, "aoa_deg": -15.0},
+        "u_in": 0.04,
+        "nu": 0.014,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "cube_aoa-30_re40": {
+        "body_type": "cube",
+        "Nx": 64, "Ny": 32, "Nz": 32,
+        "body_params": {"cx": 16.0, "cy": 16.0, "cz": 16.0, "half_extent": 7.0, "aoa_deg": -30.0},
+        "u_in": 0.04,
+        "nu": 0.014,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "cube_aoa-45_re40": {
+        "body_type": "cube",
+        "Nx": 64, "Ny": 32, "Nz": 32,
+        "body_params": {"cx": 16.0, "cy": 16.0, "cz": 16.0, "half_extent": 7.0, "aoa_deg": -45.0},
+        "u_in": 0.04,
+        "nu": 0.014,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "cube_aoa-15_re100": {
+        "body_type": "cube",
+        "Nx": 96, "Ny": 48, "Nz": 48,
+        "body_params": {"cx": 24.0, "cy": 24.0, "cz": 24.0, "half_extent": 9.0, "aoa_deg": -15.0},
+        "u_in": 0.04,
+        "nu": 0.0072,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "cube_aoa-30_re100": {
+        "body_type": "cube",
+        "Nx": 96, "Ny": 48, "Nz": 48,
+        "body_params": {"cx": 24.0, "cy": 24.0, "cz": 24.0, "half_extent": 9.0, "aoa_deg": -30.0},
+        "u_in": 0.04,
+        "nu": 0.0072,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "cube_aoa-45_re100": {
+        "body_type": "cube",
+        "Nx": 96, "Ny": 48, "Nz": 48,
+        "body_params": {"cx": 24.0, "cy": 24.0, "cz": 24.0, "half_extent": 9.0, "aoa_deg": -45.0},
+        "u_in": 0.04,
+        "nu": 0.0072,
         "n_steps": 800,
         "scheme": "trt",
         "use_guo_neem": True,
@@ -376,30 +904,42 @@ def _build_body(
         wall_links = voxel_wall_links(mask)
         return mask, wall_links
     if body_type == "cube":
-        # Axis-aligned cube. Same voxelised wall-link approach as the
-        # cylinder; the flat cube faces line up exactly with cell
-        # boundaries at integer ``half_extent``, so q is effectively 0.5
-        # everywhere on the surface.
+        # Axis-aligned cube, optionally rotated about the y axis. Same
+        # voxelised wall-link approach as the cylinder; flat faces at
+        # AoA=0 align with cell boundaries; the rotated cube uses
+        # staircase walls.
         cx = float(body_params["cx"])
         cy = float(body_params["cy"])
         cz = float(body_params["cz"])
         h = float(body_params["half_extent"])
-        mask = make_cube_mask(Nx, Ny, Nz, cx, cy, cz, h)
+        aoa_deg = float(body_params.get("aoa_deg", 0.0))
+        mask = make_cube_mask(
+            Nx, Ny, Nz, cx, cy, cz, h, aoa_deg=aoa_deg,
+        )
         wall_links = voxel_wall_links(mask)
         return mask, wall_links
     if body_type == "naca":
-        # NACA 4-digit airfoil extruded along the spanwise z axis.
-        # body_params: x_le, y_chord, chord, m, p, thickness, aoa_deg.
+        # NACA 4-digit airfoil. Default span axis is now ``y`` so the
+        # wing reads as a chord-section extending side-to-side (the
+        # standard aircraft-wing camera angle). Legacy bakes can pin
+        # ``span_axis='z'`` if needed.
         x_le = float(body_params["x_le"])
-        y_chord = float(body_params["y_chord"])
+        # chord_offset is the position of the chord midline along the
+        # cross-section perpendicular axis (z for horizontal wings,
+        # y for legacy vertical wings).
+        chord_offset = float(
+            body_params.get("chord_offset",
+                            body_params.get("y_chord"))
+        )
         chord = float(body_params["chord"])
         m = float(body_params["m"])
         p = float(body_params["p"])
         thickness = float(body_params["thickness"])
         aoa_deg = float(body_params.get("aoa_deg", 0.0))
+        span_axis = str(body_params.get("span_axis", "y"))
         mask = make_naca_mask(
-            Nx, Ny, Nz, x_le, y_chord, chord, m, p, thickness,
-            aoa_deg=aoa_deg,
+            Nx, Ny, Nz, x_le, chord_offset, chord, m, p, thickness,
+            aoa_deg=aoa_deg, span_axis=span_axis,
         )
         wall_links = voxel_wall_links(mask)
         return mask, wall_links

@@ -1124,42 +1124,83 @@ if view == "3D gallery (preview)":
         else:
             shape_for_loader = chosen_shape
             aoa_options = sorted(_shape_aoa_re_map[chosen_shape].keys())
-            aoa_actual = aoa_options[0]
-            # If multiple AoA bands are available the slider below will
-            # pick one; for now seed shape_re_options off the lowest
-            # AoA band so the Re-band setup is valid before the AoA
-            # widget runs.
+            # Default AoA = nearest baked value to 0 (so first-load
+            # state is the "neutral" body orientation, not whatever
+            # extreme AoA happened to come first alphabetically).
+            aoa_actual = min(aoa_options, key=lambda a: abs(a))
             shape_re_options = sorted(
                 _shape_aoa_re_map[chosen_shape][aoa_actual].keys()
             )
             re_actual = shape_re_options[-1]
 
-        # --- AoA slider (only when more than one AoA band is baked) --
-        # For NACA wings we ship AoA = 0 and AoA = 10 deg snapshots; the
-        # slider snaps to whichever band is closest. For non-wing
-        # shapes the body is rotationally symmetric (sphere) or the
-        # tunnel mounts the body at a fixed orientation (cylinder,
-        # cube), so the slider is hidden.
-        if shape_for_loader is not None and len(aoa_options) > 1:
+        # --- AoA slider ----------------------------------------------
+        # Continuous -45 to +45 deg slider with 1 deg increments. Snaps
+        # behind the scenes to the nearest pre-baked AoA in
+        # ``aoa_options``. Sphere is axisymmetric and the spanwise
+        # cylinder is rotationally symmetric about its axis -- the
+        # slider is hidden for those shapes since rotating the body
+        # would not change the flow at all. Cube and wings get the
+        # slider.
+        _aoa_nominal = 0
+        _AOA_SHAPES = ("naca0012", "naca4412", "cube")
+        if (
+            shape_for_loader is not None
+            and chosen_shape in _AOA_SHAPES
+            and len(aoa_options) > 1
+        ):
             st.markdown("")
-            st.markdown(":material/rotate_left: **Angle of attack**")
-            aoa_actual = st.select_slider(
+            st.markdown(
+                ":material/rotate_left: **Angle of attack** "
+                "&nbsp; :gray[(deg)]"
+            )
+            _aoa_state_key = f"gallery_aoa_{chosen_shape}"
+            _aoa_state = st.session_state.get(
+                _aoa_state_key, 0
+            )
+            _aoa_state = int(max(-45, min(45, int(_aoa_state))))
+            _aoa_nominal = st.slider(
                 "Angle of attack (deg)",
-                options=aoa_options,
-                value=aoa_options[0],
-                key=f"gallery_aoa_{chosen_shape}",
+                min_value=-45, max_value=45,
+                value=_aoa_state,
+                step=1,
+                key=_aoa_state_key,
                 label_visibility="collapsed",
                 help=(
-                    "Tilt of the wing's chord line relative to the "
-                    "incoming wind. Higher AoA -> more lift, until the "
-                    "flow separates and the wing stalls."
+                    "Tilt of the body's reference axis relative to "
+                    "the incoming wind. Slider steps by 1 deg and "
+                    "snaps to the nearest pre-baked snapshot "
+                    f"({', '.join(f'{a:+d}' for a in aoa_options)})."
                 ),
             )
-            # Re bands available at this AoA might differ -- recompute.
+            aoa_actual = min(
+                aoa_options, key=lambda a: abs(a - _aoa_nominal)
+            )
+            # Re bands available at the snapped AoA might differ.
             shape_re_options = sorted(
                 _shape_aoa_re_map[chosen_shape][aoa_actual].keys()
             )
             re_actual = shape_re_options[-1]
+            if aoa_actual != _aoa_nominal:
+                st.caption(
+                    f":gray[*{_aoa_nominal:+d}° snapped to baked AoA "
+                    f"= {aoa_actual:+d}°.*]"
+                )
+            else:
+                st.caption(
+                    f":gray[*Showing pre-baked AoA "
+                    f"= {aoa_actual:+d}°.*]"
+                )
+        elif (
+            shape_for_loader is not None
+            and chosen_shape in ("sphere", "cylinder")
+        ):
+            # Read-only note explaining why there's no AoA slider for
+            # symmetric bodies. Keeps the sidebar layout obvious.
+            st.markdown("")
+            st.caption(
+                ":gray[*Body is rotationally symmetric about its "
+                "axis — no angle-of-attack control.*]"
+            )
 
         st.markdown("")
         st.markdown(":material/speed: **Flow speed** &nbsp; :gray[(m/s)]")
@@ -1589,9 +1630,26 @@ if view == "3D gallery (preview)":
             cu_cy = float(bp["cy"])
             cu_cz = float(bp["cz"])
             cu_h = float(bp["half_extent"])
+            # Render at the user's continuous slider value so the cube
+            # tilts smoothly while the underlying flow field snaps to
+            # the nearest baked AoA. Without this the cube appears
+            # motionless until the slider crosses a snap point. The
+            # "snapped to baked AoA" caption keeps the gap honest.
+            cu_aoa = float(_aoa_nominal)
             _vx, _vy, _vz, _ii, _jj, _kk = _closed_box_mesh(
                 cu_cx, cu_cy, cu_cz, cu_h, cu_h, cu_h,
             )
+            if abs(cu_aoa) > 1e-9:
+                # Rotate the cube vertices about the y axis through
+                # the cube centre. Matches the mask-time rotation
+                # convention (positive AoA tilts the +x corner upward
+                # in z).
+                _ang = np.deg2rad(cu_aoa)
+                _cr, _sr = np.cos(_ang), np.sin(_ang)
+                _dx = _vx - cu_cx
+                _dz = _vz - cu_cz
+                _vx = cu_cx + _dx * _cr - _dz * _sr
+                _vz = cu_cz + _dx * _sr + _dz * _cr
             scene_traces.append(
                 go.Mesh3d(
                     x=_vx, y=_vy, z=_vz,
@@ -1610,16 +1668,24 @@ if view == "3D gallery (preview)":
         try:
             from src.lbm_3d_bouzidi import naca_outline
             _x_le = float(bp["x_le"])
-            _y_chord = float(bp["y_chord"])
+            # New bakes use ``chord_offset`` (axis-agnostic name); old
+            # bakes carry the legacy ``y_chord``. Fall back so we read
+            # either, and gracefully degrade if neither is present.
+            _chord_offset = float(
+                bp.get("chord_offset", bp.get("y_chord", 0.0))
+            )
             _chord = float(bp["chord"])
             _m_cam = float(bp.get("m", 0.0))
             _p_cam = float(bp.get("p", 0.0))
             _thk = float(bp["thickness"])
-            _aoa_render = float(bp.get("aoa_deg", 0.0))
-            # Defensive: call naca_outline without the aoa_deg kwarg
-            # so we don't depend on the deployed src/lbm_3d_bouzidi.py
-            # exposing it. Apply the rotation inline (same maths the
-            # bake-time mask uses -- about the chord midpoint).
+            # Same smooth-render rationale as the cube branch above:
+            # the airfoil tilts with the user's continuous slider
+            # value; the flow snaps to the nearest baked AoA.
+            _aoa_render = float(_aoa_nominal)
+            _span_axis = str(bp.get("span_axis", "z"))
+            # Build the un-rotated airfoil profile (chord-normalised),
+            # then rotate inline -- defensive against deployed older
+            # naca_outline that doesn't expose aoa_deg.
             _profile_norm = naca_outline(
                 _m_cam, _p_cam, _thk, n_pts=81,
             )
@@ -1632,17 +1698,39 @@ if view == "3D gallery (preview)":
                     _dxy[:, 0] * _crot - _dxy[:, 1] * _srot,
                     _dxy[:, 0] * _srot + _dxy[:, 1] * _crot,
                 ])
-            # Map from chord-normalised (x/c, y/c) into lattice coords.
-            _profile = np.stack(
-                [
-                    _x_le + _profile_norm[:, 0] * _chord,
-                    _y_chord + _profile_norm[:, 1] * _chord,
-                ],
-                axis=1,
-            )
-            _vx, _vy, _vz, _ii, _jj, _kk = _extruded_polygon_mesh(
-                _profile, 0.0, float(Nz),
-            )
+            if _span_axis == "y":
+                # Horizontal wing: cross-section in (x, z), extrude
+                # along y. The mesh helper treats the polyline as
+                # living in (x, y) and extrudes along z, so we call
+                # it that way and then swap y <-> z on the output so
+                # the airfoil ends up in (x, z) and the span runs in y.
+                _profile = np.stack(
+                    [
+                        _x_le + _profile_norm[:, 0] * _chord,
+                        _chord_offset + _profile_norm[:, 1] * _chord,
+                    ],
+                    axis=1,
+                )
+                _vx, _v_thick, _v_span, _ii, _jj, _kk = (
+                    _extruded_polygon_mesh(_profile, 0.0, float(Ny))
+                )
+                # Helper returned (x, y=airfoil-perpendicular,
+                # z=span). Map (y, z) -> (span, airfoil-perp):
+                _vy = _v_span
+                _vz = _v_thick
+            else:
+                # Legacy vertical wing (span_axis='z'): airfoil in
+                # (x, y), extrude along z.
+                _profile = np.stack(
+                    [
+                        _x_le + _profile_norm[:, 0] * _chord,
+                        _chord_offset + _profile_norm[:, 1] * _chord,
+                    ],
+                    axis=1,
+                )
+                _vx, _vy, _vz, _ii, _jj, _kk = _extruded_polygon_mesh(
+                    _profile, 0.0, float(Nz),
+                )
             scene_traces.append(
                 go.Mesh3d(
                     x=_vx, y=_vy, z=_vz,
