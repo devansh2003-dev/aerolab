@@ -1436,182 +1436,160 @@ if view == "3D gallery (preview)":
 
     from src.baked_fields import list_baked_fields, load_baked_field
 
-    st.markdown("# AeroLab 3D &mdash; *gallery (preview)*")
-    st.caption(
-        "Pre-baked velocity fields, replayed with smoke-particle "
-        "advection. The LBM solver ran offline; this page just streams "
-        "tracers through the saved field. **Cloud-safe**: no live "
-        "kernel compute on the request thread."
-    )
-
     baked_dir = Path("data/baked")
     available = list_baked_fields(baked_dir)
 
     if not available:
-        # Empty-state: tell the user exactly how to populate the gallery.
+        # Empty-state lands on the main page rather than the sidebar
+        # because the sidebar block below requires `available` to be
+        # non-empty.
+        st.markdown("# AeroLab 3D")
         st.info(
-            ":material/info: **No baked presets yet.** Run the bake "
-            "script once to populate `data/baked/`:"
+            ":material/info: **No baked scenes yet.** Populate "
+            "`data/baked/` by running the bake script locally:"
         )
         st.code(
             "python scripts/bake_3d_field.py --preset sphere_re40\n"
             "python scripts/bake_3d_field.py --preset sphere_re100",
             language="bash",
         )
-        st.caption(
-            "The preset registry lives in [scripts/bake_3d_field.py]"
-            "(https://github.com/devansh2003-dev/aerolab/blob/main/"
-            "scripts/bake_3d_field.py). `sphere_re40` bakes in ~12 s "
-            "(steady wake, Guo NEEM outflow); `sphere_re100` in ~45 s "
-            "(higher-Re transient on the regularised outflow). Output "
-            "is a compressed .npz with float16 storage and a SHA-256 "
-            "manifest hash."
-        )
         st.stop()
 
-    # Selector: stem is the preset name, full path is the load target.
+    # All 3D controls live in the sidebar -- mirrors the 2D playground.
+    # The main page below is reserved for the visualisation; no widgets,
+    # no metric strips, no engineering chrome above the fold.
     preset_options = {p.stem: p for p in available}
-    chosen_name = st.selectbox(
-        ":material/auto_awesome: &nbsp; Scene",
-        options=list(preset_options.keys()),
-        index=0,
-        key="gallery_preset_choice",
-        help=(
-            "Pre-baked flow scenes. Each is a steady velocity field "
-            "computed offline by `scripts/bake_3d_field.py`. The "
-            "smoke particles below are advected through the loaded "
-            "field in your browser."
-        ),
-    )
-    field = load_baked_field(preset_options[chosen_name])
-
-    # Engineering chrome (metrics, solver line, Q-criterion controls,
-    # Manifest) is collapsed into an "Engineering details" expander
-    # rendered AFTER the chart. The consumer-facing default view is
-    # title -> scene picker -> animation, nothing else above the fold.
-    # We still compute the values we will need to display below.
-    _Re_est = (
-        float(field.meta.get("u_in", 0.0))
-        * 2.0 * float(field.meta.get("body_params", {}).get("R", 0.0))
-        / max(float(field.meta.get("nu", 1.0)), 1e-9)
-    )
-    _solver = field.meta.get("solver_diag", {})
-
-    # Particle pool: heavier than the dev-bench because there is no
-    # compute pressure -- the kernel already ran.
-    from src.lbm_3d_smoke_particles import (
-        seed_inflow_particles,
-        step_smoke,
-        trilerp_3d,
-    )
-
-    n_y_rows = max(5, field.Ny // 3)
-    n_z_rows = max(5, field.Nz // 3)
-    y_rows = np.linspace(2.0, field.Ny - 3.0, n_y_rows)
-    z_rows = np.linspace(2.0, field.Nz - 3.0, n_z_rows)
-
-    rng_smoke = np.random.default_rng(7)
-    px = np.empty(0, dtype=np.float64)
-    py = np.empty(0, dtype=np.float64)
-    pz = np.empty(0, dtype=np.float64)
-    age = np.empty(0, dtype=np.int32)
-
-    u_in_meta = float(field.meta.get("u_in", 0.05))
-    # IMPORTANT: dt must scale with u_in so particles actually cross
-    # the domain in the render budget. ``step_smoke``'s ``dt`` is the
-    # advection time PER FRAME -- at u_in = 0.04 and dt = 1.0 a
-    # particle moves 0.04 cells per frame, so a 64-cell domain takes
-    # 1600 frames to cross. The fix: pick dt so a particle at u_in
-    # covers ~1 cell per frame.
-    target_cross_frames = max(40, field.Nx)
-    dt_per_frame = field.Nx / float(target_cross_frames * max(u_in_meta, 1e-6))
-    n_frames = max(int(1.4 * target_cross_frames), 90)
-    # ~5000 steady-state particles -- enough density to read as smoke,
-    # comfortable for Plotly Scatter3d's WebGL pipeline.
-    n_per_row = 1
-    max_age = int(1.6 * target_cross_frames)
-
-    # Capture snapshots for the animation. Keyframes: ~28 frames of
-    # the advection, ~12 fps playback -> 2.3 s loop. Enough to see the
-    # smoke leave the inflow column, drift through the domain, deflect
-    # around the body, and exit at the outflow. The first snapshot is
-    # captured AFTER target_cross_frames // 4 frames so the smoke is
-    # already partway across the domain when the animation starts --
-    # nothing more boring than watching an empty channel fill.
-    n_keyframes = 28
-    warmup_frames = target_cross_frames // 4
-    snapshot_stride = max(1, (n_frames - warmup_frames) // n_keyframes)
-    snapshots = []                            # list of (px, py, pz, speeds)
-    for i in range(n_frames):
-        seed = seed_inflow_particles(
-            n_per_row=n_per_row,
-            y_rows=y_rows,
-            z_rows=z_rows,
-            x=2.0,
-            rng=rng_smoke,
-        )
-        px, py, pz, age = step_smoke(
-            px, py, pz, age,
-            field.ux, field.uy, field.uz,
-            body_mask=field.body,
-            dt=dt_per_frame,
-            n_substeps=4,
-            max_age=max_age,
-            inflow_seed_xyz=seed,
-        )
-        if i >= warmup_frames and (
-            (i - warmup_frames) % snapshot_stride == 0
-            or i == n_frames - 1
-        ):
-            snap_speeds = trilerp_3d(field.ux, px, py, pz)
-            snapshots.append(
-                (px.copy(), py.copy(), pz.copy(), snap_speeds.copy())
-            )
-
-    # Final (post-warmup, fully-developed) snapshot is what we show
-    # initially; the slider scrubs back into earlier transient states.
-    px, py, pz, speeds = snapshots[-1]
-
-    # Q-criterion state is READ here (so the chart below can render with
-    # the right setting on the first pass) and the widgets that WRITE
-    # this state live in the engineering-details expander at the bottom
-    # of the block. Streamlit's session_state bridges the two: when the
-    # user toggles Q in the expander, the script reruns, and these
-    # reads return the new value before the chart is rebuilt.
-    show_q = st.session_state.get("show_q_gallery", False)
-    q_level_pct = st.session_state.get("q_level_pct_gallery", 10)
-
-    # Build the 3D scene. Large translucent markers (size 5.5,
-    # opacity 0.35) read as a smoke cloud rather than a constellation
-    # of dots -- the reviewer note from 2026-05-29 was that the prior
-    # size 2.4 + opacity 0.78 combo looked like scientific debug
-    # output, not wind-tunnel smoke. Lowering opacity is the key: a
-    # 10 k-particle field at 0.35 layered translucency reads as
-    # volumetric, while the same field at 0.78 reads as discrete points.
-    scene_traces = [
-        go.Scatter3d(
-            x=px, y=py, z=pz,
-            mode="markers",
-            name="smoke",
-            marker=dict(
-                size=5.5,
-                color=speeds,
-                colorscale="Plasma",
-                cmin=0.0,
-                cmax=u_in_meta * 1.6,
-                colorbar=dict(
-                    title="u<sub>x</sub>",
-                    thickness=10,
-                    len=0.45,
-                    x=1.02, xanchor="left",
-                ),
-                opacity=0.35,
-                line=dict(width=0),
+    with st.sidebar:
+        st.markdown("### :material/auto_awesome: &nbsp; 3D scene")
+        chosen_name = st.selectbox(
+            "Scene",
+            options=list(preset_options.keys()),
+            index=0,
+            key="gallery_preset_choice",
+            label_visibility="collapsed",
+            help=(
+                "Pre-baked steady velocity fields. More scenes appear "
+                "here automatically -- bake them with "
+                "`scripts/bake_3d_field.py`."
             ),
+        )
+        st.divider()
+        st.markdown("### :material/air: &nbsp; Streamlines")
+        n_seeds = st.slider(
+            "Density",
+            min_value=8, max_value=48, value=24,
+            key="n_seeds_gallery",
+            help=(
+                "Number of streamlines released at the inflow plane. "
+                "Higher = denser smoke field but slower render."
+            ),
+        )
+        tube_thickness = st.slider(
+            "Thickness",
+            min_value=0.2, max_value=1.5, value=0.7, step=0.1,
+            key="tube_thickness_gallery",
+            help=(
+                "Visual width of each streamline ribbon. Lower for "
+                "delicate filaments, higher for a denser look."
+            ),
+        )
+        st.divider()
+        st.markdown("### :material/visibility: &nbsp; Overlays")
+        show_sphere = st.checkbox(
+            "Body (sphere)", value=True, key="show_body_gallery",
+        )
+        show_box = st.checkbox(
+            "Wind-tunnel chamber outline", value=True,
+            key="show_box_gallery",
+        )
+        show_q = st.checkbox(
+            "Q-criterion vortex shell", value=False,
+            key="show_q_gallery",
+            help=(
+                "Q = (1/2)(|Ω|² - |S|²); positive Q means rotation "
+                "dominates strain. The shell carves out where the "
+                "flow swirls."
+            ),
+        )
+        q_level_pct = st.slider(
+            "Q threshold (% of max)",
+            min_value=1, max_value=50, value=10,
+            key="q_level_pct_gallery",
+            disabled=not show_q,
+        )
+
+    field = load_baked_field(preset_options[chosen_name])
+    u_in_meta = float(field.meta.get("u_in", 0.05))
+    Nx, Ny, Nz = field.Nx, field.Ny, field.Nz
+
+    # --- Main page: title + one-line caption + the visualisation. -----
+    st.markdown(
+        f"# AeroLab 3D &nbsp;<span style='color:#64748b;font-weight:400;"
+        f"font-size:0.55em;letter-spacing:0.04em;text-transform:uppercase;'>"
+        f"&middot; {chosen_name}</span>",
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Streamlines through a steady velocity field. The chamber and "
+        "the body stay fixed; the ribbons trace how the air wraps "
+        "around the obstacle. Drag to rotate, scroll to zoom."
+    )
+
+    # --- Streamtube construction --------------------------------------
+    # go.Streamtube takes the velocity field on a regular grid plus
+    # seed positions; each tube traces the path a tracer would follow
+    # from its seed under the steady velocity field. This is the
+    # "wind-tunnel smoke" look: translucent ribbons that visualise
+    # the flow structure, not animated particles. Static, but the
+    # streamlines themselves communicate motion spatially.
+    _gx = np.arange(Nx, dtype=np.float32)
+    _gy = np.arange(Ny, dtype=np.float32)
+    _gz = np.arange(Nz, dtype=np.float32)
+    _X, _Y, _Z = np.meshgrid(_gx, _gy, _gz, indexing="ij")
+
+    # Seed positions on the inflow plane (x = 2 cells from the inlet).
+    # Spaced as a regular grid in (y, z) with density set by the
+    # sidebar slider. Aspect-ratio-aware so the grid isn't squashed
+    # for non-square cross-sections.
+    aspect = max(Nz / max(Ny, 1), 1e-3)
+    n_y_seeds = max(2, int(round((n_seeds / aspect) ** 0.5)))
+    n_z_seeds = max(2, int(round(n_seeds / n_y_seeds)))
+    sy = np.linspace(3.0, float(Ny) - 4.0, n_y_seeds)
+    sz = np.linspace(3.0, float(Nz) - 4.0, n_z_seeds)
+    _SY, _SZ = np.meshgrid(sy, sz)
+    seeds_x = np.full(_SY.size, 2.0, dtype=np.float32)
+    seeds_y = _SY.flatten().astype(np.float32)
+    seeds_z = _SZ.flatten().astype(np.float32)
+
+    scene_traces = [
+        go.Streamtube(
+            x=_X.flatten(),
+            y=_Y.flatten(),
+            z=_Z.flatten(),
+            u=field.ux.flatten(),
+            v=field.uy.flatten(),
+            w=field.uz.flatten(),
+            starts=dict(x=seeds_x, y=seeds_y, z=seeds_z),
+            sizeref=float(tube_thickness),
+            colorscale="Plasma",
+            cmin=0.0, cmax=u_in_meta * 1.6,
+            showscale=True,
+            colorbar=dict(
+                title="speed",
+                thickness=10, len=0.45,
+                x=1.02, xanchor="left",
+            ),
+            opacity=0.88,
+            lighting=dict(
+                ambient=0.55, diffuse=0.7, specular=0.25,
+                roughness=0.4,
+            ),
+            name="streamlines",
             hoverinfo="skip",
         )
     ]
 
+    # Q-criterion shell (optional, controlled from sidebar).
     if show_q:
         from src.lbm_3d_qcriterion import compute_q_field, extract_q_isosurface
         Q = compute_q_field(field.ux, field.uy, field.uz, body=field.body)
@@ -1625,36 +1603,23 @@ if view == "3D gallery (preview)":
                     go.Mesh3d(
                         x=verts[:, 0], y=verts[:, 1], z=verts[:, 2],
                         i=faces[:, 0], j=faces[:, 1], k=faces[:, 2],
-                        color="#22d3ee",
-                        opacity=0.32,
-                        name=f"Q = {level:.2e}",
+                        color="#22d3ee", opacity=0.32,
                         flatshading=False,
+                        name="Q shell",
                         hoverinfo="name",
                     )
                 )
-            else:
-                st.caption(
-                    f":material/info: No Q ≥ {level:.2e} region. "
-                    f"Try a lower threshold."
-                )
-        else:
-            st.caption(
-                ":material/info: Q ≤ 0 everywhere -- this field has "
-                "no vortex structure (Re may be too low to develop one)."
-            )
 
-    # Sphere overlay (if the preset is a sphere body).
+    # Sphere overlay (controlled from sidebar). Studio-lit gradient
+    # surface with fresnel rim for a solid-object look.
     body_type = str(field.meta.get("body_type", ""))
-    if body_type == "sphere":
+    if show_sphere and body_type == "sphere":
         bp = field.meta.get("body_params", {})
         try:
             sphere_cx = float(bp["cx"])
             sphere_cy = float(bp["cy"])
             sphere_cz = float(bp["cz"])
             sphere_R = float(bp["R"])
-        except (KeyError, ValueError, TypeError):
-            sphere_cx = sphere_cy = sphere_cz = sphere_R = None
-        if sphere_R is not None:
             _theta = np.linspace(0.0, 2.0 * np.pi, 33)
             _phi = np.linspace(0.0, np.pi, 17)
             _T, _P = np.meshgrid(_theta, _phi)
@@ -1665,12 +1630,11 @@ if view == "3D gallery (preview)":
                 go.Surface(
                     x=sph_x, y=sph_y, z=sph_z,
                     showscale=False,
-                    # Subtle z-gradient (darker bottom, lighter top)
-                    # reads as a studio-lit matte sphere instead of the
-                    # flat grey blob it was. Combined with the lighting
-                    # block below this produces highlight + fresnel
-                    # edge glow without needing a real PBR shader.
-                    colorscale=[[0, "#64748b"], [0.5, "#cbd5e1"], [1, "#f1f5f9"]],
+                    colorscale=[
+                        [0, "#64748b"],
+                        [0.5, "#cbd5e1"],
+                        [1, "#f1f5f9"],
+                    ],
                     opacity=1.0,
                     lighting=dict(
                         ambient=0.42, diffuse=0.85,
@@ -1678,227 +1642,93 @@ if view == "3D gallery (preview)":
                         fresnel=0.45,
                     ),
                     lightposition=dict(x=2000, y=2500, z=1500),
-                    name="sphere",
-                    hoverinfo="skip",
+                    name="sphere", hoverinfo="skip",
                 )
             )
+        except (KeyError, ValueError, TypeError):
+            pass
 
-    # Wireframe box around the simulation domain -- reads as a
-    # "wind tunnel chamber" outline so the smoke + body don't float
-    # in empty space. 12 edges of an axis-aligned box drawn as a
-    # single Scatter3d in lines mode (with None-separated segments).
-    _bx0, _by0, _bz0 = 0.0, 0.0, 0.0
-    _bx1, _by1, _bz1 = float(field.Nx), float(field.Ny), float(field.Nz)
-    _box_pts = [
-        # Bottom face (z=z0)
-        (_bx0, _by0, _bz0), (_bx1, _by0, _bz0), (_bx1, _by1, _bz0), (_bx0, _by1, _bz0), (_bx0, _by0, _bz0),
-        (None, None, None),
-        # Top face (z=z1)
-        (_bx0, _by0, _bz1), (_bx1, _by0, _bz1), (_bx1, _by1, _bz1), (_bx0, _by1, _bz1), (_bx0, _by0, _bz1),
-        (None, None, None),
-        # Four vertical edges
-        (_bx0, _by0, _bz0), (_bx0, _by0, _bz1),
-        (None, None, None),
-        (_bx1, _by0, _bz0), (_bx1, _by0, _bz1),
-        (None, None, None),
-        (_bx1, _by1, _bz0), (_bx1, _by1, _bz1),
-        (None, None, None),
-        (_bx0, _by1, _bz0), (_bx0, _by1, _bz1),
-    ]
-    scene_traces.append(
-        go.Scatter3d(
-            x=[p[0] for p in _box_pts],
-            y=[p[1] for p in _box_pts],
-            z=[p[2] for p in _box_pts],
-            mode="lines",
-            line=dict(color="#475569", width=2),
-            opacity=0.55,
-            name="tunnel",
-            hoverinfo="skip",
-            showlegend=False,
-        )
-    )
-
-    # Build the per-snapshot frames. The smoke Scatter3d is trace 0
-    # in ``scene_traces``; every frame overrides just that trace via
-    # ``traces=[0]``, leaving sphere + Q-criterion (static across
-    # time, since the velocity field is steady) untouched.
-    smoke_marker_template = dict(
-        size=5.5,
-        colorscale="Plasma",
-        cmin=0.0,
-        cmax=u_in_meta * 1.6,
-        opacity=0.35,
-        line=dict(width=0),
-        colorbar=dict(
-            title="u<sub>x</sub>",
-            thickness=10,
-            len=0.45,
-            x=1.02, xanchor="left",
-        ),
-    )
-    frames = []
-    for k, (snap_px, snap_py, snap_pz, snap_sp) in enumerate(snapshots):
-        frame_marker = dict(smoke_marker_template)
-        frame_marker["color"] = snap_sp
-        frames.append(
-            go.Frame(
-                data=[
-                    go.Scatter3d(
-                        x=snap_px, y=snap_py, z=snap_pz,
-                        mode="markers",
-                        marker=frame_marker,
-                        name="smoke",
-                    )
-                ],
-                name=str(k),
-                traces=[0],
+    # Wireframe box: 12 edges of the simulation domain as a single
+    # Scatter3d in lines mode (None-separated segments).
+    if show_box:
+        _bx1, _by1, _bz1 = float(Nx), float(Ny), float(Nz)
+        _box_pts = [
+            (0.0, 0.0, 0.0), (_bx1, 0.0, 0.0), (_bx1, _by1, 0.0), (0.0, _by1, 0.0), (0.0, 0.0, 0.0),
+            (None, None, None),
+            (0.0, 0.0, _bz1), (_bx1, 0.0, _bz1), (_bx1, _by1, _bz1), (0.0, _by1, _bz1), (0.0, 0.0, _bz1),
+            (None, None, None),
+            (0.0, 0.0, 0.0), (0.0, 0.0, _bz1),
+            (None, None, None),
+            (_bx1, 0.0, 0.0), (_bx1, 0.0, _bz1),
+            (None, None, None),
+            (_bx1, _by1, 0.0), (_bx1, _by1, _bz1),
+            (None, None, None),
+            (0.0, _by1, 0.0), (0.0, _by1, _bz1),
+        ]
+        scene_traces.append(
+            go.Scatter3d(
+                x=[p[0] for p in _box_pts],
+                y=[p[1] for p in _box_pts],
+                z=[p[2] for p in _box_pts],
+                mode="lines",
+                line=dict(color="#475569", width=2),
+                opacity=0.55, name="tunnel",
+                hoverinfo="skip", showlegend=False,
             )
         )
 
-    # Auto-play setup. The slider step labels are short integer indices
-    # so the layout doesn't blow up. duration=70 ms gives ~14 fps.
-    slider_steps = [
-        dict(
-            method="animate",
-            args=[[str(k)], dict(
-                mode="immediate",
-                frame=dict(duration=0, redraw=True),
-                transition=dict(duration=0),
-            )],
-            label=str(k),
-        )
-        for k in range(len(frames))
-    ]
-
-    fig = go.Figure(data=scene_traces, frames=frames)
+    fig = go.Figure(data=scene_traces)
     fig.update_layout(
         scene=dict(
-            xaxis=dict(title="x (streamwise)", range=[0, field.Nx]),
-            yaxis=dict(title="y (wall-normal)", range=[0, field.Ny]),
-            zaxis=dict(title="z (spanwise)", range=[0, field.Nz]),
+            xaxis=dict(title="x", range=[0, Nx], showgrid=False, showbackground=False),
+            yaxis=dict(title="y", range=[0, Ny], showgrid=False, showbackground=False),
+            zaxis=dict(title="z", range=[0, Nz], showgrid=False, showbackground=False),
             aspectmode="data",
             bgcolor="#0a0a0a",
             camera=dict(eye=dict(x=1.5, y=1.15, z=0.9)),
         ),
-        height=580,
-        margin=dict(l=0, r=0, t=10, b=60),
+        height=640,
+        margin=dict(l=0, r=0, t=10, b=10),
         paper_bgcolor="#0a0a0a",
-        updatemenus=[dict(
-            type="buttons",
-            direction="left",
-            x=0.02, y=-0.04, xanchor="left", yanchor="top",
-            pad=dict(t=6, r=6, b=6, l=6),
-            bgcolor="rgba(15,23,42,0.85)",
-            bordercolor="#334155",
-            font=dict(color="#e2e8f0", size=12),
-            buttons=[
-                dict(
-                    label="▶  Play",
-                    method="animate",
-                    args=[None, dict(
-                        mode="immediate",
-                        frame=dict(duration=70, redraw=True),
-                        transition=dict(duration=0),
-                        fromcurrent=True,
-                        loop=True,
-                    )],
-                ),
-                dict(
-                    label="⏸  Pause",
-                    method="animate",
-                    args=[[None], dict(
-                        mode="immediate",
-                        frame=dict(duration=0, redraw=False),
-                        transition=dict(duration=0),
-                    )],
-                ),
-            ],
-        )],
-        sliders=[dict(
-            active=len(frames) - 1,                 # start on the developed snapshot
-            x=0.14, y=-0.04, len=0.82,
-            xanchor="left", yanchor="top",
-            pad=dict(t=6, b=0),
-            bgcolor="rgba(15,23,42,0.7)",
-            bordercolor="#334155",
-            activebgcolor="#22d3ee",
-            font=dict(color="#94a3b8", size=10),
-            currentvalue=dict(
-                visible=True, prefix="frame ",
-                font=dict(color="#e2e8f0", size=11),
-            ),
-            steps=slider_steps,
-        )],
+        showlegend=False,
     )
     st.plotly_chart(fig, width="stretch")
-    st.caption(
-        f"Click **▶ Play** to watch the smoke develop; drag the slider "
-        f"to scrub through the {len(snapshots)} keyframes. Drag the "
-        f"scene with the mouse to rotate, scroll to zoom -- the box "
-        f"and sphere stay fixed; only the smoke moves."
-    )
 
-    # Engineering details: everything the curious-but-CFD-literate
-    # visitor wants, collapsed by default so the consumer-facing view
-    # stays a clean "title -> picker -> animation -> caption" strip.
-    # The Q-criterion widgets here WRITE to st.session_state under the
-    # keys the chart-build code at the top of this block READ at the
-    # start of the run; toggling Q triggers a Streamlit rerun, which
-    # picks up the new session_state value before rebuilding the figure.
+    # Engineering details: collapsed, on the main page, below the
+    # chart. Read-only display of metadata; all interactive controls
+    # already live in the sidebar.
+    _Re_est = (
+        u_in_meta * 2.0 * float(field.meta.get("body_params", {}).get("R", 0.0))
+        / max(float(field.meta.get("nu", 1.0)), 1e-9)
+    )
+    _solver = field.meta.get("solver_diag", {})
+    _scheme = str(field.meta.get("scheme", "?")).upper()
+    _outflow = str(field.meta.get("outflow_scheme", "guo"))
+    _n_steps = int(field.meta.get("n_steps", 0))
     with st.expander(
         ":material/tune: &nbsp; **Engineering details**",
         expanded=False,
     ):
-        _Re_disp = _Re_est
-        _scheme = str(field.meta.get("scheme", "?")).upper()
-        _outflow = str(field.meta.get("outflow_scheme", "guo"))
-        _n_steps = int(field.meta.get("n_steps", 0))
         st.caption(
             f"*Solver: {_scheme} collision, "
             f"{'Bouzidi' if field.meta.get('use_bouzidi') else 'half-way BB'} "
             f"wall BC, {_outflow} outflow, {_n_steps} steps.*"
         )
         diag_cols = st.columns(4)
-        diag_cols[0].metric(
-            "Grid", f"{field.Nx} × {field.Ny} × {field.Nz}"
-        )
+        diag_cols[0].metric("Grid", f"{Nx} × {Ny} × {Nz}")
         diag_cols[1].metric(
-            "Re (approx)", f"{_Re_disp:.0f}",
-            help="u_in · D / nu, using sphere diameter D = 2R from the "
-                 "preset's body params.",
+            "Re (approx)", f"{_Re_est:.0f}",
+            help="u_in · D / nu, using sphere diameter D = 2R from "
+                 "the preset's body params.",
         )
         diag_cols[2].metric(
             "Mass drift", f"{_solver.get('mass_drift_rel', 0):.2%}",
-            help="Mass change between the simulation's first and last "
-                 "step. Small drift means the boundary conditions are "
-                 "well-balanced.",
+            help="Mass change between the simulation's first and last step.",
         )
         diag_cols[3].metric(
             "Peak u_x", f"{_solver.get('u_peak', 0):.4f}",
-            help="Maximum streamwise velocity in the domain (lattice "
-                 "units).",
+            help="Maximum streamwise velocity (lattice units).",
         )
-        st.markdown("##### Q-criterion vortex shell")
-        q_col1, q_col2 = st.columns([1, 3])
-        with q_col1:
-            st.checkbox(
-                "Show shell",
-                value=show_q,
-                key="show_q_gallery",
-                help=(
-                    "Render the Q = level isosurface around vortex tubes "
-                    "in the wake. Q = (1/2)(|Ω|² - |S|²); positive Q "
-                    "means rotation dominates strain. The shell carves "
-                    "out where the flow swirls."
-                ),
-            )
-        with q_col2:
-            st.slider(
-                "Q threshold (% of max)", 1, 50, q_level_pct,
-                key="q_level_pct_gallery",
-                disabled=not show_q,
-            )
         st.markdown("##### Manifest")
         st.caption(
             f"Preset hash: `{field.meta.get('hash', '?')[:16]}...` "
@@ -1910,9 +1740,7 @@ if view == "3D gallery (preview)":
             "Source: [src/baked_fields.py](https://github.com/devansh2003-dev/"
             "aerolab/blob/main/src/baked_fields.py), "
             "[scripts/bake_3d_field.py](https://github.com/devansh2003-dev/"
-            "aerolab/blob/main/scripts/bake_3d_field.py) &middot; "
-            "Tests: [tests/test_baked_fields.py](https://github.com/"
-            "devansh2003-dev/aerolab/blob/main/tests/test_baked_fields.py)"
+            "aerolab/blob/main/scripts/bake_3d_field.py)"
         )
     st.stop()
 
