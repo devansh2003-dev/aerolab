@@ -145,6 +145,37 @@ def make_sphere_mask(
     return ((xs - cx) ** 2 + (ys - cy) ** 2 + (zs - cz) ** 2) <= R * R
 
 
+def make_cylinder_mask(
+    Nx: int, Ny: int, Nz: int,
+    cx: float, cy: float,
+    R: float,
+) -> np.ndarray:
+    """Boolean solid mask for a cylinder spanning the z direction.
+
+    Centred at (cx, cy) in the (x, y) plane, radius R, spans the
+    full z extent of the domain (z is the spanwise axis for the
+    standard wind-tunnel orientation). Cells inside the circle in
+    every (x, y) slice are solid:
+
+        (xs - cx) ** 2 + (ys - cy) ** 2 <= R ** 2
+
+    independent of z. The 3D extrude of the validated 2D cylinder --
+    same wake physics (steady recirculation, then von Karman
+    shedding above Re ~ 47) but with z-direction perturbations now
+    physically representable.
+
+    Returns
+    -------
+    mask : (Nx, Ny, Nz) bool ndarray
+        True where the cell is solid.
+    """
+    xs = np.arange(Nx)[:, None, None]
+    ys = np.arange(Ny)[None, :, None]
+    in_circle_2d = (xs - cx) ** 2 + (ys - cy) ** 2 <= R * R
+    # Broadcast the (Nx, Ny, 1) 2D circle across the full z range.
+    return np.broadcast_to(in_circle_2d, (Nx, Ny, Nz)).copy()
+
+
 def sphere_wall_links(
     Nx: int, Ny: int, Nz: int,
     cx: float, cy: float, cz: float,
@@ -667,6 +698,7 @@ def apply_bouzidi_correction_trt(
 
 __all__ = [
     "WallLinkList",
+    "make_cylinder_mask",
     "solve_bouzidi_q",
     "make_sphere_mask",
     "sphere_wall_links",

@@ -1496,7 +1496,11 @@ if view == "3D gallery (preview)":
         st.divider()
         st.markdown("### :material/visibility: &nbsp; Overlays")
         show_sphere = st.checkbox(
-            "Body (sphere)", value=True, key="show_body_gallery",
+            "Body", value=True, key="show_body_gallery",
+            help=(
+                "Render the solid obstacle (sphere or cylinder, "
+                "depending on the scene)."
+            ),
         )
         show_box = st.checkbox(
             "Wind-tunnel chamber outline", value=True,
@@ -1610,8 +1614,22 @@ if view == "3D gallery (preview)":
                     )
                 )
 
-    # Sphere overlay (controlled from sidebar). Studio-lit gradient
-    # surface with fresnel rim for a solid-object look.
+    # Body overlay (controlled from sidebar). Both sphere and
+    # spanwise-cylinder presets render as studio-lit gradient surfaces
+    # with fresnel rim for a solid-object look. Shared lighting +
+    # colorscale block defined once below so the two surfaces look
+    # like the same material under the same lights.
+    _body_colorscale = [
+        [0, "#64748b"],
+        [0.5, "#cbd5e1"],
+        [1, "#f1f5f9"],
+    ]
+    _body_lighting = dict(
+        ambient=0.42, diffuse=0.85,
+        specular=0.55, roughness=0.28,
+        fresnel=0.45,
+    )
+    _body_lightpos = dict(x=2000, y=2500, z=1500)
     body_type = str(field.meta.get("body_type", ""))
     if show_sphere and body_type == "sphere":
         bp = field.meta.get("body_params", {})
@@ -1630,19 +1648,39 @@ if view == "3D gallery (preview)":
                 go.Surface(
                     x=sph_x, y=sph_y, z=sph_z,
                     showscale=False,
-                    colorscale=[
-                        [0, "#64748b"],
-                        [0.5, "#cbd5e1"],
-                        [1, "#f1f5f9"],
-                    ],
+                    colorscale=_body_colorscale,
                     opacity=1.0,
-                    lighting=dict(
-                        ambient=0.42, diffuse=0.85,
-                        specular=0.55, roughness=0.28,
-                        fresnel=0.45,
-                    ),
-                    lightposition=dict(x=2000, y=2500, z=1500),
+                    lighting=_body_lighting,
+                    lightposition=_body_lightpos,
                     name="sphere", hoverinfo="skip",
+                )
+            )
+        except (KeyError, ValueError, TypeError):
+            pass
+    elif show_sphere and body_type == "cylinder":
+        bp = field.meta.get("body_params", {})
+        try:
+            cyl_cx = float(bp["cx"])
+            cyl_cy = float(bp["cy"])
+            cyl_R = float(bp["R"])
+            # Parametric cylinder surface: (theta, z) grid. Spans the
+            # full z-extent of the domain so the end caps coincide
+            # with the chamber boundary -- no visible cap needed.
+            _theta = np.linspace(0.0, 2.0 * np.pi, 49)
+            _zs = np.linspace(0.0, float(Nz), 21)
+            _T, _ZG = np.meshgrid(_theta, _zs)
+            cyl_x = cyl_cx + cyl_R * np.cos(_T)
+            cyl_y = cyl_cy + cyl_R * np.sin(_T)
+            cyl_z = _ZG
+            scene_traces.append(
+                go.Surface(
+                    x=cyl_x, y=cyl_y, z=cyl_z,
+                    showscale=False,
+                    colorscale=_body_colorscale,
+                    opacity=1.0,
+                    lighting=_body_lighting,
+                    lightposition=_body_lightpos,
+                    name="cylinder", hoverinfo="skip",
                 )
             )
         except (KeyError, ValueError, TypeError):

@@ -55,8 +55,13 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from src.baked_fields import save_baked_field  # noqa: E402
-from src.lbm_3d_bouzidi import make_sphere_mask, sphere_wall_links  # noqa: E402
+from src.lbm_3d_bouzidi import (  # noqa: E402
+    make_cylinder_mask,
+    make_sphere_mask,
+    sphere_wall_links,
+)
 from src.lbm_3d_trt import run_channel_smoke_trt  # noqa: E402
+from src.voxelize import voxel_wall_links  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Preset registry
@@ -110,6 +115,31 @@ PRESETS: dict[str, dict[str, Any]] = {
         "rho_outflow": 1.0,
         "outflow_scheme": "regularised",
     },
+    # cylinder_re100: 3D extrude of the validated 2D cylinder along
+    # the spanwise (z) axis. Wake should be the classic steady twin
+    # vortices below Re~47 and onset of von Karman shedding above --
+    # at Re=100 the shedding is mature in 2D. In 3D the same Re=100
+    # is just past the onset of 3D wake instabilities (mode A around
+    # Re=190 per Williamson 1996), so this scene shows the upstream
+    # span-coherent wake -- visually the cleanest 3D cylinder shot.
+    # Wall links use the smoothed-mask q approach from voxelize.py
+    # because the analytic cylinder q hasn't been derived yet -- the
+    # voxel approach is good to ~0.05 voxel accuracy, plenty for viz.
+    "cylinder_re100": {
+        "body_type": "cylinder",
+        "Nx": 96, "Ny": 48, "Nz": 48,
+        # Cylinder centre at (24, 24) in (x, y), radius 6, spans full z.
+        # D = 12, blockage = D/Ny = 0.25 (matches sphere_re100).
+        "body_params": {"cx": 24.0, "cy": 24.0, "R": 6.0},
+        "u_in": 0.04,
+        "nu": 0.0048,                    # Re = 0.04 * 12 / 0.0048 = 100
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
 }
 
 
@@ -126,6 +156,18 @@ def _build_body(
         R = float(body_params["R"])
         mask = make_sphere_mask(Nx, Ny, Nz, cx, cy, cz, R)
         wall_links = sphere_wall_links(Nx, Ny, Nz, cx, cy, cz, R)
+        return mask, wall_links
+    if body_type == "cylinder":
+        # Spanwise cylinder along z. Wall links via the smoothed-mask
+        # approach (voxelize.voxel_wall_links) -- accurate to ~0.05
+        # voxels, no analytic q derivation required. The mask is
+        # binary so the Gaussian smooth picks up the cylinder surface
+        # cleanly.
+        cx = float(body_params["cx"])
+        cy = float(body_params["cy"])
+        R = float(body_params["R"])
+        mask = make_cylinder_mask(Nx, Ny, Nz, cx, cy, R)
+        wall_links = voxel_wall_links(mask)
         return mask, wall_links
     raise ValueError(f"unknown body_type: {body_type!r}")
 
