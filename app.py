@@ -839,15 +839,22 @@ if view == "3D gallery (preview)":
     # Build {shape: {Re: path}} from filename pattern "{shape}_re{N}".
     # The Flow speed slider maps a continuous velocity (m/s) to the
     # nearest pre-baked Re band for the chosen shape.
-    import re as _re_lib
+    # Use rfind('_re') instead of a letters-only regex so shape names
+    # that include digits (e.g. "naca0012", "naca4412") are recognised
+    # -- otherwise the wing bakes get silently skipped and never reach
+    # the selectbox.
     _shape_re_map: dict[str, dict[int, Path]] = {}
     for _stem, _path in preset_options.items():
-        m = _re_lib.match(r"^(?P<shape>[a-zA-Z]+)_re(?P<Re>\d+)$", _stem)
-        if not m:
+        _i = _stem.rfind("_re")
+        if _i <= 0:
             continue
-        _shape = m.group("shape").lower()
-        _Re_val = int(m.group("Re"))
-        _shape_re_map.setdefault(_shape, {})[_Re_val] = _path
+        _shape_part = _stem[:_i].lower()
+        _re_part = _stem[_i + 3:]
+        try:
+            _Re_val = int(_re_part)
+        except ValueError:
+            continue
+        _shape_re_map.setdefault(_shape_part, {})[_Re_val] = _path
 
     # Display labels for the shape selector. NACA wings ship as
     # first-class shapes now; only Custom upload remains a placeholder
@@ -1495,12 +1502,13 @@ if view == "3D gallery (preview)":
     _stream_trace_index = 0  # the streamlines are the FIRST trace
     if animate_flow:
         _ANIM_FRAMES = 30
-        # Phase pattern: 60 % grow (lines extend from inflow toward
-        # outflow), 40 % drain (the inflow tail catches up so the line
-        # shortens from the inlet). At the loop boundary both ends are
-        # equal -> empty line -> smooth restart. The user sees one
-        # continuous "smoke arrives, smoke leaves" cycle, not a snap.
-        _GROW_FRAC = 0.60
+        # Phase pattern: DRAIN first (tail sweeps 0->1 while head holds
+        # at 1) then GROW (head sweeps 0->1 while tail stays 0). With
+        # this ordering frame 0 = full streamline, so when the user
+        # clicks "▶ Animate" the lines don't suddenly shrink to a
+        # single point before starting -- they begin from the static
+        # state already on screen and gracefully drain, then grow back.
+        _DRAIN_FRAC = 0.40
 
         nan_mask = np.isnan(flat_x)
         _split_idx = np.where(nan_mask)[0]
@@ -1539,14 +1547,14 @@ if view == "3D gallery (preview)":
                 if _n < 4:
                     continue
                 _tt = (_t + _phase_offsets[_s_idx]) % 1.0
-                if _tt < _GROW_FRAC:
-                    # Grow phase: head sweeps 0 -> 1, tail stays at 0.
-                    _head_frac = _tt / _GROW_FRAC
-                    _tail_frac = 0.0
-                else:
+                if _tt < _DRAIN_FRAC:
                     # Drain phase: head holds at 1, tail sweeps 0 -> 1.
                     _head_frac = 1.0
-                    _tail_frac = (_tt - _GROW_FRAC) / (1.0 - _GROW_FRAC)
+                    _tail_frac = _tt / _DRAIN_FRAC
+                else:
+                    # Grow phase: head sweeps 0 -> 1, tail stays at 0.
+                    _head_frac = (_tt - _DRAIN_FRAC) / (1.0 - _DRAIN_FRAC)
+                    _tail_frac = 0.0
                 _head_idx = _a + int(_head_frac * (_n - 1))
                 _tail_idx = _a + int(_tail_frac * (_n - 1))
                 # NaN out vertices outside [tail, head] for this stream.
@@ -1594,7 +1602,15 @@ if view == "3D gallery (preview)":
 
     fig = go.Figure(data=scene_traces, frames=_frames)
     fig.update_layout(
+        # uirevision is the key to "rotate works during animate":
+        # whenever a relayout (e.g. caused by an animation frame
+        # redraw) happens, Plotly inspects this token and preserves
+        # all view-state (camera angle, zoom, panning) bound to the
+        # same token. A constant value here means the user's orbit
+        # survives every frame in the animation loop.
+        uirevision="3d_gallery_lock",
         scene=dict(
+            uirevision="3d_gallery_camera",
             # Hide axis ticks/labels entirely -- the wireframe box
             # already provides the chamber outline, and the axis lines
             # were competing visually with the streamlines / body.
@@ -1605,9 +1621,6 @@ if view == "3D gallery (preview)":
             bgcolor="#0a0a0a",
             # Camera: look-at translated to the body centre, eye pulled
             # in close so the body fills ~70-75% of the visible scene.
-            # Previous (1.15, 0.9, 0.65) with default centre=(0,0,0)
-            # left the body small and offset because the body sits in
-            # the upstream half of the long chamber.
             camera=dict(
                 eye=dict(
                     x=_cnx + 0.82, y=_cny + 0.62, z=_cnz + 0.48,
@@ -1636,15 +1649,16 @@ if view == "3D gallery (preview)":
                 buttons=(
                     [
                         dict(
-                            # redraw=False keeps Plotly from repainting
-                            # the whole scene each frame -- camera
-                            # orbits the user has applied stay put and
-                            # rotation/zoom remain interactive while
-                            # the animation plays.
+                            # redraw=True is required for Scatter3d
+                            # geometry updates to actually paint;
+                            # camera rotation is preserved via the
+                            # layout-level ``uirevision`` token set
+                            # above, NOT via redraw=False (which left
+                            # the line geometry visibly unchanged).
                             label="▶ Animate",
                             method="animate",
                             args=[None, dict(
-                                frame=dict(duration=220, redraw=False),
+                                frame=dict(duration=220, redraw=True),
                                 fromcurrent=True,
                                 transition=dict(
                                     duration=120, easing="linear",
