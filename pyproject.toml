@@ -64,6 +64,12 @@ testpaths = ["tests"]
 pythonpath = ["."]
 # Short, quiet output by default. Override at the CLI with -v.
 addopts = "-q --strict-markers"
+markers = [
+    # Used by the 3D LBM scaffold tests (tests/test_lbm_3d_smoke.py)
+    # that JIT-compile and run a short channel-flow simulation. Skip
+    # with `pytest -m 'not slow'` for sub-second feedback.
+    "slow: longer-running tests (Numba JIT, end-to-end sims)",
+]
 filterwarnings = [
     # numba 0.65 still triggers a few deprecation warnings on numpy 2.x
     # internals that are harmless and out of our control.
@@ -89,9 +95,10 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# Scripts are research/dev workflows -- relaxed imports and unused vars
-# are routine.
-"scripts/**" = ["E402", "F401", "F841"]
+# Scripts are research/dev workflows -- relaxed imports, unused vars,
+# unused-loop counters in benchmarks, and f-strings used purely as
+# multi-line comment blocks are routine.
+"scripts/**" = ["E402", "F401", "F841", "B007", "F541"]
 
 # app.py sets NUMBA_NUM_THREADS BEFORE any other import (see the
 # 30-line comment at app.py:12-41 for the cross-platform race that

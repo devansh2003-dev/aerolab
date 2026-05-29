@@ -344,7 +344,13 @@ st.markdown(
     "Watch air move around any shape &mdash; in your browser."
     "</div>"
     "</div>"
-    # Right: validated badge as a chip
+    # Right: validated badge + a discoverability chip for the 3D bench.
+    # The 3D toggle itself lives in the sidebar (under "Solver tab");
+    # this chip is the hybrid signal so first-time visitors notice 3D
+    # exists without us promoting it to a top-level tab (which would
+    # imply consumer-readiness it doesn't have yet).
+    "<div style='display:flex;flex-direction:column;align-items:flex-end;"
+    "gap:0.35rem;'>"
     "<a href='https://github.com/devansh2003-dev/AeroLab/blob/main/VALIDATION.md' "
     "target='_blank' style='display:inline-flex;align-items:center;gap:0.35rem;"
     "padding:0.32rem 0.7rem;background:rgba(16,185,129,0.10);"
@@ -361,9 +367,1480 @@ st.markdown(
     "<span style='font-size:0.85rem;line-height:1;'>&#10003;</span>"
     "<span>Validated against published Cd</span>"
     "</a>"
+    # Discoverability chip for the 3D experience. Subtle, dimmer than
+    # the validated badge -- 3D is preview-quality, not the headline
+    # claim. The gallery view loads pre-baked fields (Cloud-safe); the
+    # dev bench runs the kernel live (local-only).
+    "<span style='display:inline-flex;align-items:center;gap:0.3rem;"
+    "padding:0.22rem 0.6rem;background:rgba(100,116,139,0.10);"
+    "border:1px solid #1f2937;border-radius:999px;"
+    "color:#94a3b8;font-size:0.72rem;letter-spacing:0.01em;' "
+    "title='Switch via the &quot;Solver tab&quot; radio in the sidebar. "
+    "Gallery view replays pre-baked flow fields with smoke particles; "
+    "the dev bench runs the kernel live and stays local-only.'>"
+    "<span style='color:#64748b;'>3D gallery</span>"
+    "<span style='opacity:0.6;'>&middot;</span>"
+    "<span>preview, in sidebar &rarr;</span>"
+    "</span>"
+    "</div>"
     "</div>",
     unsafe_allow_html=True,
 )
+
+# --- 2D / 3D switcher (sidebar, very top) -----------------------------------
+# AeroLab ships the validated 2D D2Q9 solver online. The 3D D3Q19 scaffold
+# lives behind this toggle as a LOCAL-ONLY development bench -- D3Q19
+# populations are ~150 MB at modest grids, well beyond Streamlit Cloud's
+# 1 GB process cap. The kernel is BGK with full-way OR Bouzidi
+# interpolated bounce-back, full-way OR Guo NEEM inflow/outflow (both
+# toggleable in the bench), and TRT is available as the validation-
+# track collision -- no MRT yet. The 2D tab is the default and runs
+# the same code path as before this toggle existed.
+with st.sidebar:
+    st.markdown("### :material/grid_view: Solver tab")
+    # key= is REQUIRED here. Without it, Streamlit auto-generates a key
+    # from the widget's parameters, and that auto-key can become unstable
+    # across reruns (e.g. when surrounding markdown/CSS reflows), causing
+    # the selection to silently reset to index=0 on every rerun.
+    # Reviewer 2026-05-26 confirmed clicking "3D (local, in development)"
+    # did not switch the view -- an explicit key fixes the binding.
+    view = st.radio(
+        "Solver dimensionality",
+        [
+            "2D playground (validated)",
+            "3D gallery (preview)",
+            "3D dev bench (local)",
+        ],
+        index=0,
+        label_visibility="collapsed",
+        key="solver_view",
+        help=(
+            "**2D**: the shipped D2Q9 LBM solver. Validated against "
+            "Williamson 1996 (cylinder) and Okajima 1982 (square) to "
+            "single-digit percent up to Re ~ 200. See VALIDATION.md.\n\n"
+            "**3D gallery**: pre-baked field replay. The kernel ran "
+            "offline; this view loads the saved velocity field and "
+            "streams smoke particles through it. No live compute, "
+            "Cloud-safe.\n\n"
+            "**3D dev bench**: D3Q19 TRT scaffold. WIP, runs the kernel "
+            "live -- local-only because populations are ~150 MB at "
+            "modest grids. Channel flow + sphere + Bouzidi + Guo NEEM; "
+            "no cylinder validation yet."
+        ),
+    )
+    st.divider()
+
+if view == "3D dev bench (local)":
+    st.markdown("# AeroLab 3D &mdash; *local development bench*")
+    st.markdown(
+        "<div style='color:#94a3b8;font-size:0.92rem;line-height:1.5;'>"
+        "This tab drives the <b>D3Q19 BGK</b> scaffold in "
+        "<code>src/lbm_3d.py</code>. It is NOT the shipped playground "
+        "&mdash; the 2D solver in <code>src/lbm.py</code> is. The 3D "
+        "kernel runs a channel-flow smoke and prints diagnostics. As "
+        "of Phase A2 it ships a sphere body with Bouzidi interpolated "
+        "bounce-back (analytic q-field) and Guo NEEM inflow/outflow; no "
+        "GIF rendering yet, no Cd validation, no MRT, no mesh upload. "
+        "The point of this bench is to make every increment of 3D solver "
+        "work visible while it is still developing locally."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown("")  # spacer
+
+    with st.expander(":material/check_circle: &nbsp; **What works today**",
+                     expanded=False):
+        st.markdown(
+            "- D3Q19 lattice constants verified (weights sum to 1, "
+            "second-moment matches `cs² = 1/3`, OPPOSITE is an involution, "
+            "all velocities unique).\n"
+            "- BGK collision + push-streaming compiled by Numba; TRT "
+            "(Λ = 3/16) production kernel available for the validation "
+            "track (`src/lbm_3d_trt.py`).\n"
+            "- Plane-channel boundaries: equilibrium inflow + zero-gradient "
+            "outflow as the legacy path, **Guo non-equilibrium "
+            "extrapolation** for both inflow and outflow as the production "
+            "path (toggleable). Bounce-back at y=0/Ny-1, periodic in z.\n"
+            "- Sphere body with full-way OR **Bouzidi interpolated "
+            "bounce-back** using the analytic q-field (toggleable). "
+            "TRT-aware Bouzidi correction is also wired up via "
+            "`apply_bouzidi_correction_trt` for the validation track.\n"
+            "- RK4 smoke-particle advection (`src/lbm_3d_smoke_particles.py`) "
+            "with inflow-only seeding and solid-cell culling -- the "
+            "Plotly Scatter3d viz below uses it.\n"
+            "- Channel smoke produces a symmetric parabolic ux(y) profile "
+            "(plane Poiseuille shape) with `mass_drift_rel < 1 %` over "
+            "400 steps."
+        )
+
+    with st.expander(":material/build: &nbsp; **What is queued**",
+                     expanded=False):
+        st.markdown(
+            "- TRT-collision channel driver -- a `run_channel_smoke`-shaped "
+            "wrapper around `trt_periodic_step` plus the Guo NEEM and "
+            "Bouzidi post-passes so the TRT validation track is "
+            "end-to-end runnable (the kernels exist; the driver does not).\n"
+            "- MRT collision (D3Q19 moment basis from d'Humières 2002) "
+            "as an alternative to TRT for the production path.\n"
+            "- 3D cylinder Cd validation against Williamson 1996 at "
+            "Re = 100 to 200 (the headline 3D check).\n"
+            "- Slice rendering as an animated GIF (mirror the 2D path).\n"
+            "- A 3D version of `validate_solver.py` so the same gate "
+            "test discipline applies."
+        )
+
+    st.divider()
+    st.markdown("### Channel-flow smoke")
+    st.markdown(
+        "Pick a grid, hit **Run smoke**. Returns the centerline y-profile "
+        "(should be parabolic between bounce-back walls), peak velocity, "
+        "and mass drift. Grid sizes are kept small enough to finish in "
+        "under a minute on a laptop."
+    )
+
+    col_a, col_b, col_c, col_d = st.columns(4)
+    with col_a:
+        nx = st.select_slider("Nx (streamwise)", options=[32, 48, 64, 96],
+                              value=64)
+    with col_b:
+        ny = st.select_slider("Ny (wall-normal)", options=[16, 24, 32],
+                              value=24)
+    with col_c:
+        nz = st.select_slider("Nz (spanwise)", options=[16, 24, 32],
+                              value=24)
+    with col_d:
+        n_steps = st.select_slider("Steps", options=[200, 400, 800, 1600],
+                                   value=400)
+
+    u_in = st.slider("Inflow u (lattice units, Ma ≲ 0.1)",
+                     min_value=0.01, max_value=0.10, value=0.04, step=0.01)
+    nu = st.slider("Kinematic viscosity ν (lattice units)",
+                   min_value=0.005, max_value=0.10, value=0.02, step=0.005)
+    re_est = u_in * ny / nu if nu > 0 else float("nan")
+    st.caption(
+        f"Re estimate ≈ u_in · Ny / ν = "
+        f"{u_in:.2f} · {ny} / {nu:.3f} ≈ **{re_est:.1f}** (channel "
+        f"Reynolds, low-Re smoke regime)."
+    )
+
+    # Cached voxelisation: a single STL upload + grid + extent combo
+    # should not re-voxelise every time the user nudges another slider.
+    # Cache key includes the raw bytes (so two STLs with identical
+    # geometry but different metadata still hit the same entry), grid
+    # extents, and body extent. Max 4 entries -- four different uploads
+    # at a time is plenty for an interactive session, and each entry
+    # is a ~1 MB bool array on the dev-grid sizes. (D-9 Phase 2,
+    # 2026-05-28.)
+    @st.cache_data(show_spinner=False, max_entries=4)
+    def _cached_voxelise_stl(
+        stl_bytes: bytes,
+        Nx: int, Ny: int, Nz: int,
+        body_extent_cells: float,
+    ):
+        """Returns ``(mask, links)``.
+
+        ``mask`` is the (Nx, Ny, Nz) bool body mask. ``links`` is the
+        Bouzidi-style WallLinkList (D-9 Phase 3, smoothed-mask q-field)
+        that the kernel consumes when Bouzidi BB is selected. The pair
+        is cached together because building the links is fast (~50 ms
+        even on a 100 k-voxel mask) and the kernel may want either or
+        both depending on the toggle.
+        """
+        from pathlib import Path as _Path
+        from tempfile import NamedTemporaryFile
+
+        from src.voxelize import voxel_mask_and_links_for_lbm
+        # voxel_mask_and_links_for_lbm takes a path; the uploaded bytes
+        # live in memory, so we land them in a temp file for the
+        # duration of the call, then remove it. We don't use
+        # NamedTemporaryFile's delete=True because Windows holds the
+        # file open inside the `with` block, blocking the voxeliser
+        # from reading it.
+        with NamedTemporaryFile(suffix=".stl", delete=False) as tf:
+            tf.write(stl_bytes)
+            tf_path = tf.name
+        try:
+            return voxel_mask_and_links_for_lbm(
+                tf_path, Nx, Ny, Nz,
+                body_extent_cells=body_extent_cells,
+                padding_cells=(max(8.0, Nx * 0.20), Ny * 0.10, Nz * 0.10),
+                close_iters=1,
+            )
+        finally:
+            _Path(tf_path).unlink(missing_ok=True)
+
+    # Phase A2 (2026-05-26): body selector. The existing lbm_3d.py
+    # kernel already takes a `body` bool mask and does full-way
+    # bounce-back on solid cells. Wiring the sphere here is what
+    # turns the channel-flow demo into a recognisable wind-tunnel
+    # scene: smoke deflecting around an obstacle. D-9 Phase 2
+    # (2026-05-28) adds the "Upload STL" path: the STL is voxelised
+    # via src/voxelize.py and the resulting bool mask feeds into the
+    # same kernel slot as the analytic sphere.
+    body_choice = st.radio(
+        "Body",
+        ["None (channel only)", "Sphere", "Upload STL"],
+        index=1,                   # default to sphere -- the dramatic demo
+        horizontal=True,
+        key="body_3d_choice",
+        help=(
+            "**None**: plain channel flow, baseline Poiseuille profile.\n\n"
+            "**Sphere**: an analytic sphere placed ~30 % downstream of "
+            "the inflow. Carries an exact q-field for Bouzidi BB.\n\n"
+            "**Upload STL**: voxelise a user-supplied STL onto the grid "
+            "via odd-parity ray casting. Halfway bounce-back at the "
+            "voxel surface (Bouzidi q-field for arbitrary polygons is "
+            "Phase 3 of the D-9 roadmap)."
+        ),
+    )
+    use_sphere = body_choice == "Sphere"
+    use_stl = body_choice == "Upload STL"
+    # Radius scales with the wall-normal dimension so the sphere fits
+    # comfortably regardless of grid choice. ~Ny/5 leaves ~2 Ny/5 cells
+    # of clearance on each side -- well outside the bounce-back wall
+    # boundary layer, where flow is reasonably uniform.
+    sphere_R = float(ny) / 5.0
+    sphere_cx = int(nx * 0.30)
+    sphere_cy = ny // 2
+    sphere_cz = nz // 2
+
+    # STL upload state (populated only when use_stl). Defaults make the
+    # downstream Run block work uniformly whether or not the upload
+    # path is active. ``stl_links`` is the Bouzidi WallLinkList paired
+    # with the mask (D-9 Phase 3, voxel_wall_links via smoothed-mask
+    # interpolation); the kernel ignores it unless the BB toggle is
+    # set to Bouzidi.
+    stl_bytes: bytes | None = None
+    stl_filename: str | None = None
+    stl_extent_cells = 8.0
+    stl_mask: np.ndarray | None = None
+    stl_links = None
+    stl_error: str | None = None
+
+    if use_sphere:
+        _blockage = 2 * sphere_R / ny
+        st.caption(
+            f"Sphere: R = {sphere_R:.1f} cells, centre = "
+            f"({sphere_cx}, {sphere_cy}, {sphere_cz}). "
+            f"Blockage (D / Ny) = {_blockage:.2f}. "
+            f"This bench is correctness scaffolding, not a "
+            f"validation result -- the dev grid is small so the "
+            f"blockage is intentionally well above the < 0.10 the "
+            f"`Validation3D` preset will use for Cd numbers."
+        )
+
+        # Phase A2-FULL Part 2 (2026-05-26): BC toggle. Bouzidi-linear
+        # interpolated bounce-back tracks the analytic q for each wall
+        # link (built once via src/lbm_3d_bouzidi.sphere_wall_links).
+        # At q = 0.5 the formula reduces to full-way BB exactly --
+        # pinned by tests/test_lbm_3d_bouzidi.py.
+        bc_choice = st.radio(
+            "Bounce-back scheme",
+            ["Full-way (q = 0.5 everywhere)", "Bouzidi (analytic q)"],
+            index=1,                       # default to Bouzidi -- the accurate path
+            horizontal=True,
+            key="bc_3d_choice",
+            help=(
+                "**Full-way**: every wall link bounces back as if the "
+                "wall sits at the on-link midpoint (q = 0.5). Cheap, "
+                "introduces a viscosity-dependent error in Cd.\n\n"
+                "**Bouzidi**: linearly interpolates the bounce-back "
+                "using the actual wall fraction q from the analytic "
+                "sphere quadratic (D-4 in the memo). Combined with "
+                "TRT (D-2) this places the wall at the mid-link "
+                "position INDEPENDENT of viscosity -- the property "
+                "that directly serves Cd accuracy."
+            ),
+        )
+        use_bouzidi = bc_choice.startswith("Bouzidi")
+    elif use_stl:
+        uploaded = st.file_uploader(
+            "STL file (binary or ASCII)",
+            type=["stl"],
+            key="stl_uploader_3d",
+            help=(
+                "Drop an STL (.stl). The mesh is centred in the channel, "
+                "scaled so its longest axis spans the chosen extent, and "
+                "voxelised onto the LBM grid via odd-parity ray casting. "
+                "Closed manifolds work best; small holes get filled by "
+                "one round of morphological closing."
+            ),
+        )
+        _max_extent = max(4.0, float(min(ny, nz)) * 0.45)
+        stl_extent_cells = st.slider(
+            "Body extent (cells, longest axis)",
+            min_value=4.0, max_value=_max_extent,
+            value=min(8.0, _max_extent),
+            step=0.5,
+            key="stl_extent_3d",
+            help=(
+                "Longest-axis extent of the body after scaling onto the "
+                "LBM grid. Bigger -> richer wake structure but higher "
+                "blockage; keep < ~0.5 × Ny for clean dev-bench runs."
+            ),
+        )
+        # D-9 Phase 3 (2026-05-28): Bouzidi toggle for STL bodies. The
+        # voxel WallLinkList carries a per-link q estimated by
+        # linear interpolation on a sigma=0.6 gaussian smoothing of
+        # the mask; the 0.5 level set approximates the true surface
+        # to sub-voxel accuracy. Halfway BB (q = 0.5 everywhere) is
+        # the cheap baseline; flip on Bouzidi for sharper Cd numbers
+        # on the uploaded mesh.
+        stl_bc_choice = st.radio(
+            "Bounce-back scheme",
+            ["Full-way (q = 0.5 everywhere)",
+             "Bouzidi (voxel-q from smoothed mask)"],
+            index=1,                         # default to Bouzidi
+            horizontal=True,
+            key="stl_bc_3d_choice",
+            help=(
+                "**Full-way**: halfway BB at every solid cell. Cheap, "
+                "but ~5 - 10 % Cd bias on smooth surfaces from the "
+                "stair-stepped voxel wall position.\n\n"
+                "**Bouzidi (voxel-q)**: per-link q estimated by "
+                "linear interpolation on a smoothed (sigma=0.6) "
+                "copy of the mask. Sub-voxel surface localisation -- "
+                "sharper Cd on smooth bodies. Triangle-exact q is a "
+                "future Phase 4."
+            ),
+        )
+        use_bouzidi = stl_bc_choice.startswith("Bouzidi")
+
+        if uploaded is not None:
+            stl_bytes = uploaded.getvalue()
+            stl_filename = uploaded.name
+            try:
+                stl_mask, stl_links = _cached_voxelise_stl(
+                    stl_bytes,
+                    int(nx), int(ny), int(nz),
+                    float(stl_extent_cells),
+                )
+            except ValueError as exc:
+                stl_error = str(exc)
+
+            if stl_error is not None:
+                st.error(f":material/error: {stl_error}")
+            elif stl_mask is not None:
+                _n_solid = int(stl_mask.sum())
+                _solid_idx = np.argwhere(stl_mask)
+                _bbox_extent = (
+                    _solid_idx.max(axis=0) - _solid_idx.min(axis=0) + 1
+                    if _n_solid > 0 else np.zeros(3, dtype=int)
+                )
+                _blockage_stl = float(_bbox_extent[1]) / ny if ny else 0.0
+                _bc_label = "Bouzidi (voxel-q)" if use_bouzidi else "halfway BB"
+                _n_links_str = (
+                    f" &middot; {stl_links.n_links:,} wall links built"
+                    if stl_links is not None else ""
+                )
+                st.caption(
+                    f"STL: **{stl_filename}** "
+                    f"({len(stl_bytes) / 1024:.1f} KB) &middot; "
+                    f"voxelised to **{_n_solid:,} solid cells** &middot; "
+                    f"body bbox {tuple(int(v) for v in _bbox_extent)} cells "
+                    f"&middot; blockage (y-extent / Ny) = "
+                    f"{_blockage_stl:.2f} &middot; BC: {_bc_label}"
+                    f"{_n_links_str}."
+                )
+        else:
+            st.caption(
+                ":material/upload_file: Drop an STL above to voxelise it "
+                "onto the LBM grid. No file = no body; the Run button "
+                "below will refuse to launch."
+            )
+    else:
+        use_bouzidi = False
+
+    # 2026-05-26 Guo NEEM toggle. The legacy path uses equilibrium-write
+    # inflow + zero-gradient-copy outflow inside the BGK kernel; Guo
+    # non-equilibrium extrapolation (Guo, Zheng, Shi 2002) replaces both
+    # with proper post-passes that copy the non-equilibrium part from
+    # the neighbour interior. Visually this means the wake leaves the
+    # domain cleanly instead of being smoothed flat by the zero-gradient
+    # copy.
+    inflow_choice = st.radio(
+        "Inflow / outflow scheme",
+        ["Equilibrium + zero-gradient (legacy)", "Guo NEEM (non-equilibrium)"],
+        index=1,                                   # default to Guo NEEM
+        horizontal=True,
+        key="inflow_3d_choice",
+        help=(
+            "**Equilibrium + zero-gradient**: the inlet writes f_eq at "
+            "the prescribed velocity, the outlet copies the second-to-last "
+            "x-slice to the last one. Cheap, but the zero-gradient copy "
+            "forces a uniform outlet velocity which damps the wake and "
+            "introduces low-grade reflections back into the domain.\n\n"
+            "**Guo NEEM**: post-passes that prescribe u_in at the inlet "
+            "and rho = 1 at the outlet, while extrapolating the "
+            "non-equilibrium part of the populations from the interior. "
+            "The wake leaves the domain naturally with no spurious "
+            "reflections; this is what the validation track will use."
+        ),
+    )
+    use_guo_neem = inflow_choice.startswith("Guo")
+
+    # 2026-05-26 Collision toggle. BGK is the default reference path
+    # (single relaxation rate, classic Chapman-Enskog viscosity); TRT
+    # adds the antisymmetric mode at the magic parameter Λ = 3/16, which
+    # places the no-slip wall at the mid-link position INDEPENDENT of
+    # viscosity -- the property that buys Cd accuracy in the validation
+    # track. At s_plus = s_minus the two reduce to each other exactly
+    # (pinned by tests/test_lbm_3d_trt.py::test_trt_channel_matches_bgk_at_unit_lambda).
+    collision_choice = st.radio(
+        "Collision operator",
+        ["BGK (single relaxation rate)", "TRT (Λ = 3/16, magic parameter)"],
+        index=0,                                   # default to BGK -- snappier baseline
+        horizontal=True,
+        key="collision_3d_choice",
+        help=(
+            "**BGK**: one relaxation rate omega = 1/tau set by the "
+            "viscosity. The simplest collision operator; what every "
+            "tutorial LBM ships. Stable up to ~Re 200 on this grid.\n\n"
+            "**TRT (Λ = 3/16)**: splits each direction into symmetric "
+            "and antisymmetric modes with rates s_plus and s_minus, "
+            "constrained so (1/s_plus - 1/2)(1/s_minus - 1/2) = 3/16. "
+            "This magic parameter places the wall at the on-link "
+            "midpoint regardless of viscosity, eliminating the "
+            "tau-dependent error in Cd. Production target for the "
+            "Validation3D preset."
+        ),
+    )
+    use_trt = collision_choice.startswith("TRT")
+
+    # Refuse to launch when STL was selected but no file is loaded or
+    # the upload failed to voxelise -- otherwise the user clicks Run
+    # and either gets a confusing channel-only result or a hard error
+    # mid-kernel. The button is shown but disabled with a help string
+    # so the user knows WHY they cannot run.
+    _run_disabled = use_stl and (stl_mask is None or stl_error is not None)
+    if _run_disabled:
+        _run_help = (
+            stl_error
+            if stl_error
+            else "Upload an STL above before running."
+        )
+    else:
+        _run_help = "Compile the kernel and stream particles through it."
+    if st.button(":material/play_arrow: &nbsp; Run smoke",
+                 use_container_width=True,
+                 disabled=_run_disabled,
+                 help=_run_help):
+        import time as _time
+
+        from src.lbm_3d import _make_sphere_mask, run_channel_smoke
+        progress = st.progress(0.0, text="Compiling kernel + streaming...")
+        if use_sphere:
+            body_mask_3d = _make_sphere_mask(
+                nx, ny, nz, sphere_cx, sphere_cy, sphere_cz, sphere_R,
+            )
+        elif use_stl and stl_mask is not None:
+            # Cached voxel mask from src/voxelize.py. Halfway BB is
+            # implicit at every solid cell; no wall_links since voxel
+            # walls have no analytic q-field. (Phase 3 D-9 will wire
+            # an approximate q-field via 1-cell ray casts to neighbour
+            # solids.)
+            body_mask_3d = stl_mask
+        else:
+            body_mask_3d = None
+        wall_links_3d = None
+        if use_sphere and use_bouzidi:
+            from src.lbm_3d_bouzidi import sphere_wall_links
+            wall_links_3d = sphere_wall_links(
+                nx, ny, nz, sphere_cx, sphere_cy, sphere_cz, sphere_R,
+            )
+        elif use_stl and use_bouzidi and stl_links is not None:
+            # D-9 Phase 3 voxel WallLinkList. Same dataclass as the
+            # analytic sphere path, so the kernel consumes it through
+            # the existing wall_links hook without further changes.
+            wall_links_3d = stl_links
+        try:
+            def _cb(frac, text):
+                progress.progress(frac, text=text)
+            _t0 = _time.time()
+            if use_trt:
+                # TRT path: separate driver in src/lbm_3d_trt.py. Uses
+                # apply_bouzidi_correction_trt when wall_links is set.
+                from src.lbm_3d_trt import run_channel_smoke_trt
+                rho, ux, uy, uz, diag = run_channel_smoke_trt(
+                    Nx=nx, Ny=ny, Nz=nz, u_in=u_in, nu=nu, n_steps=n_steps,
+                    body=body_mask_3d,
+                    wall_links=wall_links_3d,
+                    use_guo_neem=use_guo_neem,
+                    progress_callback=_cb,
+                )
+            else:
+                rho, ux, uy, uz, diag = run_channel_smoke(
+                    Nx=nx, Ny=ny, Nz=nz, u_in=u_in, nu=nu, n_steps=n_steps,
+                    body=body_mask_3d,
+                    wall_links=wall_links_3d,
+                    use_guo_neem=use_guo_neem,
+                    progress_callback=_cb,
+                )
+            elapsed = _time.time() - _t0
+        finally:
+            progress.empty()
+
+        diag_table = pd.DataFrame(
+            [
+                ("Grid",            f"{nx} × {ny} × {nz}"),
+                ("Steps",           f"{n_steps}"),
+                ("Wall time",       f"{elapsed:.2f} s "
+                                    f"({n_steps/elapsed:.1f} steps/s)"),
+                ("u_peak",          f"{diag['u_peak']:.5f}"),
+                ("u_mean",          f"{diag['u_mean']:.5f}"),
+                ("Centerline ratio (≈1.5 fully developed)",
+                                    f"{diag['centerline_ratio']:.3f}"),
+                ("Mass drift (rel)",
+                                    f"{diag['mass_drift_rel']*100:+.3f} %"),
+            ],
+            columns=["Metric", "Value"],
+        )
+        st.dataframe(diag_table, hide_index=True, use_container_width=True)
+
+        # Midplane slice (z = Nz/2) of ux. Plotly heatmap is fast and
+        # works without matplotlib; the 2D playground already pulls
+        # plotly so no new dep.
+        mid_z = nz // 2
+        slice_ux = ux[:, :, mid_z].T  # rows = y, cols = x
+        fig = go.Figure(
+            data=go.Heatmap(
+                z=slice_ux,
+                colorscale="Viridis",
+                colorbar={"title": "u<sub>x</sub>"},
+                zmin=0.0, zmax=float(diag["u_peak"]) * 1.05,
+            )
+        )
+        fig.update_layout(
+            title=f"Midplane slice ux(x, y) at z = {mid_z}",
+            xaxis_title="x (streamwise)",
+            yaxis_title="y (wall-normal)",
+            height=380,
+            margin=dict(l=40, r=20, t=50, b=40),
+        )
+        fig.update_yaxes(scaleanchor="x", scaleratio=1)
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Centerline y-profile vs the analytic plane-Poiseuille parabola.
+        mid_x = nx // 2
+        y_profile = ux[mid_x, :, mid_z]
+        ys = np.arange(ny)
+        # Fit a parabola u_fit = u_peak * (1 - ((y - y_c) / h)^2),
+        # h = (Ny - 1) / 2, y_c = (Ny - 1) / 2.
+        y_c = (ny - 1) / 2
+        h = (ny - 1) / 2
+        u_peak = float(diag["u_peak"])
+        u_parabolic = u_peak * (1.0 - ((ys - y_c) / h) ** 2)
+        prof_fig = go.Figure()
+        prof_fig.add_scatter(x=ys, y=y_profile, mode="lines+markers",
+                              name="measured")
+        prof_fig.add_scatter(x=ys, y=u_parabolic, mode="lines",
+                              name="analytic Poiseuille",
+                              line=dict(dash="dash"))
+        prof_fig.update_layout(
+            title="Wall-normal profile ux(y) at midchannel x, mid z",
+            xaxis_title="y",
+            yaxis_title="u<sub>x</sub>",
+            height=300,
+            margin=dict(l=40, r=20, t=50, b=40),
+        )
+        st.plotly_chart(prof_fig, use_container_width=True)
+
+        if abs(diag["mass_drift_rel"]) > 0.05:
+            st.warning(
+                f"Mass drifted {diag['mass_drift_rel']*100:+.2f} % &mdash; "
+                "the streaming or boundary code is leaking mass. Investigate "
+                "before reading the velocity profile as physical."
+            )
+        elif diag["centerline_ratio"] < 1.0 or diag["centerline_ratio"] > 1.7:
+            st.info(
+                f"Centerline ratio {diag['centerline_ratio']:.2f} is outside "
+                "the fully-developed Poiseuille band [1.0, 1.7]. Either the "
+                "flow has not converged yet (try more steps) or the "
+                "boundary code has a subtle bias."
+            )
+        else:
+            st.success(
+                "Smoke clean: parabolic profile, mass conserved to "
+                "within 5 %, centerline ratio in the Poiseuille band."
+            )
+
+        # === Phase A1 prototype: smoke-particle 3D advection ===
+        # Locked by D-8 in 3D_PHASE0_DECISIONS.md. This is the first
+        # concrete demonstration of the consumer-product viz path:
+        # take the steady (ux, uy, uz) the LBM solver produced, advect
+        # massless tracers through it via RK4 (`src/lbm_3d_smoke_particles.py`),
+        # render the final cloud as Plotly Scatter3d so the user can
+        # rotate / zoom. On a body-less channel the trajectories are
+        # straight; the dramatic flow-around-shape visuals come once
+        # Phase A2 wires in a sphere.
+        from src.lbm_3d_smoke_particles import (
+            seed_inflow_particles,
+            step_smoke,
+            trilerp_3d,
+        )
+
+        _sphere_suffix = ""
+        if use_sphere:
+            _sphere_suffix = (
+                " with sphere (Bouzidi)" if use_bouzidi
+                else " with sphere (full-way BB)"
+            )
+        else:
+            _sphere_suffix = " (no body)"
+        _sphere_suffix += " · Guo NEEM" if use_guo_neem else " · Eq inflow"
+        _sphere_suffix += " · TRT" if use_trt else " · BGK"
+        with st.expander(
+            ":material/visibility: &nbsp; **Smoke particles** &mdash; "
+            "Phase A2 viz" + _sphere_suffix,
+            expanded=True,
+        ):
+            _bc_label = "Bouzidi interpolated" if use_bouzidi else "full-way"
+            st.caption(
+                "RK4 advection of ~150 massless tracers through the "
+                "steady velocity field above. Seeded at the inflow "
+                "(x=2) only -- no mid-domain spawn (the 2D streakline "
+                "design rule carries over). Rotate / zoom the scene. "
+                + (
+                    f"Particles deflect around the sphere; the LBM solver "
+                    f"computed the flow field with **{_bc_label}** bounce-back "
+                    f"on the sphere surface, and the advector culls any "
+                    f"tracer whose nearest cell is solid."
+                    if use_sphere
+                    else "On a body-less channel the streaks are straight; "
+                    "switch the **Body** above to **Sphere** to see the "
+                    "flow-around-obstacle demo."
+                )
+            )
+
+            # Build the particle pool by repeatedly seeding + advecting.
+            # The LBM solve produced a steady field; advection cost is
+            # dominated by the trilerp inner loops (pure numpy,
+            # ~few ms / frame at this particle count).
+            #
+            # Denser seeding rows than before (Ny / 3, Nz / 3 with a
+            # floor of 5) -- ported from the gallery so the smoke
+            # reads as a cloud rather than a constellation. Costs
+            # ~50 % more advection work per frame; still well inside
+            # the per-click budget at this grid size.
+            n_y_rows = max(5, ny // 3)
+            n_z_rows = max(5, nz // 3)
+            y_rows_ad = np.linspace(2.0, ny - 3.0, n_y_rows)
+            z_rows_ad = np.linspace(2.0, nz - 3.0, n_z_rows)
+
+            rng_smoke = np.random.default_rng(0)
+            px = np.empty(0, dtype=np.float64)
+            py = np.empty(0, dtype=np.float64)
+            pz = np.empty(0, dtype=np.float64)
+            age = np.empty(0, dtype=np.int32)
+
+            # dt MUST scale with u_in so particles actually move
+            # visibly. step_smoke's dt is total advection time per
+            # frame; at dt = 1.0 a particle at u_in = 0.04 advances
+            # 0.04 cells / frame, so the channel takes 800 frames to
+            # cross. We pick dt so the particle covers ~1 cell per
+            # frame: target_cross_frames frames to traverse nx.
+            target_cross_frames = max(40, nx)
+            dt_per_frame = nx / float(target_cross_frames * max(u_in, 1e-6))
+            max_age = int(1.6 * target_cross_frames)
+            n_frames_ad = max(int(1.4 * target_cross_frames), 90)
+
+            # Animation snapshot schedule (ported from the gallery,
+            # 2026-05-28). We capture ~28 keyframes during advection
+            # so the user can scrub / play through the development of
+            # the wake instead of seeing only the steady-state cloud.
+            # The first snapshot lands at target_cross_frames // 4
+            # (the warmup), giving the smoke time to fill the inflow
+            # band before frame 0 of the animation -- an animation
+            # that opens on an empty channel is just dead air.
+            n_keyframes = 28
+            warmup_frames_ad = target_cross_frames // 4
+            snapshot_stride = max(1, (n_frames_ad - warmup_frames_ad) // n_keyframes)
+
+            # Pre-cast the velocity field to float32 ONCE outside the
+            # loop; the previous code did this per-step which was a
+            # small but real waste at the new denser seeding.
+            ux_f32 = ux.astype(np.float32, copy=False)
+            uy_f32 = uy.astype(np.float32, copy=False)
+            uz_f32 = uz.astype(np.float32, copy=False)
+
+            snapshots_ad: list[tuple] = []   # (px, py, pz, speeds_at_capture)
+            for i in range(n_frames_ad):
+                seed = seed_inflow_particles(
+                    n_per_row=1,
+                    y_rows=y_rows_ad,
+                    z_rows=z_rows_ad,
+                    x=2.0,
+                    rng=rng_smoke,
+                )
+                px, py, pz, age = step_smoke(
+                    px, py, pz, age,
+                    ux_f32, uy_f32, uz_f32,
+                    body_mask=body_mask_3d,
+                    dt=dt_per_frame,
+                    n_substeps=4,
+                    max_age=max_age,
+                    inflow_seed_xyz=seed,
+                )
+                if i >= warmup_frames_ad and (
+                    (i - warmup_frames_ad) % snapshot_stride == 0
+                    or i == n_frames_ad - 1
+                ):
+                    snap_speeds = trilerp_3d(ux_f32, px, py, pz)
+                    snapshots_ad.append(
+                        (px.copy(), py.copy(), pz.copy(), snap_speeds.copy())
+                    )
+
+            if len(px) == 0:
+                st.info(
+                    "Particles all exited the domain before the viz "
+                    "captured them; try a lower inflow speed or more "
+                    "steps."
+                )
+            else:
+                # The last snapshot (post-warmup, fully-developed) is
+                # what we show initially; the slider scrubs back into
+                # the earlier transient states. The snapshot tuple
+                # carries (px, py, pz, speeds) so the colour data is
+                # already paired with the positions -- no per-render
+                # trilerp_3d call needed here (the loop above already
+                # paid that cost at capture time).
+                px, py, pz, sp = snapshots_ad[-1]
+
+                # Phase A3 visual: Q-criterion isosurface overlay (the
+                # first reusable consumer-viz primitive). Compute Q from
+                # the velocity field, marching-cubes an isosurface at
+                # the user-selected fraction of Q_max, render as a
+                # translucent cyan Plotly Mesh3d behind the particles.
+                # Cheap (~5 ms on this grid) so we always compute Q
+                # when the checkbox is on; no caching gymnastics.
+                q_col1, q_col2 = st.columns([1, 3])
+                with q_col1:
+                    show_q = st.checkbox(
+                        "Q-criterion vortex shell",
+                        value=False,
+                        key="show_q_3d",
+                        help=(
+                            "Render the Q = level isosurface around "
+                            "vortex tubes in the wake. Q = (1/2)(|Ω|² - "
+                            "|S|²); positive Q means rotation dominates "
+                            "strain. The shell carves out where the "
+                            "flow swirls -- visible at moderate Re even "
+                            "before full vortex shedding."
+                        ),
+                    )
+                with q_col2:
+                    q_level_pct = st.slider(
+                        "Q threshold (% of max)", 1, 50, 10,
+                        key="q_level_pct_3d",
+                        disabled=not show_q,
+                        help="Lower → bigger shell (catches weaker swirls). "
+                             "Higher → only the most intense vortex cores.",
+                    )
+
+                # Marker constants matched to the gallery (2026-05-28
+                # backport): size 2.4 + opacity 0.78 reads as a smoke
+                # cloud rather than discrete dots; cmax = 1.6 * u_in
+                # gives a touch more headroom than the channel inflow
+                # itself so the plasma ramp doesn't saturate near the
+                # body where the flow accelerates.
+                _marker_size = 2.4
+                _marker_opacity = 0.78
+                _marker_cmax = float(u_in) * 1.6
+                scene_traces = [
+                    go.Scatter3d(
+                        x=px, y=py, z=pz,
+                        mode="markers",
+                        name="smoke",
+                        marker=dict(
+                            size=_marker_size,
+                            color=sp,
+                            colorscale="Plasma",
+                            cmin=0.0,
+                            cmax=_marker_cmax,
+                            colorbar=dict(
+                                title="u<sub>x</sub>",
+                                thickness=12,
+                                len=0.6,
+                            ),
+                            opacity=_marker_opacity,
+                        ),
+                    )
+                ]
+                if show_q:
+                    from src.lbm_3d_qcriterion import (
+                        compute_q_field,
+                        extract_q_isosurface,
+                    )
+                    Q = compute_q_field(ux, uy, uz, body=body_mask_3d)
+                    q_max = float(Q.max())
+                    if q_max > 0.0:
+                        level = (q_level_pct / 100.0) * q_max
+                        iso = extract_q_isosurface(Q, level=level)
+                        if iso is not None:
+                            verts, faces = iso
+                            scene_traces.append(
+                                go.Mesh3d(
+                                    x=verts[:, 0],
+                                    y=verts[:, 1],
+                                    z=verts[:, 2],
+                                    i=faces[:, 0],
+                                    j=faces[:, 1],
+                                    k=faces[:, 2],
+                                    color="#22d3ee",            # cyan-400
+                                    opacity=0.35,
+                                    name=f"Q = {level:.2e}",
+                                    flatshading=False,
+                                    hoverinfo="name",
+                                )
+                            )
+                        else:
+                            st.caption(
+                                f":material/info: No Q ≥ {level:.2e} "
+                                f"region found. Lower the threshold or "
+                                f"crank `u_in` / lower `nu` to develop "
+                                f"the wake."
+                            )
+                    else:
+                        st.caption(
+                            ":material/info: Q ≤ 0 everywhere -- the flow "
+                            "has no vortex structure at this Re yet. "
+                            "Raise `u_in` or lower `nu` and re-run."
+                        )
+                if use_sphere:
+                    # Render the sphere as a translucent slate-grey Surface
+                    # so the viewer can see particles deflecting AROUND it
+                    # rather than through empty space. Parametric mesh:
+                    # 32 x 32 grid in (theta, phi). Surface3d uses one
+                    # colour ramp so we hold it at a single neutral tone
+                    # via colorscale=[[0, c], [1, c]] -- gives a uniform
+                    # slate-grey body that doesn't compete with the
+                    # plasma-coloured particles for attention.
+                    _theta = np.linspace(0.0, 2.0 * np.pi, 33)
+                    _phi = np.linspace(0.0, np.pi, 17)
+                    _T, _P = np.meshgrid(_theta, _phi)
+                    sph_x = sphere_cx + sphere_R * np.sin(_P) * np.cos(_T)
+                    sph_y = sphere_cy + sphere_R * np.sin(_P) * np.sin(_T)
+                    sph_z = sphere_cz + sphere_R * np.cos(_P)
+                    scene_traces.append(
+                        go.Surface(
+                            x=sph_x, y=sph_y, z=sph_z,
+                            showscale=False,
+                            colorscale=[[0, "#475569"], [1, "#475569"]],
+                            opacity=0.55,
+                            lighting=dict(
+                                ambient=0.55, diffuse=0.7,
+                                specular=0.25, roughness=0.5,
+                            ),
+                            lightposition=dict(x=100, y=200, z=0),
+                            name="sphere",
+                            hoverinfo="skip",
+                        )
+                    )
+                elif use_stl and stl_mask is not None:
+                    # Render the uploaded body via marching cubes on the
+                    # bool mask at level 0.5 -- same primitive the
+                    # Q-criterion overlay uses, just on a different
+                    # scalar field. Same translucent slate-grey palette
+                    # as the sphere so the user reads "body" not "data".
+                    # (D-9 Phase 2, 2026-05-28.)
+                    from skimage.measure import marching_cubes
+                    try:
+                        body_verts, body_faces, _, _ = marching_cubes(
+                            stl_mask.astype(np.float32),
+                            level=0.5,
+                            spacing=(1.0, 1.0, 1.0),
+                        )
+                        scene_traces.append(
+                            go.Mesh3d(
+                                x=body_verts[:, 0],
+                                y=body_verts[:, 1],
+                                z=body_verts[:, 2],
+                                i=body_faces[:, 0],
+                                j=body_faces[:, 1],
+                                k=body_faces[:, 2],
+                                color="#475569",         # same slate as sphere
+                                opacity=0.55,
+                                flatshading=True,
+                                name="body (voxel)",
+                                hoverinfo="name",
+                                lighting=dict(
+                                    ambient=0.55, diffuse=0.7,
+                                    specular=0.25, roughness=0.5,
+                                ),
+                                lightposition=dict(x=100, y=200, z=0),
+                            )
+                        )
+                    except (ValueError, RuntimeError):
+                        # Empty mask or single-voxel artefact -- shouldn't
+                        # happen since the uploader already gated on
+                        # n_solid > 0, but be defensive.
+                        st.caption(
+                            ":material/info: Could not extract a body "
+                            "surface from the voxel mask -- the smoke "
+                            "still renders but the body outline is "
+                            "hidden."
+                        )
+                # Build per-snapshot Frames. The smoke Scatter3d is
+                # trace 0 in ``scene_traces``; every frame overrides
+                # just that trace via ``traces=[0]``, leaving sphere
+                # + Q-criterion (static across time since the velocity
+                # field is steady) untouched. Marker template carries
+                # everything except ``color`` so each frame can swap
+                # the per-particle speed array without re-specifying
+                # the colorscale / colorbar / opacity. (Backported
+                # from the gallery, 2026-05-28.)
+                _smoke_marker_template = dict(
+                    size=_marker_size,
+                    colorscale="Plasma",
+                    cmin=0.0,
+                    cmax=_marker_cmax,
+                    opacity=_marker_opacity,
+                    colorbar=dict(title="u<sub>x</sub>", thickness=12, len=0.6),
+                )
+                frames_ad = []
+                for k, (snap_px, snap_py, snap_pz, snap_sp) in enumerate(snapshots_ad):
+                    frame_marker = dict(_smoke_marker_template)
+                    frame_marker["color"] = snap_sp
+                    frames_ad.append(
+                        go.Frame(
+                            data=[
+                                go.Scatter3d(
+                                    x=snap_px, y=snap_py, z=snap_pz,
+                                    mode="markers",
+                                    marker=frame_marker,
+                                    name="smoke",
+                                )
+                            ],
+                            name=str(k),
+                            traces=[0],
+                        )
+                    )
+                slider_steps = [
+                    dict(
+                        method="animate",
+                        args=[[str(k)], dict(
+                            mode="immediate",
+                            frame=dict(duration=0, redraw=True),
+                            transition=dict(duration=0),
+                        )],
+                        label=str(k),
+                    )
+                    for k in range(len(frames_ad))
+                ]
+
+                smoke_fig = go.Figure(data=scene_traces, frames=frames_ad)
+                smoke_fig.update_layout(
+                    scene=dict(
+                        xaxis=dict(title="x (streamwise)", range=[0, nx]),
+                        yaxis=dict(title="y (wall-normal)", range=[0, ny]),
+                        zaxis=dict(title="z (spanwise)", range=[0, nz]),
+                        aspectmode="data",
+                        bgcolor="#0a0a0a",
+                        camera=dict(
+                            eye=dict(x=1.4, y=1.1, z=0.85),
+                        ),
+                    ),
+                    height=540,
+                    margin=dict(l=0, r=0, t=20, b=60),
+                    paper_bgcolor="#0a0a0a",
+                    updatemenus=[dict(
+                        type="buttons",
+                        direction="left",
+                        x=0.02, y=-0.04, xanchor="left", yanchor="top",
+                        pad=dict(t=6, r=6, b=6, l=6),
+                        bgcolor="rgba(15,23,42,0.85)",
+                        bordercolor="#334155",
+                        font=dict(color="#e2e8f0", size=12),
+                        buttons=[
+                            dict(
+                                label="▶  Play",
+                                method="animate",
+                                args=[None, dict(
+                                    mode="immediate",
+                                    frame=dict(duration=70, redraw=True),
+                                    transition=dict(duration=0),
+                                    fromcurrent=True,
+                                    loop=True,
+                                )],
+                            ),
+                            dict(
+                                label="⏸  Pause",
+                                method="animate",
+                                args=[[None], dict(
+                                    mode="immediate",
+                                    frame=dict(duration=0, redraw=False),
+                                    transition=dict(duration=0),
+                                )],
+                            ),
+                        ],
+                    )],
+                    sliders=[dict(
+                        active=len(frames_ad) - 1,
+                        x=0.14, y=-0.04, len=0.82,
+                        xanchor="left", yanchor="top",
+                        pad=dict(t=6, b=0),
+                        bgcolor="rgba(15,23,42,0.7)",
+                        bordercolor="#334155",
+                        activebgcolor="#22d3ee",
+                        font=dict(color="#94a3b8", size=10),
+                        currentvalue=dict(
+                            visible=True, prefix="frame ",
+                            font=dict(color="#e2e8f0", size=11),
+                        ),
+                        steps=slider_steps,
+                    )],
+                )
+                st.plotly_chart(smoke_fig, use_container_width=True)
+                st.caption(
+                    f"{len(px):,} live particles in the final snapshot of "
+                    f"a {n_frames_ad}-step RK4 advection (4 substeps / "
+                    f"frame). {len(snapshots_ad)} animation frames -- click "
+                    f"**▶ Play** to watch the wake develop, drag the slider "
+                    f"to scrub. Tests: [test_lbm_3d_smoke_particles.py]"
+                    f"(https://github.com/devansh2003-dev/aerolab/blob/"
+                    f"main/tests/test_lbm_3d_smoke_particles.py) -- 15 "
+                    f"analytic-field gates including uniform-flow drift "
+                    f"and 3D Poiseuille centerline (D-8 reviewer "
+                    f"requirement, 2026-05-26)."
+                )
+
+    st.divider()
+    st.caption(
+        "Source: [src/lbm_3d.py](https://github.com/devansh2003-dev/aerolab/"
+        "blob/main/src/lbm_3d.py), "
+        "[src/lbm_3d_smoke_particles.py](https://github.com/devansh2003-dev/"
+        "aerolab/blob/main/src/lbm_3d_smoke_particles.py) &middot; "
+        "Tests: [tests/test_lbm_3d_smoke.py](https://github.com/"
+        "devansh2003-dev/aerolab/blob/main/tests/test_lbm_3d_smoke.py), "
+        "[tests/test_lbm_3d_smoke_particles.py](https://github.com/"
+        "devansh2003-dev/aerolab/blob/main/tests/test_lbm_3d_smoke_particles.py)"
+    )
+    st.stop()
+
+
+# ---------------------------------------------------------------------------
+# 3D Gallery: pre-baked field replay (consumer-mode, Cloud-safe)
+#
+# Loads a .npz produced by scripts/bake_3d_field.py, streams smoke
+# particles through the steady velocity field, renders Plotly Scatter3d
+# + (optional) sphere Surface + (optional) Q-criterion shell. No kernel
+# compute on the page -- the heavy work happened offline.
+#
+# The presets live in data/baked/*.npz (gitignored; user runs the bake
+# script once locally OR a future deploy includes them via Git LFS).
+# Empty-state UX shows the bake command to run.
+# ---------------------------------------------------------------------------
+
+if view == "3D gallery (preview)":
+    from pathlib import Path
+
+    from src.baked_fields import list_baked_fields, load_baked_field
+
+    st.markdown("# AeroLab 3D &mdash; *gallery (preview)*")
+    st.caption(
+        "Pre-baked velocity fields, replayed with smoke-particle "
+        "advection. The LBM solver ran offline; this page just streams "
+        "tracers through the saved field. **Cloud-safe**: no live "
+        "kernel compute on the request thread."
+    )
+
+    baked_dir = Path("data/baked")
+    available = list_baked_fields(baked_dir)
+
+    if not available:
+        # Empty-state: tell the user exactly how to populate the gallery.
+        st.info(
+            ":material/info: **No baked presets yet.** Run the bake "
+            "script once to populate `data/baked/`:"
+        )
+        st.code(
+            "python scripts/bake_3d_field.py --preset sphere_re40\n"
+            "python scripts/bake_3d_field.py --preset sphere_re100",
+            language="bash",
+        )
+        st.caption(
+            "The preset registry lives in [scripts/bake_3d_field.py]"
+            "(https://github.com/devansh2003-dev/aerolab/blob/main/"
+            "scripts/bake_3d_field.py). `sphere_re40` bakes in ~12 s "
+            "(steady wake, Guo NEEM outflow); `sphere_re100` in ~45 s "
+            "(higher-Re transient on the regularised outflow). Output "
+            "is a compressed .npz with float16 storage and a SHA-256 "
+            "manifest hash."
+        )
+        st.stop()
+
+    # Selector: stem is the preset name, full path is the load target.
+    preset_options = {p.stem: p for p in available}
+    chosen_name = st.selectbox(
+        ":material/auto_awesome: &nbsp; Scene",
+        options=list(preset_options.keys()),
+        index=0,
+        key="gallery_preset_choice",
+        help=(
+            "Pre-baked flow scenes. Each is a steady velocity field "
+            "computed offline by `scripts/bake_3d_field.py`. The "
+            "smoke particles below are advected through the loaded "
+            "field in your browser."
+        ),
+    )
+    field = load_baked_field(preset_options[chosen_name])
+
+    # Diagnostics row: grid, Re estimate, mass drift, peak speed.
+    _Re_est = (
+        float(field.meta.get("u_in", 0.0))
+        * 2.0 * float(field.meta.get("body_params", {}).get("R", 0.0))
+        / max(float(field.meta.get("nu", 1.0)), 1e-9)
+    )
+    _solver = field.meta.get("solver_diag", {})
+    diag_cols = st.columns(4)
+    diag_cols[0].metric(
+        "Grid", f"{field.Nx} × {field.Ny} × {field.Nz}"
+    )
+    diag_cols[1].metric(
+        "Re (approx)", f"{_Re_est:.0f}",
+        help="u_in · D / nu, using sphere diameter D = 2R from the "
+             "preset's body params.",
+    )
+    diag_cols[2].metric(
+        "Mass drift", f"{_solver.get('mass_drift_rel', 0):.2%}",
+        help="Mass change between the simulation's first and last "
+             "step. Small drift means the boundary conditions are "
+             "well-balanced.",
+    )
+    diag_cols[3].metric(
+        "Peak u_x", f"{_solver.get('u_peak', 0):.4f}",
+        help="Maximum streamwise velocity in the domain (lattice "
+             "units).",
+    )
+
+    _scheme = str(field.meta.get("scheme", "?")).upper()
+    _outflow = str(field.meta.get("outflow_scheme", "guo"))
+    _n_steps = int(field.meta.get("n_steps", 0))
+    st.caption(
+        f"*Solver: {_scheme} collision, "
+        f"{'Bouzidi' if field.meta.get('use_bouzidi') else 'half-way BB'} "
+        f"wall BC, {_outflow} outflow, {_n_steps} steps.*"
+    )
+
+    # Particle pool: heavier than the dev-bench because there is no
+    # compute pressure -- the kernel already ran.
+    from src.lbm_3d_smoke_particles import (
+        seed_inflow_particles,
+        step_smoke,
+        trilerp_3d,
+    )
+
+    n_y_rows = max(5, field.Ny // 3)
+    n_z_rows = max(5, field.Nz // 3)
+    y_rows = np.linspace(2.0, field.Ny - 3.0, n_y_rows)
+    z_rows = np.linspace(2.0, field.Nz - 3.0, n_z_rows)
+
+    rng_smoke = np.random.default_rng(7)
+    px = np.empty(0, dtype=np.float64)
+    py = np.empty(0, dtype=np.float64)
+    pz = np.empty(0, dtype=np.float64)
+    age = np.empty(0, dtype=np.int32)
+
+    u_in_meta = float(field.meta.get("u_in", 0.05))
+    # IMPORTANT: dt must scale with u_in so particles actually cross
+    # the domain in the render budget. ``step_smoke``'s ``dt`` is the
+    # advection time PER FRAME -- at u_in = 0.04 and dt = 1.0 a
+    # particle moves 0.04 cells per frame, so a 64-cell domain takes
+    # 1600 frames to cross. The fix: pick dt so a particle at u_in
+    # covers ~1 cell per frame.
+    target_cross_frames = max(40, field.Nx)
+    dt_per_frame = field.Nx / float(target_cross_frames * max(u_in_meta, 1e-6))
+    n_frames = max(int(1.4 * target_cross_frames), 90)
+    # ~5000 steady-state particles -- enough density to read as smoke,
+    # comfortable for Plotly Scatter3d's WebGL pipeline.
+    n_per_row = 1
+    max_age = int(1.6 * target_cross_frames)
+
+    # Capture snapshots for the animation. Keyframes: ~28 frames of
+    # the advection, ~12 fps playback -> 2.3 s loop. Enough to see the
+    # smoke leave the inflow column, drift through the domain, deflect
+    # around the body, and exit at the outflow. The first snapshot is
+    # captured AFTER target_cross_frames // 4 frames so the smoke is
+    # already partway across the domain when the animation starts --
+    # nothing more boring than watching an empty channel fill.
+    n_keyframes = 28
+    warmup_frames = target_cross_frames // 4
+    snapshot_stride = max(1, (n_frames - warmup_frames) // n_keyframes)
+    snapshots = []                            # list of (px, py, pz, speeds)
+    for i in range(n_frames):
+        seed = seed_inflow_particles(
+            n_per_row=n_per_row,
+            y_rows=y_rows,
+            z_rows=z_rows,
+            x=2.0,
+            rng=rng_smoke,
+        )
+        px, py, pz, age = step_smoke(
+            px, py, pz, age,
+            field.ux, field.uy, field.uz,
+            body_mask=field.body,
+            dt=dt_per_frame,
+            n_substeps=4,
+            max_age=max_age,
+            inflow_seed_xyz=seed,
+        )
+        if i >= warmup_frames and (
+            (i - warmup_frames) % snapshot_stride == 0
+            or i == n_frames - 1
+        ):
+            snap_speeds = trilerp_3d(field.ux, px, py, pz)
+            snapshots.append(
+                (px.copy(), py.copy(), pz.copy(), snap_speeds.copy())
+            )
+
+    # Final (post-warmup, fully-developed) snapshot is what we show
+    # initially; the slider scrubs back into earlier transient states.
+    px, py, pz, speeds = snapshots[-1]
+
+    # Q-criterion toggle (reuse the dev-bench pattern).
+    q_col1, q_col2 = st.columns([1, 3])
+    with q_col1:
+        show_q = st.checkbox(
+            "Q-criterion vortex shell",
+            value=False,
+            key="show_q_gallery",
+            help=(
+                "Render the Q = level isosurface around vortex tubes "
+                "in the wake. Q = (1/2)(|Ω|² - |S|²); positive Q means "
+                "rotation dominates strain. The shell carves out where "
+                "the flow swirls."
+            ),
+        )
+    with q_col2:
+        q_level_pct = st.slider(
+            "Q threshold (% of max)", 1, 50, 10,
+            key="q_level_pct_gallery",
+            disabled=not show_q,
+        )
+
+    # Build the 3D scene. Smaller markers + lower opacity vs the
+    # dev-bench so the cloud reads as smoke, not a constellation.
+    scene_traces = [
+        go.Scatter3d(
+            x=px, y=py, z=pz,
+            mode="markers",
+            name="smoke",
+            marker=dict(
+                size=2.4,
+                color=speeds,
+                colorscale="Plasma",
+                cmin=0.0,
+                cmax=u_in_meta * 1.6,
+                colorbar=dict(
+                    title="u<sub>x</sub>",
+                    thickness=12,
+                    len=0.6,
+                ),
+                opacity=0.78,
+            ),
+        )
+    ]
+
+    if show_q:
+        from src.lbm_3d_qcriterion import compute_q_field, extract_q_isosurface
+        Q = compute_q_field(field.ux, field.uy, field.uz, body=field.body)
+        q_max_f = float(Q.max())
+        if q_max_f > 0.0:
+            level = (q_level_pct / 100.0) * q_max_f
+            iso = extract_q_isosurface(Q, level=level)
+            if iso is not None:
+                verts, faces = iso
+                scene_traces.append(
+                    go.Mesh3d(
+                        x=verts[:, 0], y=verts[:, 1], z=verts[:, 2],
+                        i=faces[:, 0], j=faces[:, 1], k=faces[:, 2],
+                        color="#22d3ee",
+                        opacity=0.32,
+                        name=f"Q = {level:.2e}",
+                        flatshading=False,
+                        hoverinfo="name",
+                    )
+                )
+            else:
+                st.caption(
+                    f":material/info: No Q ≥ {level:.2e} region. "
+                    f"Try a lower threshold."
+                )
+        else:
+            st.caption(
+                ":material/info: Q ≤ 0 everywhere -- this field has "
+                "no vortex structure (Re may be too low to develop one)."
+            )
+
+    # Sphere overlay (if the preset is a sphere body).
+    body_type = str(field.meta.get("body_type", ""))
+    if body_type == "sphere":
+        bp = field.meta.get("body_params", {})
+        try:
+            sphere_cx = float(bp["cx"])
+            sphere_cy = float(bp["cy"])
+            sphere_cz = float(bp["cz"])
+            sphere_R = float(bp["R"])
+        except (KeyError, ValueError, TypeError):
+            sphere_cx = sphere_cy = sphere_cz = sphere_R = None
+        if sphere_R is not None:
+            _theta = np.linspace(0.0, 2.0 * np.pi, 33)
+            _phi = np.linspace(0.0, np.pi, 17)
+            _T, _P = np.meshgrid(_theta, _phi)
+            sph_x = sphere_cx + sphere_R * np.sin(_P) * np.cos(_T)
+            sph_y = sphere_cy + sphere_R * np.sin(_P) * np.sin(_T)
+            sph_z = sphere_cz + sphere_R * np.cos(_P)
+            scene_traces.append(
+                go.Surface(
+                    x=sph_x, y=sph_y, z=sph_z,
+                    showscale=False,
+                    colorscale=[[0, "#475569"], [1, "#475569"]],
+                    opacity=0.6,
+                    lighting=dict(
+                        ambient=0.55, diffuse=0.7,
+                        specular=0.3, roughness=0.5,
+                    ),
+                    lightposition=dict(x=100, y=200, z=0),
+                    name="sphere",
+                    hoverinfo="skip",
+                )
+            )
+
+    # Build the per-snapshot frames. The smoke Scatter3d is trace 0
+    # in ``scene_traces``; every frame overrides just that trace via
+    # ``traces=[0]``, leaving sphere + Q-criterion (static across
+    # time, since the velocity field is steady) untouched.
+    smoke_marker_template = dict(
+        size=2.4,
+        colorscale="Plasma",
+        cmin=0.0,
+        cmax=u_in_meta * 1.6,
+        opacity=0.78,
+        colorbar=dict(title="u<sub>x</sub>", thickness=12, len=0.6),
+    )
+    frames = []
+    for k, (snap_px, snap_py, snap_pz, snap_sp) in enumerate(snapshots):
+        frame_marker = dict(smoke_marker_template)
+        frame_marker["color"] = snap_sp
+        frames.append(
+            go.Frame(
+                data=[
+                    go.Scatter3d(
+                        x=snap_px, y=snap_py, z=snap_pz,
+                        mode="markers",
+                        marker=frame_marker,
+                        name="smoke",
+                    )
+                ],
+                name=str(k),
+                traces=[0],
+            )
+        )
+
+    # Auto-play setup. The slider step labels are short integer indices
+    # so the layout doesn't blow up. duration=70 ms gives ~14 fps.
+    slider_steps = [
+        dict(
+            method="animate",
+            args=[[str(k)], dict(
+                mode="immediate",
+                frame=dict(duration=0, redraw=True),
+                transition=dict(duration=0),
+            )],
+            label=str(k),
+        )
+        for k in range(len(frames))
+    ]
+
+    fig = go.Figure(data=scene_traces, frames=frames)
+    fig.update_layout(
+        scene=dict(
+            xaxis=dict(title="x (streamwise)", range=[0, field.Nx]),
+            yaxis=dict(title="y (wall-normal)", range=[0, field.Ny]),
+            zaxis=dict(title="z (spanwise)", range=[0, field.Nz]),
+            aspectmode="data",
+            bgcolor="#0a0a0a",
+            camera=dict(eye=dict(x=1.5, y=1.15, z=0.9)),
+        ),
+        height=580,
+        margin=dict(l=0, r=0, t=10, b=60),
+        paper_bgcolor="#0a0a0a",
+        updatemenus=[dict(
+            type="buttons",
+            direction="left",
+            x=0.02, y=-0.04, xanchor="left", yanchor="top",
+            pad=dict(t=6, r=6, b=6, l=6),
+            bgcolor="rgba(15,23,42,0.85)",
+            bordercolor="#334155",
+            font=dict(color="#e2e8f0", size=12),
+            buttons=[
+                dict(
+                    label="▶  Play",
+                    method="animate",
+                    args=[None, dict(
+                        mode="immediate",
+                        frame=dict(duration=70, redraw=True),
+                        transition=dict(duration=0),
+                        fromcurrent=True,
+                        loop=True,
+                    )],
+                ),
+                dict(
+                    label="⏸  Pause",
+                    method="animate",
+                    args=[[None], dict(
+                        mode="immediate",
+                        frame=dict(duration=0, redraw=False),
+                        transition=dict(duration=0),
+                    )],
+                ),
+            ],
+        )],
+        sliders=[dict(
+            active=len(frames) - 1,                 # start on the developed snapshot
+            x=0.14, y=-0.04, len=0.82,
+            xanchor="left", yanchor="top",
+            pad=dict(t=6, b=0),
+            bgcolor="rgba(15,23,42,0.7)",
+            bordercolor="#334155",
+            activebgcolor="#22d3ee",
+            font=dict(color="#94a3b8", size=10),
+            currentvalue=dict(
+                visible=True, prefix="frame ",
+                font=dict(color="#e2e8f0", size=11),
+            ),
+            steps=slider_steps,
+        )],
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption(
+        f"{len(snapshots)} animation frames over a {n_frames}-step "
+        f"advection at dt = {dt_per_frame:.1f} lattice-time / frame "
+        f"(sized so a particle at u_in covers the domain in "
+        f"~{target_cross_frames} frames). Click **▶ Play** to watch "
+        f"the smoke develop; drag the slider to scrub. Rotation and "
+        f"zoom work mid-playback."
+    )
+
+    # Manifest expander -- the "show me the receipt" panel.
+    with st.expander(":material/receipt_long: &nbsp; **Manifest**", expanded=False):
+        st.caption(
+            f"Preset hash: `{field.meta.get('hash', '?')[:16]}...` "
+            f"&middot; Schema v{field.meta.get('version', '?')} "
+            f"&middot; Baked at {field.meta.get('ts_baked', '?')}"
+        )
+        st.json(field.meta, expanded=False)
+
+    st.divider()
+    st.caption(
+        "Source: [src/baked_fields.py](https://github.com/devansh2003-dev/"
+        "aerolab/blob/main/src/baked_fields.py), "
+        "[scripts/bake_3d_field.py](https://github.com/devansh2003-dev/"
+        "aerolab/blob/main/scripts/bake_3d_field.py) &middot; "
+        "Tests: [tests/test_baked_fields.py](https://github.com/"
+        "devansh2003-dev/aerolab/blob/main/tests/test_baked_fields.py)"
+    )
+    st.stop()
 
 # --- 2D validity thresholds (single source of truth) ---
 # Cited in VALIDATION.md headline and surfaced in the UI as the Re-banner
