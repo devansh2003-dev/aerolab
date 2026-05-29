@@ -828,10 +828,15 @@ def run_channel_smoke_trt(
     outflow_scheme: str = "guo",
     scheme: str = "trt",
     progress_callback=None,
+    return_populations: bool = False,
 ):
     """3D channel-flow with TRT collision + (optional) Bouzidi + (default)
     Guo NEEM. Returns ``(rho, ux, uy, uz, diag)`` -- same shape as
     ``run_channel_smoke``.
+
+    If ``return_populations=True``, returns ``(rho, ux, uy, uz, diag, f)``
+    where ``f`` is the final population array (shape ``(19, Nx, Ny, Nz)``)
+    needed for downstream force / Cd calculations via momentum exchange.
 
     Differences from ``run_channel_smoke``:
 
@@ -947,6 +952,8 @@ def run_channel_smoke_trt(
         "scheme": scheme,
         "use_guo_neem": use_guo_neem,
     }
+    if return_populations:
+        return rho, ux, uy, uz, diag, f
     return rho, ux, uy, uz, diag
 
 

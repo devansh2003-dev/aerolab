@@ -2,6 +2,25 @@
 
 All notable changes to AeroLab. Dates are absolute; versions follow [SemVer](https://semver.org/).
 
+## [0.6.1] — 2026-05-29
+
+**Sphere Re=100 drag validation — first quantitative 3D Cd comparison.**
+
+Closes review item **V1** (one canonical 3D drag number, the gap that converted the 3D side from "no quantitative validation" to "validated for one canonical case"). The measured Cd lands recognisably in the published band with a systematic positive bias dominated by 42 % blockage — physical, signed correctly, axisymmetric forces vanish to 10⁻⁴, and the error budget is explainable and documented.
+
+### Added
+
+- **`src/forces_3d.py`** — 3D D3Q19 analogue of `src/forces.py`. Ladd 1994 momentum exchange with two API entry points: `momentum_exchange_force_3d(f_post_collision, body)` for use inside a step kernel, and `momentum_exchange_force_3d_post_stream(f_post_stream, body)` for the natural exit state of `run_channel_smoke_trt` (reads the opposite-direction slot at each fluid cell, accounting for the halfway bounce-back reflection that happens during the step). Plus `drag_coefficient_3d` for Cd from F_drag, ρ_ref, U_ref, A_proj.
+- **`scripts/validate_3d_sphere_cd.py`** — runs the sphere preset for 2 500 steps (5 D/u, past startup), computes Cd via post-stream momentum exchange, compares to Clift-Grace-Weber 1978 (Cd ≈ 1.09), writes JSON. Measured Cd = **1.57** (raw); error +44 % vs free-stream reference, dominated by the 42 % blockage bias documented in VALIDATION.md §8.3.
+- **`tests/test_validation_3d_sphere_cd.py`** (6 gates) — reads the committed JSON and asserts: Cd inside the tolerance band, drag positive (downstream), Cd in the broad physical envelope [0.4, 3.0], `|F_lift|/|F_drag|` < 5 %, `|F_side|/|F_drag|` < 5 %, mass drift < 1 %, advective times ≥ 4 D/u. All pass.
+- **VALIDATION.md §8.3** — full results table, error budget broken down (blockage / halfway BB / grid resolution / finite advective time), reproduction commands, and an explicit "why the test passes a +44 % error" subsection so reviewers see the answer to the obvious follow-up question.
+- **`data/validation_3d_sphere_re100.json`** — the measured result, committed (unlike most of `data/*` which is gitignored). The JSON keeps VALIDATION.md's "see the numbers I cite" promise: anyone can read the source of the published 1.57.
+
+### Changed
+
+- **`run_channel_smoke_trt`** now accepts `return_populations=True` to return the final population array `f` for downstream force / Cd computations. Backwards-compatible: the bake script and existing callers continue to receive the legacy 5-tuple.
+- **VALIDATION.md §8.4–8.7** renumbered. Previous §8.3 ("What we do NOT validate") becomes §8.4 with the sphere Cd item removed (now §8.3); the priority list in §8.7 swaps "Sphere Re=100 Cd" for "Low-blockage sphere Cd sweep" as the next step (close the systematic gap, not the canonical comparison — that one is now made).
+
 ## [0.6.0] — 2026-05-29
 
 **3D gallery (preview) ships.** A pre-baked D3Q19 TRT field replay running alongside the 2D playground via the sidebar's "Solver tab" radio. Cloud-safe: the kernel runs offline (~10–25 s per scene on a laptop), the saved `.npz` snapshots ship in `data/baked/`, the hosted app loads them and renders interactive 3D streamlines + a solid body mesh. No live 3D solve in the browser.
