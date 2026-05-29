@@ -468,8 +468,8 @@ def _trace_streamlines(
     seeds_y: np.ndarray,
     seeds_z: np.ndarray,
     *,
-    dt: float = 12.0,
-    max_steps: int = 400,
+    dt: float = 8.0,
+    max_steps: int = 700,
     min_speed: float = 1e-5,
     progress_callback=None,
 ):
@@ -493,11 +493,16 @@ def _trace_streamlines(
         True where the cell is solid.
     seeds_x, seeds_y, seeds_z : 1D ndarray
         Seed positions in lattice coordinates.
-    dt : float, default 12.0
-        Integration step. Tuned so a typical inflow displacement
-        (u ~ 0.04) covers ~0.5 lattice cell per step.
-    max_steps : int, default 400
-        Hard cap on integration steps per seed.
+    dt : float, default 8.0
+        Integration step. At u ~ 0.04 each step covers ~0.32 lattice
+        cell -- short enough that consecutive sample points barely
+        diverge from the smooth integral curve, so the polyline does
+        not chord through curved bodies.
+    max_steps : int, default 700
+        Hard cap on integration steps per seed. Sized so streamlines
+        reach the outlet even when they pass through low-speed
+        regions (wake, stagnation pocket) where each step covers
+        much less than 0.32 cell.
     min_speed : float, default 1e-5
         Stagnation threshold.
     progress_callback : callable, optional
@@ -597,33 +602,45 @@ def _trace_streamlines(
         paths_z[surviving_global, step + 1] = new_z[survives].astype(np.float32)
         paths_speed[surviving_global, step + 1] = speed[survives].astype(np.float32)
 
-        # Body-collision snap: for seeds dying *because* the next step
-        # crossed into the body (not because they ran out of domain or
-        # stagnated), write one bisected midpoint between the last fluid
-        # position and the would-be body position. Reduces the visible
-        # gap between streamline tip and body surface from ~dt*|u| to
-        # ~dt*|u|/4 -- streamlines now appear to graze the body instead
-        # of stopping short of it.
+        # Body-collision snap: when a seed dies *because* the next
+        # step crossed into the body (not domain-exit or stagnation),
+        # binary-search along the segment to find the last fluid
+        # parametric position. Three iterations land the endpoint
+        # within ~dt*|u| / 8 of the wall (~0.04 cell at u=0.04),
+        # so the visible streamline grazes the body surface without
+        # gap or overshoot.
         dying_from_body = (~survives) & in_bounds & moving & (~not_in_body)
         if dying_from_body.any():
             di = dying_from_body
             di_global = ai[di]
-            mx = 0.5 * (ax[di] + new_x[di])
-            my = 0.5 * (ay[di] + new_y[di])
-            mz = 0.5 * (az[di] + new_z[di])
-            mix = np.clip(mx.astype(np.int32), 0, Nx - 1)
-            miy = np.clip(my.astype(np.int32), 0, Ny - 1)
-            miz = np.clip(mz.astype(np.int32), 0, Nz - 1)
-            mid_in_body = body_mask[mix, miy, miz]
-            qx = 0.5 * (ax[di] + mx)
-            qy = 0.5 * (ay[di] + my)
-            qz = 0.5 * (az[di] + mz)
-            fx = np.where(mid_in_body, qx, mx).astype(np.float32)
-            fy = np.where(mid_in_body, qy, my).astype(np.float32)
-            fz = np.where(mid_in_body, qz, mz).astype(np.float32)
-            paths_x[di_global, step + 1] = fx
-            paths_y[di_global, step + 1] = fy
-            paths_z[di_global, step + 1] = fz
+            ax_d = ax[di]
+            ay_d = ay[di]
+            az_d = az[di]
+            dx_d = new_x[di] - ax_d
+            dy_d = new_y[di] - ay_d
+            dz_d = new_z[di] - az_d
+            t_lo = np.zeros(di_global.size, dtype=np.float64)
+            t_hi = np.ones(di_global.size, dtype=np.float64)
+            for _ in range(3):
+                t_mid = 0.5 * (t_lo + t_hi)
+                tx = ax_d + t_mid * dx_d
+                ty = ay_d + t_mid * dy_d
+                tz = az_d + t_mid * dz_d
+                tix = np.clip(tx.astype(np.int32), 0, Nx - 1)
+                tiy = np.clip(ty.astype(np.int32), 0, Ny - 1)
+                tiz = np.clip(tz.astype(np.int32), 0, Nz - 1)
+                hits_body = body_mask[tix, tiy, tiz]
+                t_lo = np.where(hits_body, t_lo, t_mid)
+                t_hi = np.where(hits_body, t_mid, t_hi)
+            paths_x[di_global, step + 1] = (
+                ax_d + t_lo * dx_d
+            ).astype(np.float32)
+            paths_y[di_global, step + 1] = (
+                ay_d + t_lo * dy_d
+            ).astype(np.float32)
+            paths_z[di_global, step + 1] = (
+                az_d + t_lo * dz_d
+            ).astype(np.float32)
             paths_speed[di_global, step + 1] = paths_speed[di_global, step]
 
         alive[dying_global] = False
@@ -1415,7 +1432,7 @@ if view == "3D gallery (preview)":
     _caption_color = {
         "Velocity": "speed (Plasma: purple slow, yellow fast)",
         "Vorticity": "|curl(u)| (Viridis: dark calm, yellow swirling)",
-        "Pressure": "density rho (RdBu: blue low, red high)",
+        "Pressure": "gauge pressure (RdBu: blue suction, red stagnation, white freestream)",
     }.get(viz_mode_3d, "speed")
     st.caption(
         f"Streamlines trace how the air wraps around the body. "
@@ -1493,19 +1510,56 @@ if view == "3D gallery (preview)":
         _colorscale = "Viridis"
     elif viz_mode_3d == "Pressure":
         from src.lbm_3d_smoke_particles import trilerp_3d as _trilerp
+        # Gauge pressure: p = c_s^2 * (rho - rho_ref) with c_s^2 = 1/3
+        # for D3Q19. Subtracting the freestream-median rho_ref puts
+        # the colorbar at zero in undisturbed flow, so the diverging
+        # RdBu_r reads as RED = stagnation (front of body), BLUE =
+        # suction (top of cambered wing, sides of cylinder),
+        # near-white = freestream. The raw rho variation is O(1e-3),
+        # which the previous percentile-stretch on rho rendered as
+        # near-flat colour bands; multiplying by c_s^2 = 1/3 gives a
+        # pressure quantity that is physically interpretable (lattice
+        # units) instead of "density offset" which means little to
+        # users who came in for a flow visual.
         _rho = field.rho.astype(np.float32)
+        _rho_fluid = _rho[~field.body] if (~field.body).any() else _rho
+        _rho_ref = float(np.median(_rho_fluid))
+        _p = ((1.0 / 3.0) * (_rho - _rho_ref)).astype(np.float32)
+        _p_fluid = _p[~field.body] if (~field.body).any() else _p
+        # Symmetric range so zero (freestream) sits at colorbar centre.
+        # Use max of |1st pct| and |99th pct| so a single sharp peak
+        # (stagnation point) does not stretch the colorbar so far
+        # that the suction lobe goes white.
+        _p_abs = max(
+            abs(float(np.percentile(_p_fluid, 1.0))),
+            abs(float(np.percentile(_p_fluid, 99.0))),
+            1e-9,
+        )
         _vx = np.where(np.isfinite(flat_x), flat_x, 0.0).astype(np.float64)
         _vy = np.where(np.isfinite(flat_y), flat_y, 0.0).astype(np.float64)
         _vz = np.where(np.isfinite(flat_z), flat_z, 0.0).astype(np.float64)
-        flat_color = _trilerp(_rho, _vx, _vy, _vz).astype(np.float32)
+        flat_color = _trilerp(_p, _vx, _vy, _vz).astype(np.float32)
         flat_color[~np.isfinite(flat_x)] = np.nan
-        _rho_fluid = _rho[~field.body] if (~field.body).any() else _rho
-        cmin_color = float(np.percentile(_rho_fluid, 1.0))
-        cmax_color = float(np.percentile(_rho_fluid, 99.0))
-        _color_title = "ρ"
+        cmin_color = -_p_abs
+        cmax_color = _p_abs
+        _color_title = "p"
         _colorscale = "RdBu_r"
     else:  # Velocity (default)
-        flat_color = flat_speed
+        # Sample |u| at each streamline vertex via the same trilerp
+        # the other modes use, instead of reusing ``flat_speed`` which
+        # is the RK2 midpoint speed for that step (off by half a step
+        # from the vertex). Vertex-aligned colours read more truthful:
+        # the colour at any point on the polyline is the field's |u|
+        # at that exact point. Cost: one extra trilerp pass.
+        from src.lbm_3d_smoke_particles import trilerp_3d as _trilerp
+        _umag = np.sqrt(
+            field.ux ** 2 + field.uy ** 2 + field.uz ** 2
+        ).astype(np.float32)
+        _vx = np.where(np.isfinite(flat_x), flat_x, 0.0).astype(np.float64)
+        _vy = np.where(np.isfinite(flat_y), flat_y, 0.0).astype(np.float64)
+        _vz = np.where(np.isfinite(flat_z), flat_z, 0.0).astype(np.float64)
+        flat_color = _trilerp(_umag, _vx, _vy, _vz).astype(np.float32)
+        flat_color[~np.isfinite(flat_x)] = np.nan
         cmin_color = 0.0
         cmax_color = cmax_speed
         _color_title = "speed"
@@ -1630,12 +1684,13 @@ if view == "3D gallery (preview)":
             cu_cy = float(bp["cy"])
             cu_cz = float(bp["cz"])
             cu_h = float(bp["half_extent"])
-            # Render at the user's continuous slider value so the cube
-            # tilts smoothly while the underlying flow field snaps to
-            # the nearest baked AoA. Without this the cube appears
-            # motionless until the slider crosses a snap point. The
-            # "snapped to baked AoA" caption keeps the gap honest.
-            cu_aoa = float(_aoa_nominal)
+            # Render at the snapped baked AoA, not the continuous
+            # slider value: when the mesh disagrees with the flow,
+            # streamlines that follow the baked field cut visibly
+            # through the rotated mesh ("clipping into obj"). Aligning
+            # the mesh to aoa_actual eliminates that gap. The slider
+            # caption already announces the snap.
+            cu_aoa = float(aoa_actual)
             _vx, _vy, _vz, _ii, _jj, _kk = _closed_box_mesh(
                 cu_cx, cu_cy, cu_cz, cu_h, cu_h, cu_h,
             )
@@ -1678,10 +1733,12 @@ if view == "3D gallery (preview)":
             _m_cam = float(bp.get("m", 0.0))
             _p_cam = float(bp.get("p", 0.0))
             _thk = float(bp["thickness"])
-            # Same smooth-render rationale as the cube branch above:
-            # the airfoil tilts with the user's continuous slider
-            # value; the flow snaps to the nearest baked AoA.
-            _aoa_render = float(_aoa_nominal)
+            # Snap the rendered airfoil to the baked AoA, matching the
+            # flow field exactly. Letting the mesh follow the
+            # continuous slider value while the flow snapped to the
+            # nearest baked snapshot caused visible clipping of
+            # streamlines through the rotated wing.
+            _aoa_render = float(aoa_actual)
             _span_axis = str(bp.get("span_axis", "z"))
             # Build the un-rotated airfoil profile (chord-normalised),
             # then rotate inline -- defensive against deployed older
