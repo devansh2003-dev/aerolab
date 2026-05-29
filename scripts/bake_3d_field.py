@@ -81,9 +81,12 @@ PRESETS: dict[str, dict[str, Any]] = {
     "sphere_re40": {
         "body_type": "sphere",
         "Nx": 64, "Ny": 32, "Nz": 32,
-        "body_params": {"cx": 16.0, "cy": 16.0, "cz": 16.0, "R": 4.0},
+        # R bumped from 4 -> 6 (2026-05-29 user note: small bodies
+        # looked lost in the box). New blockage = D/Ny = 12/32 = 37 %;
+        # nu rescaled to keep Re = u_in * D / nu = 40 exactly.
+        "body_params": {"cx": 16.0, "cy": 16.0, "cz": 16.0, "R": 6.0},
         "u_in": 0.04,
-        "nu": 0.008,                     # Re = 0.04 * 8 / 0.008 = 40
+        "nu": 0.012,                     # Re = 0.04 * 12 / 0.012 = 40
         "n_steps": 800,
         "scheme": "trt",
         "use_guo_neem": True,
@@ -105,9 +108,14 @@ PRESETS: dict[str, dict[str, Any]] = {
     "sphere_re100": {
         "body_type": "sphere",
         "Nx": 96, "Ny": 48, "Nz": 48,
-        "body_params": {"cx": 24.0, "cy": 24.0, "cz": 24.0, "R": 6.0},
+        # R bumped from 6 -> 7 (2026-05-29). Blockage = 14/48 = 29 %;
+        # nu rescaled to keep Re = 100 exactly. Modest bump only
+        # because Re=100 sphere is already at the edge of the regime
+        # where the regularised outflow holds for 800 steps -- a
+        # larger body intensifies the wake and pushes stability.
+        "body_params": {"cx": 24.0, "cy": 24.0, "cz": 24.0, "R": 7.0},
         "u_in": 0.04,
-        "nu": 0.0048,                    # Re = 0.04 * 12 / 0.0048 = 100
+        "nu": 0.0056,                    # Re = 0.04 * 14 / 0.0056 = 100
         "n_steps": 800,
         "scheme": "trt",
         "use_guo_neem": True,
@@ -128,11 +136,11 @@ PRESETS: dict[str, dict[str, Any]] = {
     "cylinder_re100": {
         "body_type": "cylinder",
         "Nx": 96, "Ny": 48, "Nz": 48,
-        # Cylinder centre at (24, 24) in (x, y), radius 6, spans full z.
-        # D = 12, blockage = D/Ny = 0.25 (matches sphere_re100).
-        "body_params": {"cx": 24.0, "cy": 24.0, "R": 6.0},
+        # R bumped to 7 (matches sphere_re100). Blockage = 14/48 = 29 %.
+        # Cylinder centre at (24, 24) in (x, y), spans full z.
+        "body_params": {"cx": 24.0, "cy": 24.0, "R": 7.0},
         "u_in": 0.04,
-        "nu": 0.0048,                    # Re = 0.04 * 12 / 0.0048 = 100
+        "nu": 0.0056,                    # Re = 0.04 * 14 / 0.0056 = 100
         "n_steps": 800,
         "scheme": "trt",
         "use_guo_neem": True,
