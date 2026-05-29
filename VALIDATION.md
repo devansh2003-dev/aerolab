@@ -999,3 +999,138 @@ not promised.
 14. Zou, Q. & He, X. (1997) "On pressure and velocity boundary
     conditions for the lattice Boltzmann BGK model." *Phys. Fluids*
     **9**, 1591.
+
+---
+
+## 8. 3D gallery (preview) — what is and isn't validated
+
+The 3D gallery shipped 2026-05-29 as a Cloud-safe **pre-baked field
+replay**: the D3Q19 TRT kernel runs offline (one bake per scene,
+~10–25 s on a laptop CPU), the saved velocity / density / body-mask
+.npz is committed to `data/baked/`, and the hosted app loads the
+snapshot and renders interactive Plotly streamlines + a solid body
+mesh. There is no live 3D solve in the browser — the D3Q19 working
+set (~150 MB at 96×48×48) would exceed the 1-vCPU Cloud worker.
+
+### 8.1 What ships
+
+10 baked scenes, all at u_in = 0.04 lattice units, TRT collision
+(Λ = 3/16), Bouzidi interpolated bounce-back for spheres (analytic
+q-field), voxelised bounce-back for everything else, Guo NEEM
+inflow and regularised Latt-Chopard outflow.
+
+| Shape | Grid | Re bands | AoA bands | Body wall BC |
+|---|---|---|---|---|
+| sphere | 64³ (Re 40) / 96×48² (Re 100) | 40, 100 | n/a | Bouzidi (analytic q) |
+| cylinder (spanwise z) | 64³ / 96×48² | 40, 100 | n/a | voxelised |
+| cube | 64³ / 96×48² | 40, 100 | n/a | voxelised |
+| NACA 0012 | 80×40×32 / 96×48×32 | 40, 100 | 0°, 10° | voxelised |
+| NACA 4412 | 80×40×32 / 96×48×32 | 40, 100 | 0°, 10° | voxelised |
+
+The Re=200 bake was attempted for every shape and **diverged to
+NaN** — tau = 3·ν + 0.5 = 0.512 at our grid resolution sits on the
+BGK/TRT stability boundary, and the regularised outflow can't hold
+the field for the full 600-step run. To reach Re=200 on these
+shapes we'd need either a larger grid (e.g. 192×96×96, ~8× the
+compute) or a different collision operator (cumulant LBM).
+Documented in `scripts/bake_3d_field.py` for the next round.
+
+### 8.2 What we DO validate in 3D
+
+**Taylor-Green vortex decay rate** (`tests/test_phase1_gate_trt_tgv_decay_rate`,
+in CI on every push). A periodic 3D box is initialised with the
+analytic TGV velocity field; the kinetic energy decays
+exponentially as
+
+  E(t) = E(0) · exp(−2νk²·t)
+
+for an incompressible Newtonian fluid. The TRT kernel reproduces
+this slope to **±2 %** vs the analytic exponent over 2 000 lattice
+steps on a 64³ grid with three independent wavenumbers (k = 1, 2,
+3 lattice units). This is the production validation that the
+D3Q19 weights, the TRT collision (including the magic-parameter
+Λ = 3/16), and the streaming step compose to a correct viscous
+operator. It is **not** a validation of bluff-body drag.
+
+### 8.3 What we do NOT validate in 3D
+
+- **No drag coefficient comparison.** Sphere Re=100 has a textbook
+  value Cd ≈ 1.09 (Clift, Grace & Weber 1978); we haven't
+  instrumented force integration over the Bouzidi wall links and
+  haven't run the comparison. The 3D gallery surfaces *no*
+  numerical Cd in-app — only the velocity field as streamlines.
+- **No Strouhal comparison.** Cylinder shedding St ≈ 0.16–0.20 at
+  Re=100 (Williamson 1996) is the natural 3D analogue of the 2D
+  gate; the bake is currently too short (1.6–2.3 advective times
+  D/u) for a clean shedding-frequency measurement.
+- **No NACA polar.** Both wings ship at AoA = 0° (attached flow)
+  and AoA = 10° (mild adverse-pressure-gradient, still attached at
+  Re=100). We don't claim CL or CD against XFoil / OpenFOAM.
+- **No OpenFOAM cross-validation.** Scaffolded as the next
+  validation milestone (item V2 in the senior review). Requires
+  Linux / WSL + an OpenFOAM 11 install — not run yet.
+
+### 8.4 Blockage and advective times
+
+Same caveats as the 2D side carries — surfaced inside the app's
+sidebar slider readout so the user sees the regime:
+
+| Preset | Body D | Blockage (D/Ny) | Advective times (u·n_steps/D) |
+|---|---|---|---|
+| sphere_re40 | 16 | 50 % | 2.0 |
+| sphere_re100 | 20 | 42 % | 1.6 |
+| cylinder_re40 | 16 | 50 % | 2.0 |
+| cylinder_re100 | 20 | 42 % | 1.6 |
+| cube_re40 | 14 | 44 % | 2.3 |
+| cube_re100 | 18 | 37 % | 1.8 |
+| naca0012_re40 (incl. AoA=10) | 20 (chord) | 50 % | 1.6 |
+| naca0012_re100 (incl. AoA=10) | 24 (chord) | 50 % | 1.3 |
+| naca4412_re40 | 20 (chord) | 50 % | 1.6 |
+| naca4412_re100 | 24 (chord) | 50 % | 1.3 |
+
+Free-stream sphere / cylinder wakes typically require
+**4 – 5 D/u** before the recirculation is statistically stationary
+(Johnson & Patel 1999 sphere LES). At 1.3 – 2.3 D/u the shipped
+bakes are **post-startup snapshots, not steady wakes** — the wake
+length and inner recirculation cell are still settling. Visually
+fine; quantitatively incomplete. Documented honestly in-app in the
+3D regime caption and in the sidebar engineering caveats.
+
+### 8.5 Reproducing the 3D bakes
+
+```bash
+# Re-bake every scene from scratch (~3 min on a laptop CPU).
+python scripts/bake_3d_field.py --preset sphere_re100  --out data/baked
+python scripts/bake_3d_field.py --preset cylinder_re100 --out data/baked
+python scripts/bake_3d_field.py --preset cube_re100     --out data/baked
+python scripts/bake_3d_field.py --preset naca0012_re100 --out data/baked
+python scripts/bake_3d_field.py --preset naca0012_aoa10_re100 --out data/baked
+python scripts/bake_3d_field.py --preset naca4412_re100 --out data/baked
+python scripts/bake_3d_field.py --preset naca4412_aoa10_re100 --out data/baked
+# (Re=40 variants ship with a smaller grid; pass the matching preset name.)
+```
+
+Each `.npz` carries a SHA-256 hash of (preset config + body mask +
+final field arrays) in its meta block, surfaced as the
+`preset hash:` line in the engineering details expander. Identical
+re-bakes reproduce the same hash.
+
+### 8.6 What a senior reviewer should ask next
+
+In priority order — the items the gallery does not yet close:
+
+1. **Sphere Re=100 Cd vs Clift-Grace-Weber 1978** (Cd ≈ 1.09). The
+   one bluff-body number that would convert the 3D side from
+   "exploratory visualisation" to "quantitatively validated for one
+   canonical case." Estimated 2 hours: instrument force integration
+   over the Bouzidi wall links, compare to the published number.
+2. **OpenFOAM cylinder Re=100 cross-validation.** Scaffolded under
+   `validation/openfoam/cylinder_re100/` with a comparison script
+   ready; needs the OpenFOAM solve itself. Linux/WSL only.
+3. **Strouhal measurement on a 5 D/u bake.** Bump n_steps from 800
+   to 2 500 on the cylinder Re=100 bake, run an FFT on the lift
+   coefficient time series, compare St against Williamson 1996.
+4. **Cumulant collision for Re ≥ 200.** The current TRT operator
+   sits on the stability boundary at Re=200; cumulant LBM (Geier
+   et al. 2015) extends the safe Re band without forcing a 2–4×
+   grid increase. Worth doing before claiming higher-Re 3D.

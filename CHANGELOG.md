@@ -2,6 +2,45 @@
 
 All notable changes to AeroLab. Dates are absolute; versions follow [SemVer](https://semver.org/).
 
+## [0.6.0] — 2026-05-29
+
+**3D gallery (preview) ships.** A pre-baked D3Q19 TRT field replay running alongside the 2D playground via the sidebar's "Solver tab" radio. Cloud-safe: the kernel runs offline (~10–25 s per scene on a laptop), the saved `.npz` snapshots ship in `data/baked/`, the hosted app loads them and renders interactive 3D streamlines + a solid body mesh. No live 3D solve in the browser.
+
+### Added
+
+- **3D solver core** (`src/lbm_3d_bouzidi.py`, `src/lbm_3d_trt.py`, `src/lbm_3d_qcriterion.py`, `src/lbm_3d_smoke_particles.py`, `src/baked_fields.py`). D3Q19 with TRT collision (Λ = 3/16 magic parameter), Bouzidi interpolated bounce-back with analytic q-field for spheres, voxelised wall links for everything else, Guo NEEM inflow and regularised Latt-Chopard outflow. Validated against the Taylor-Green vortex decay rate to ±2 % vs the analytic 4νk² exponent (`tests/test_phase1_gate_trt_tgv_decay_rate`, gated in CI).
+- **10 pre-baked 3D scenes**, all at u_in = 0.04 lattice units, regularised outflow:
+  - Sphere, cylinder (spanwise z), cube at Re ∈ {40, 100}
+  - NACA 0012 (symmetric) and NACA 4412 (cambered) at Re ∈ {40, 100} × AoA ∈ {0°, 10°}
+- **3D gallery UI** (`if view == "3D gallery (preview)":` block in `app.py`). Sidebar mirrors the 2D playground layout exactly: Simulation setup heading, First-time expander, Shape selectbox, Flow speed slider (0.10–4.50 m/s, same `L = 5 mm` convention as 2D), AoA slider (NACA only), Color picker (Velocity / Vorticity / Pressure), top-down body silhouette preview, Streamlines (density / thickness / animate flow), Overlays (body / wind-tunnel chamber / Q-criterion shell).
+- **Server-side RK2 streamline tracing** (`_trace_streamlines` in `app.py`). Vectorised numba-jitted trilinear interpolation; ~50–150 ms per scene for 25–96 seeds × 400 steps. Replaces the earlier Plotly `go.Streamtube` (which did the integration in JavaScript on the browser main thread and blocked the UI for 3–8 s on scene-swap).
+- **Body-collision midpoint snap** in the tracer so streamlines visibly graze the body surface instead of stopping ~0.5 lattice cells short.
+- **Animated growing streamlines.** Each cycle: head holds at outflow while tail sweeps from inflow forward (drain), then tail stays at inflow while head sweeps to outflow (grow). 60 frames at 80 ms per frame with 60 ms linear transition; per-streamline phase stagger so streaks don't all march in lockstep. Camera rotation stays live during playback via `uirevision` tokens on layout + scene (Plotly preserves view-state across redraws bound to the same token).
+- **Curated 3D gallery cards** below the chart: *How a wing lifts* (NACA 4412 + pressure coloring), *Wing at zero AoA*, *Where the air spins* (cylinder + vorticity), *Bluff cube*, *Almost stopped (creep)*, *Sphere wake*.
+- **3D bake script** (`scripts/bake_3d_field.py`) with `--preset <name> --out data/baked`. Each `.npz` carries the preset config, body mask, float16-quantised velocity / density arrays, and a SHA-256 hash of the (config + mask + final field) for reproducibility.
+- **`naca_outline()`** and **`make_naca_mask()`** in `src/lbm_3d_bouzidi.py`. Analytic NACA 4-digit thickness + camber line, AoA-rotated about the chord midpoint, used by both the bake-time mask voxeliser and the runtime body-mesh renderer.
+- **3D validation section** in `VALIDATION.md` (§8). What 3D is and isn't validated against, baked-scene parameters table, blockage and advective-times disclosure, reproduction commands.
+- **Hero chip becomes contextual.** "3D gallery · preview, in sidebar →" while in 2D view, "3D gallery · preview · live" (green) while in 3D — no stale pointer.
+
+### Changed
+
+- **Velocity → Re mapping in the 3D playground uses the same `L = 5 mm` convention as 2D.** Previously a 0.5 mm characteristic length compressed the slider into the {40, 100} bake range, which produced a confusing mismatch ("in 2D this was Re 500 at 1.5 m/s, why is 3D calling it Re 50?"). Now 1.5 m/s reads as nominal Re 500 in both solvers; the 3D readout shows BOTH the nominal Re from the slider AND the snapped baked Re below it whenever they differ, so users see the gap honestly.
+- **2D Resolution radio labels** now state the trade-off, not just the grid size. "Standard (320 x 80) — faster, ~40 s local" and "Detailed (960 x 240) — sharper wake, ~100 s local".
+- **2D Solver tab radio** (sidebar) gates 2D vs 3D. The earlier developer-only "3D dev bench (local)" view was removed — 987 lines of dead code path retired.
+
+### Fixed
+
+- **3D NACA preview crashed when an older `lbm_3d_bouzidi.py` was on the deploy.** Refactored the preview and 3D body render to call `naca_outline()` with positional-only arguments and apply the chord-midpoint rotation inline — no longer depends on the deployed module exposing the `aoa_deg` kwarg.
+- **3D shape selector tooltip** previously said "NACA wings + custom-upload support are queued for the next release" even after NACA shipped. Rewritten to reflect what's live (NACA 0012 / 4412 at AoA = 0° and 10°); only Custom STL/PNG upload is now flagged as deferred.
+- **3D animation rotation was locked during playback** in an interim build (used `redraw=False` to preserve camera, but Plotly's 3D Scatter geometry updates require `redraw=True` to actually paint). Restored `redraw=True` and added the `uirevision` tokens so camera state survives redraws.
+- **Filename parser** for 3D bake files used a `[a-zA-Z]+` regex that silently dropped shapes whose names contain digits (`naca0012`, `naca4412`). Replaced with an `rfind('_re')` / `rfind('_aoa')` split that handles arbitrary `<shape>[_aoa<deg>]_re<N>` patterns.
+
+### Docs
+
+- **README "Status"** updated to reflect the shipped 3D gallery. Phase 3 row in the roadmap table now shows "3D gallery (D3Q19 TRT, 10 pre-baked scenes) ✅" alongside the OpenFOAM-pending mark.
+- **README "What this solver isn't"** clarified — Live 3D solve on Cloud explicitly called out as outside scope; the offline-bake / Cloud-replay split documented.
+- **VALIDATION.md** gains §8 covering 3D bake parameters, the TGV decay-gate validation, and an explicit "what we do NOT validate in 3D" list (no Cd, no Strouhal, no NACA polar, no OpenFOAM cross-validation).
+
 ## [0.5.0] — 2026-05-23
 
 **Custom polygon-drawer + plain-English help overhaul** — the major pre-ship revamp before sending to senior engineers for review.

@@ -2971,11 +2971,21 @@ if mode == "Real CFD (LBM)":
             if not k.startswith(_DEV_ONLY_PRESETS)
         ]
         st.session_state.setdefault("lbm_res_radio", _ui_res_keys[0])
+        # Append the trade-off (speed + visual) to each radio label so
+        # the user reads what they're choosing, not just the grid size.
+        # The dict key (and share-link query param + cache key) stays
+        # ``"Standard (320 x 80)"`` -- only the display label changes,
+        # via format_func.
+        _res_label_suffix = {
+            "Standard (320 x 80)": " — faster, ~40 s local",
+            "Detailed (960 x 240)": " — sharper wake, ~100 s local",
+        }
         res_display = st.radio(
             "Resolution",
             _ui_res_keys,
             label_visibility="collapsed",
             horizontal=True,
+            format_func=lambda k: k + _res_label_suffix.get(k, ""),
             help=(
                 "How fine the simulation grid is.\n\n"
                 "- **Standard** (320 x 80 cells) — fast, ~40 s on your "

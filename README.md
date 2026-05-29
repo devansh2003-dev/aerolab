@@ -87,15 +87,17 @@ python scripts/dev_validate_cfd.py       # 4 physics gates + 3 diagnostics, ~90 
 
 ## Status
 
-**Day 16 of a 12-week build (started 2026-05-09). Phases 1 + 2 closed; Phase 3 in progress.**
+**Day 20 of a 12-week build (started 2026-05-09). Phases 1 + 2 closed; Phase 3 in progress.**
 
-Phase 1 (solver core, W1–4) shipped Day 5, expanded Days 6–14 with originally-Phase-2/3 work (MRT, Bouzidi, Zou-He, Mei momentum exchange). Phase 2 (W5 image upload, W6 multi-viz, W7 side-by-side compare, W8 gallery, plus a Phase-2.5 click-to-draw canvas) all shipped. Currently in Phase 3 polish: NeuralFoil ✅, validation against Williamson 1996 + Okajima 1982 ✅, plain-English UX overhaul ✅. 3D wing and OpenFOAM cross-validation remain optional stretch goals.
+Phase 1 (solver core, W1–4) shipped Day 5, expanded Days 6–14 with originally-Phase-2/3 work (MRT, Bouzidi, Zou-He, Mei momentum exchange). Phase 2 (W5 image upload, W6 multi-viz, W7 side-by-side compare, W8 gallery, plus a Phase-2.5 click-to-draw canvas) all shipped. Phase 3 in progress: NeuralFoil ✅, validation against Williamson 1996 + Okajima 1982 ✅, plain-English UX overhaul ✅, **3D gallery (pre-baked preview) ✅**. OpenFOAM cross-validation is the only Phase-3 item still open.
+
+The **3D gallery** is a pre-baked field replay (Cloud-safe). The D3Q19 TRT kernel runs offline (one-off bake per scene, ~20 s on a laptop); the deployed app loads the saved .npz and renders interactive streamlines + body. 10 scenes ship: sphere, cylinder, cube, NACA 0012, NACA 4412 — each at Re ∈ {40, 100}; NACA wings additionally at AoA ∈ {0°, 10°}. Real-time 3D solving stays local-only (D3Q19 populations are too big for the 1-vCPU Cloud worker). See [VALIDATION.md §8](VALIDATION.md) for what 3D is and isn't validated against.
 
 | Phase | Weeks | Deliverable | Status |
 |------:|------:|------|------|
 | 1 — Solver core | 1–4 | LBM works, validated, deployed with 5+ shapes | ✅ Day 5; expanded to D14 |
 | 2 — Shape freedom | 5–8 | **Image upload + silhouette extraction**, multi-viz, side-by-side, GIF export, gallery | **Upload ✅**, sample silhouettes ✅, **click-to-draw canvas ✅**, side-by-side ✅, GIF ✅, gallery ✅, multi-viz (vorticity / velocity / pressure) ✅. |
-| 3 — Polish + 3D | 9–12 | NeuralFoil ✅, optional AeroSandbox+AVL 3D, OpenFOAM cross-validation, launch | NeuralFoil + Cloud deploy ✅; 3D + OpenFOAM pending |
+| 3 — Polish + 3D | 9–12 | NeuralFoil, 3D gallery, OpenFOAM cross-validation, launch | NeuralFoil ✅, Cloud deploy ✅, **3D gallery (D3Q19 TRT, 10 pre-baked scenes) ✅**; OpenFOAM pending |
 
 ## Solver diagnostics
 
@@ -127,13 +129,14 @@ Artifacts in `data/`: `cylinder_convergence.png`, `validation_grid_convergence.p
 
 ## What this solver isn't
 
-Shares the *collision-rule family* (MRT + Smagorinsky LES) with industrial LBM solvers (PowerFLOW, Palabos, waLBerla). That's like sharing "has four wheels" with an F1 car. We don't have:
+Shares the *collision-rule family* (MRT + Smagorinsky LES in 2D, TRT in 3D) with industrial LBM solvers (PowerFLOW, Palabos, waLBerla). That's like sharing "has four wheels" with an F1 car. We don't have:
 
 - GPU acceleration → Re envelope tops at 1500 in 2D (industrial: Re ≥ 10⁶ on GPU clusters)
 - Adaptive mesh refinement → uniform 320×80 (Standard) or 960×240 (Detailed); offline 700×400 (Validation) and 1200×400 (Resolved)
 - Wall-function turbulence → we resolve the boundary layer directly (only feasible at low Re)
-- Cumulant collision, multi-block, automatic time-stepping, 3D, OpenFOAM/Fluent cross-validation
+- Cumulant collision, multi-block, automatic time-stepping, OpenFOAM/Fluent cross-validation
 - Bouzidi q-field for arbitrary uploaded polygons (built-ins have it; custom uploads use halfway BB)
+- **Live 3D solve on Cloud.** The 3D D3Q19 TRT kernel runs offline (~20 s per scene on a laptop); the hosted app replays the saved velocity field. 3D Re tops out at 100 in the shipped bakes (Re=200 BGK/TRT diverged at our grid resolution — tau ≈ 0.512); no quantitative drag validation has been done for 3D yet (see [VALIDATION.md §8](VALIDATION.md)).
 
 Every choice on the production hot path is textbook-correct for built-in shapes. The *envelope* (Re, dimensionality, scope) is firmly academic-tutorial.
 
