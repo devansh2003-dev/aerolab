@@ -58,6 +58,7 @@ from src.baked_fields import save_baked_field  # noqa: E402
 from src.lbm_3d_bouzidi import (  # noqa: E402
     make_cube_mask,
     make_cylinder_mask,
+    make_naca_mask,
     make_sphere_mask,
     sphere_wall_links,
 )
@@ -200,6 +201,77 @@ PRESETS: dict[str, dict[str, Any]] = {
         "rho_outflow": 1.0,
         "outflow_scheme": "regularised",
     },
+    # NACA 0012 (symmetric): the canonical "wing at zero AoA" -- the
+    # streamlines glide cleanly past with attached flow over the entire
+    # chord. Re = u_in * chord / nu = 0.04 * 24 / 0.0096 = 100.
+    # Chord 24 spanning x in [10, 34] of a 96 x 48 x 32 grid.
+    "naca0012_re100": {
+        "body_type": "naca",
+        "Nx": 96, "Ny": 48, "Nz": 32,
+        "body_params": {
+            "x_le": 14.0, "y_chord": 24.0, "chord": 24.0,
+            "m": 0.0, "p": 0.0, "thickness": 0.12,
+        },
+        "u_in": 0.04,
+        "nu": 0.0096,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "naca0012_re40": {
+        "body_type": "naca",
+        "Nx": 80, "Ny": 40, "Nz": 32,
+        "body_params": {
+            "x_le": 12.0, "y_chord": 20.0, "chord": 20.0,
+            "m": 0.0, "p": 0.0, "thickness": 0.12,
+        },
+        "u_in": 0.04,
+        "nu": 0.02,                      # Re = 0.04 * 20 / 0.02 = 40
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    # NACA 4412 (cambered): 4 % camber at 40 % chord, 12 % thickness.
+    # The asymmetry diverts the flow downward -> lift, even at zero
+    # geometric AoA. Same Re ladder as NACA 0012.
+    "naca4412_re100": {
+        "body_type": "naca",
+        "Nx": 96, "Ny": 48, "Nz": 32,
+        "body_params": {
+            "x_le": 14.0, "y_chord": 24.0, "chord": 24.0,
+            "m": 0.04, "p": 0.40, "thickness": 0.12,
+        },
+        "u_in": 0.04,
+        "nu": 0.0096,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "naca4412_re40": {
+        "body_type": "naca",
+        "Nx": 80, "Ny": 40, "Nz": 32,
+        "body_params": {
+            "x_le": 12.0, "y_chord": 20.0, "chord": 20.0,
+            "m": 0.04, "p": 0.40, "thickness": 0.12,
+        },
+        "u_in": 0.04,
+        "nu": 0.02,
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
 }
 
 
@@ -239,6 +311,20 @@ def _build_body(
         cz = float(body_params["cz"])
         h = float(body_params["half_extent"])
         mask = make_cube_mask(Nx, Ny, Nz, cx, cy, cz, h)
+        wall_links = voxel_wall_links(mask)
+        return mask, wall_links
+    if body_type == "naca":
+        # NACA 4-digit airfoil extruded along the spanwise z axis.
+        # body_params: x_le, y_chord, chord, m, p, thickness.
+        x_le = float(body_params["x_le"])
+        y_chord = float(body_params["y_chord"])
+        chord = float(body_params["chord"])
+        m = float(body_params["m"])
+        p = float(body_params["p"])
+        thickness = float(body_params["thickness"])
+        mask = make_naca_mask(
+            Nx, Ny, Nz, x_le, y_chord, chord, m, p, thickness,
+        )
         wall_links = voxel_wall_links(mask)
         return mask, wall_links
     raise ValueError(f"unknown body_type: {body_type!r}")

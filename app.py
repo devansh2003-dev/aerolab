@@ -724,6 +724,60 @@ def _closed_cylinder_mesh(cx, cy, R, z0, z1, n_theta=48):
     )
 
 
+def _extruded_polygon_mesh(profile_xy, z0, z1):
+    """Build a watertight extruded mesh from a closed 2D polyline
+    (NACA airfoil cross-section, custom silhouette, etc.). The polyline
+    must be the closed outer boundary in counter-clockwise order so the
+    side-wall normals end up pointing outward.
+
+    Returns (vx, vy, vz, i, j, k) for ``go.Mesh3d``.
+    """
+    profile_xy = np.asarray(profile_xy, dtype=np.float64)
+    # Drop the duplicated closing vertex if present.
+    if profile_xy.shape[0] >= 2 and np.allclose(
+        profile_xy[0], profile_xy[-1]
+    ):
+        profile_xy = profile_xy[:-1]
+    n = profile_xy.shape[0]
+    # Vertex layout:
+    #   [0 .. n-1]            -> bottom rim (z = z0)
+    #   [n .. 2*n - 1]        -> top rim (z = z1)
+    #   [2*n]                 -> bottom cap centroid
+    #   [2*n + 1]             -> top cap centroid
+    centroid = profile_xy.mean(axis=0)
+    vx = np.concatenate([
+        profile_xy[:, 0], profile_xy[:, 0],
+        np.array([centroid[0], centroid[0]], dtype=np.float64),
+    ])
+    vy = np.concatenate([
+        profile_xy[:, 1], profile_xy[:, 1],
+        np.array([centroid[1], centroid[1]], dtype=np.float64),
+    ])
+    vz = np.concatenate([
+        np.full(n, z0), np.full(n, z1),
+        np.array([z0, z1], dtype=np.float64),
+    ])
+    i_idx, j_idx, k_idx = [], [], []
+    bot_centre = 2 * n
+    top_centre = 2 * n + 1
+    for a in range(n):
+        b = (a + 1) % n
+        a_top = a + n
+        b_top = b + n
+        i_idx.extend([a, b])
+        j_idx.extend([b, b_top])
+        k_idx.extend([a_top, a_top])
+        i_idx.extend([bot_centre, top_centre])
+        j_idx.extend([b, a_top])
+        k_idx.extend([a, b_top])
+    return (
+        vx, vy, vz,
+        np.asarray(i_idx, dtype=np.int32),
+        np.asarray(j_idx, dtype=np.int32),
+        np.asarray(k_idx, dtype=np.int32),
+    )
+
+
 def _closed_box_mesh(cx, cy, cz, hx, hy, hz):
     """Axis-aligned box as a closed Mesh3d. Centred at (cx, cy, cz),
     half-extents (hx, hy, hz). Returns the same 6-tuple as
@@ -795,16 +849,17 @@ if view == "3D gallery (preview)":
         _Re_val = int(m.group("Re"))
         _shape_re_map.setdefault(_shape, {})[_Re_val] = _path
 
-    # Display labels + "coming soon" placeholders. NACA + Custom appear
-    # in the selectbox so users see the planned roadmap, but selecting
-    # them shows the deferred-feature copy instead of a render.
+    # Display labels for the shape selector. NACA wings ship as
+    # first-class shapes now; only Custom upload remains a placeholder
+    # (Cloud free tier can't run live 3D bakes).
     _BUILTIN_SHAPES_3D = [
         ("sphere", "Sphere (round)"),
         ("cylinder", "Cylinder (round pipe)"),
         ("cube", "Cube (block)"),
+        ("naca0012", "NACA 0012 wing (symmetric)"),
+        ("naca4412", "NACA 4412 wing (cambered)"),
     ]
     _PLACEHOLDER_SHAPES_3D = [
-        ("naca0012", "NACA 0012 wing (coming soon)"),
         ("custom", "Upload your own (PNG, JPG, WEBP, etc.)"),
     ]
     _shape_label_to_key: dict[str, str] = {}
@@ -919,9 +974,15 @@ if view == "3D gallery (preview)":
                 "pick a built-in shape above."
             )
 
-        if chosen_shape in ("naca0012", "custom"):
+        if chosen_shape == "custom":
             # Placeholder shape: show the rest of the sidebar in a
             # disabled state so the layout doesn't reflow when switching.
+            shape_for_loader = None
+            re_actual = 100
+            shape_re_options = [100]
+        elif chosen_shape not in _shape_re_map:
+            # Shape selected from the list but no bake found on disk
+            # (e.g. deploy missed the .npz). Surface as placeholder.
             shape_for_loader = None
             re_actual = 100
             shape_re_options = [100]
@@ -980,25 +1041,6 @@ if view == "3D gallery (preview)":
         st.caption(
             ":gray[*Pre-baked field replay -- the slider snaps to a "
             "real LBM snapshot at the nearest Re.*]"
-        )
-
-        st.markdown("")
-        st.markdown(":material/grid_view: **Resolution**")
-        st.radio(
-            "Resolution",
-            [
-                "Standard (pre-baked, fast)",
-                "Detailed (coming soon)",
-            ],
-            index=0,
-            label_visibility="collapsed",
-            key="gallery_resolution",
-            disabled=True,
-            help=(
-                "3D pre-bakes ship at 96 x 48 x 48 (high-Re) and "
-                "64 x 32 x 32 (low-Re). Detailed-tier (192 x 96 x 96) "
-                "bakes are queued for v0.4."
-            ),
         )
 
         st.markdown("")
@@ -1369,6 +1411,43 @@ if view == "3D gallery (preview)":
             )
         except (KeyError, ValueError, TypeError):
             pass
+    elif show_sphere and body_type == "naca":
+        bp = field.meta.get("body_params", {})
+        try:
+            from src.lbm_3d_bouzidi import naca_outline
+            _x_le = float(bp["x_le"])
+            _y_chord = float(bp["y_chord"])
+            _chord = float(bp["chord"])
+            _m_cam = float(bp.get("m", 0.0))
+            _p_cam = float(bp.get("p", 0.0))
+            _thk = float(bp["thickness"])
+            _profile_norm = naca_outline(
+                _m_cam, _p_cam, _thk, n_pts=81,
+            )
+            # Map from chord-normalised (x/c, y/c) into lattice coords.
+            _profile = np.stack(
+                [
+                    _x_le + _profile_norm[:, 0] * _chord,
+                    _y_chord + _profile_norm[:, 1] * _chord,
+                ],
+                axis=1,
+            )
+            _vx, _vy, _vz, _ii, _jj, _kk = _extruded_polygon_mesh(
+                _profile, 0.0, float(Nz),
+            )
+            scene_traces.append(
+                go.Mesh3d(
+                    x=_vx, y=_vy, z=_vz,
+                    i=_ii, j=_jj, k=_kk,
+                    color="#cbd5e1",
+                    flatshading=False,
+                    lighting=_body_lighting,
+                    lightposition=_body_lightpos,
+                    name="naca", hoverinfo="skip",
+                )
+            )
+        except (KeyError, ValueError, TypeError):
+            pass
 
     # Wireframe box: 12 edges of the simulation domain as a single
     # Scatter3d in lines mode (None-separated segments).
@@ -1399,101 +1478,102 @@ if view == "3D gallery (preview)":
             )
         )
 
-    # Animated flow: short bright streaks that travel along each
-    # streamline. NOT marker dots -- the user feedback was "the
-    # streamlines are supposed to be animated, not show points on
-    # them". The streaks ARE chunks of the streamline path, so the
-    # animation looks like the streamlines themselves are flowing,
-    # not separate particles riding on top.
+    # Animated flow: the STREAMLINE TRACE ITSELF grows from inflow to
+    # outflow, then "drains" out. Each animation cycle the user sees
+    # smoke arriving at the inlet, sweeping past the body, and exiting
+    # downstream. NOT a highlight traveling on top of static lines
+    # (user feedback: "i want to see the streamlines physically
+    # starting from the start point and going over the obj, not js
+    # highlight").
     #
-    # 30 frames * ~25 streamlines * 14 vertices per streak ~ 10 k
-    # vertices per frame. Browser handles this fine. Frame duration
-    # 230 ms with linear transition smoothing gives a continuous,
-    # not-choppy feel (the previous 12 frames @ 110 ms felt like a
-    # stuttering GIF).
+    # Animation rotation: redraw=False is critical here. With
+    # redraw=True Plotly fully repaints the scene every frame, which
+    # blocks the user's mouse-drag camera interactions. With
+    # redraw=False only the trace data is patched -- the WebGL scene,
+    # including any orbit the user has applied, stays put.
     _frames = []
-    _streak_index = None
+    _stream_trace_index = 0  # the streamlines are the FIRST trace
     if animate_flow:
         _ANIM_FRAMES = 30
-        _STREAK_LEN = 14   # vertices per streak; tuned for visible motion
+        # Phase pattern: 60 % grow (lines extend from inflow toward
+        # outflow), 40 % drain (the inflow tail catches up so the line
+        # shortens from the inlet). At the loop boundary both ends are
+        # equal -> empty line -> smooth restart. The user sees one
+        # continuous "smoke arrives, smoke leaves" cycle, not a snap.
+        _GROW_FRAC = 0.60
+
         nan_mask = np.isnan(flat_x)
         _split_idx = np.where(nan_mask)[0]
-        _streams_xyz = []
+        # Build (start, end) indices for each streamline within the
+        # flat arrays. We keep the flat arrays themselves (so colours
+        # already computed for the static view stay aligned) and just
+        # build per-frame NaN masks that hide vertices outside the
+        # current animation window.
+        _stream_spans = []
         _prev = 0
         for _s in _split_idx:
-            if _s > _prev + _STREAK_LEN + 2:
-                _streams_xyz.append((
-                    flat_x[_prev:_s],
-                    flat_y[_prev:_s],
-                    flat_z[_prev:_s],
-                ))
+            if _s > _prev + 4:
+                _stream_spans.append((_prev, _s))
             _prev = _s + 1
-        # Subsample streamlines so the streak trace stays light even at
-        # max density (96 seeds * 14-vert streaks would be 1.3 k verts
-        # per frame -- fine, but capping at 40 keeps memory predictable
-        # for users on phones).
-        if len(_streams_xyz) > 40:
-            _stride = max(1, len(_streams_xyz) // 40)
-            _streams_xyz = _streams_xyz[::_stride]
 
-        # Per-streamline phase offset so the streaks across different
-        # streamlines are NOT all at the same arc-fraction simultaneously.
-        # In lockstep mode the whole flow looks like a single moving
-        # ribbon; staggered, the eye reads it as turbulent smoke where
-        # particles arrive at different times. Offsets spread across a
-        # half-cycle so adjacent streamlines never quite coincide.
-        _n_streams = max(1, len(_streams_xyz))
+        # Phase stagger so the streamlines don't all start at the same
+        # arc-fraction simultaneously -- looks like real wind, not a
+        # synchronised laser show.
+        _n_streams = max(1, len(_stream_spans))
         _phase_offsets = (
-            np.arange(_n_streams) * (0.5 / _n_streams)
+            np.arange(_n_streams) * (0.35 / _n_streams)
         ).astype(np.float64)
+
+        flat_x_anim = np.asarray(flat_x, dtype=np.float32)
+        flat_y_anim = np.asarray(flat_y, dtype=np.float32)
+        flat_z_anim = np.asarray(flat_z, dtype=np.float32)
         _anim_frames_data = []
         for _f in range(_ANIM_FRAMES):
-            _sx_all, _sy_all, _sz_all = [], [], []
-            _base_phase = _f / _ANIM_FRAMES
-            for _s_idx, (_sx, _sy, _sz) in enumerate(_streams_xyz):
-                _n = len(_sx)
-                if _n < _STREAK_LEN + 2:
+            # Window indices for this frame, per streamline.
+            _t = _f / _ANIM_FRAMES
+            _fx = flat_x_anim.copy()
+            _fy = flat_y_anim.copy()
+            _fz = flat_z_anim.copy()
+            for _s_idx, (_a, _b) in enumerate(_stream_spans):
+                _n = _b - _a
+                if _n < 4:
                     continue
-                # Per-streamline phase: (base + offset) wraps around
-                # one full cycle, so each streak still traverses the
-                # whole path but starts/ends out of sync with its
-                # neighbours.
-                _phase = (_base_phase + _phase_offsets[_s_idx]) % 1.0
-                _head = int(_phase * (_n - 1))
-                _tail = max(0, _head - _STREAK_LEN)
-                _sx_all.extend(_sx[_tail:_head + 1].tolist())
-                _sy_all.extend(_sy[_tail:_head + 1].tolist())
-                _sz_all.extend(_sz[_tail:_head + 1].tolist())
-                _sx_all.append(np.nan)
-                _sy_all.append(np.nan)
-                _sz_all.append(np.nan)
-            _anim_frames_data.append((_sx_all, _sy_all, _sz_all))
+                _tt = (_t + _phase_offsets[_s_idx]) % 1.0
+                if _tt < _GROW_FRAC:
+                    # Grow phase: head sweeps 0 -> 1, tail stays at 0.
+                    _head_frac = _tt / _GROW_FRAC
+                    _tail_frac = 0.0
+                else:
+                    # Drain phase: head holds at 1, tail sweeps 0 -> 1.
+                    _head_frac = 1.0
+                    _tail_frac = (_tt - _GROW_FRAC) / (1.0 - _GROW_FRAC)
+                _head_idx = _a + int(_head_frac * (_n - 1))
+                _tail_idx = _a + int(_tail_frac * (_n - 1))
+                # NaN out vertices outside [tail, head] for this stream.
+                if _tail_idx > _a:
+                    _fx[_a:_tail_idx] = np.nan
+                    _fy[_a:_tail_idx] = np.nan
+                    _fz[_a:_tail_idx] = np.nan
+                if _head_idx < _b - 1:
+                    _fx[_head_idx + 1:_b] = np.nan
+                    _fy[_head_idx + 1:_b] = np.nan
+                    _fz[_head_idx + 1:_b] = np.nan
+            _anim_frames_data.append((_fx, _fy, _fz))
 
-        # Initial streak overlay (frame 0). Brighter, thicker than the
-        # base streamlines so it pops out without obscuring structure.
-        _sx0, _sy0, _sz0 = _anim_frames_data[0]
-        scene_traces.append(
-            go.Scatter3d(
-                x=_sx0, y=_sy0, z=_sz0,
-                mode="lines",
-                line=dict(
-                    color="#fef9c3",
-                    width=float(line_width) + 2.5,
-                ),
-                opacity=0.92,
-                name="flow",
-                hoverinfo="skip",
-                showlegend=False,
-            )
-        )
-        _streak_index = len(scene_traces) - 1
+        # Initial frame applied to the streamline trace immediately so
+        # the first paint isn't a static full-length scene before the
+        # animation kicks in.
+        _fx0, _fy0, _fz0 = _anim_frames_data[0]
+        scene_traces[_stream_trace_index].x = _fx0
+        scene_traces[_stream_trace_index].y = _fy0
+        scene_traces[_stream_trace_index].z = _fz0
         _frames = [
             go.Frame(
-                data=[go.Scatter3d(x=_fx, y=_fy, z=_fz)],
-                traces=[_streak_index],
+                data=[go.Scatter3d(x=_fx_i, y=_fy_i, z=_fz_i)],
+                traces=[_stream_trace_index],
                 name=str(_i),
             )
-            for _i, (_fx, _fy, _fz) in enumerate(_anim_frames_data)
+            for _i, (_fx_i, _fy_i, _fz_i) in enumerate(_anim_frames_data)
         ]
 
     # Camera + look-at: shift toward the body so it fills the viewport
@@ -1556,10 +1636,15 @@ if view == "3D gallery (preview)":
                 buttons=(
                     [
                         dict(
+                            # redraw=False keeps Plotly from repainting
+                            # the whole scene each frame -- camera
+                            # orbits the user has applied stay put and
+                            # rotation/zoom remain interactive while
+                            # the animation plays.
                             label="▶ Animate",
                             method="animate",
                             args=[None, dict(
-                                frame=dict(duration=230, redraw=True),
+                                frame=dict(duration=220, redraw=False),
                                 fromcurrent=True,
                                 transition=dict(
                                     duration=120, easing="linear",
@@ -1597,17 +1682,26 @@ if view == "3D gallery (preview)":
     _gallery_cards_3d = [
         # (shape_label, velocity_mps, viz_mode, title, description, btn_label)
         (
-            "Sphere (round)", 4.5, "Velocity",
-            "Sphere wake",
-            "Re ≈ 100. Watch the streamlines split, wrap around the "
-            "sphere, and converge into a clean axisymmetric wake.",
+            "NACA 4412 wing (cambered)", 4.5, "Pressure",
+            "How a wing lifts",
+            "Cambered wing in fast flow, coloured by pressure. The "
+            "underside reads red (high), the top reads blue (low) -- "
+            "that asymmetry IS the lift force.",
             "Show me",
         ),
         (
-            "Cylinder (round pipe)", 4.5, "Velocity",
-            "Cylinder over the span",
-            "Re ≈ 100. The classic 2D-like wake, now extruded in z. "
-            "Span-coherent recirculation just downstream of the body.",
+            "NACA 0012 wing (symmetric)", 4.5, "Velocity",
+            "Wing at zero AoA",
+            "Symmetric NACA 0012, flow attached chord-to-tail. "
+            "Clean streamlines, thin wake -- the textbook example "
+            "of attached subsonic flow.",
+            "Show me",
+        ),
+        (
+            "Cylinder (round pipe)", 4.5, "Vorticity",
+            "Where the air spins",
+            "Cylinder coloured by |curl(u)|. The bright bands trace "
+            "the rotating shear layers peeling off the body.",
             "Show me",
         ),
         (
@@ -1619,23 +1713,17 @@ if view == "3D gallery (preview)":
         ),
         (
             "Sphere (round)", 0.5, "Velocity",
-            "Slow sphere (creep)",
-            "Re ≈ 40. Streamlines glide around almost reversibly -- "
-            "the Stokes-flow limit you'd see with honey or syrup.",
+            "Almost stopped (creep)",
+            "Re ≈ 40. Streamlines glide around the sphere almost "
+            "reversibly -- the Stokes-flow limit you'd see with "
+            "honey or syrup.",
             "Show me",
         ),
         (
-            "Cylinder (round pipe)", 4.5, "Vorticity",
-            "Where the air spins",
-            "Cylinder coloured by |curl(u)|. The bright bands trace "
-            "the rotating shear layers peeling off the body.",
-            "Show me",
-        ),
-        (
-            "Cube (block)", 4.5, "Pressure",
-            "Pressure around a cube",
-            "Cube coloured by lattice density. Front face is red "
-            "(stagnation), the wake drops blue (suction).",
+            "Sphere (round)", 4.5, "Velocity",
+            "Sphere wake",
+            "Re ≈ 100. The streamlines split, wrap around the "
+            "sphere, and converge into a clean axisymmetric wake.",
             "Show me",
         ),
     ]
@@ -1673,95 +1761,6 @@ if view == "3D gallery (preview)":
                     _apply_3d_gallery_card(_card3d)
                     st.rerun()
 
-    # Engineering details: collapsed, on the main page, below the
-    # chart. Read-only display of metadata; all interactive controls
-    # already live in the sidebar.
-    _bp_meta = field.meta.get("body_params", {})
-    _D_char = 2.0 * float(_bp_meta.get("R", _bp_meta.get("half_extent", 0.0)))
-    _Re_est = (
-        u_in_meta * _D_char
-        / max(float(field.meta.get("nu", 1.0)), 1e-9)
-    )
-    _solver = field.meta.get("solver_diag", {})
-    _scheme = str(field.meta.get("scheme", "?")).upper()
-    _outflow = str(field.meta.get("outflow_scheme", "guo"))
-    _n_steps = int(field.meta.get("n_steps", 0))
-    with st.expander(
-        ":material/tune: &nbsp; **Engineering details**",
-        expanded=False,
-    ):
-        st.caption(
-            f"*Solver: {_scheme} collision, "
-            f"{'Bouzidi' if field.meta.get('use_bouzidi') else 'half-way BB'} "
-            f"wall BC, {_outflow} outflow, {_n_steps} steps.*"
-        )
-        diag_cols = st.columns(4)
-        diag_cols[0].metric("Grid", f"{Nx} × {Ny} × {Nz}")
-        diag_cols[1].metric(
-            "Re (approx)", f"{_Re_est:.0f}",
-            help="u_in · D / nu, using sphere diameter D = 2R from "
-                 "the preset's body params.",
-        )
-        diag_cols[2].metric(
-            "Mass drift", f"{_solver.get('mass_drift_rel', 0):.2%}",
-            help="Mass change between the simulation's first and last step.",
-        )
-        diag_cols[3].metric(
-            "Peak u_x", f"{_solver.get('u_peak', 0):.4f}",
-            help="Maximum streamwise velocity (lattice units).",
-        )
-        # CFD-honesty row: blockage ratio and advective times. Recruiter
-        # / engineer caveats so anyone digging beyond the visualisation
-        # sees the same disclaimers the 2D side carries. Blockage > 25 %
-        # means duct-flow corrections matter; advective times < 4-5
-        # means the wake isn't statistically stationary yet.
-        _blockage_pct = (
-            (_D_char / float(Ny)) * 100.0 if Ny > 0 else 0.0
-        )
-        _adv_times = (
-            (u_in_meta * float(_n_steps)) / max(_D_char, 1e-9)
-        )
-        cav_cols = st.columns(2)
-        cav_cols[0].metric(
-            "Blockage", f"{_blockage_pct:.0f} %",
-            help=(
-                "D / Ny. Above ~25 % the channel walls start to "
-                "dominate the wake (duct flow, not free-stream). "
-                "These bakes prioritise a chunky-looking body over "
-                "low blockage. For quantitative Cd you'd want < 5 % "
-                "blockage and a corresponding wall-correction."
-            ),
-        )
-        cav_cols[1].metric(
-            "Advective times", f"{_adv_times:.1f} D/u",
-            help=(
-                "u_in · n_steps / D. Free-stream sphere/cylinder "
-                "wakes typically need 4-5 D/u before the recirculation "
-                "is statistically stationary. Below that, the scene is "
-                "a post-startup snapshot -- the wake length and shape "
-                "are still settling."
-            ),
-        )
-        if _blockage_pct > 25.0 or _adv_times < 4.0:
-            st.caption(
-                ":material/info: *Visualisation regime: the "
-                f"{_blockage_pct:.0f} % blockage and {_adv_times:.1f} D/u "
-                "advective window mean this is a flow-shape demo, not a "
-                "production CFD measurement.*"
-            )
-        st.markdown("##### Manifest")
-        st.caption(
-            f"Preset hash: `{field.meta.get('hash', '?')[:16]}...` "
-            f"&middot; Schema v{field.meta.get('version', '?')} "
-            f"&middot; Baked at {field.meta.get('ts_baked', '?')}"
-        )
-        st.json(field.meta, expanded=False)
-        st.caption(
-            "Source: [src/baked_fields.py](https://github.com/devansh2003-dev/"
-            "aerolab/blob/main/src/baked_fields.py), "
-            "[scripts/bake_3d_field.py](https://github.com/devansh2003-dev/"
-            "aerolab/blob/main/scripts/bake_3d_field.py)"
-        )
     st.stop()
 
 # --- 2D validity thresholds (single source of truth) ---

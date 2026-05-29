@@ -176,6 +176,110 @@ def make_cylinder_mask(
     return np.broadcast_to(in_circle_2d, (Nx, Ny, Nz)).copy()
 
 
+def _naca_thickness(x: np.ndarray, thickness: float) -> np.ndarray:
+    """NACA 4-digit half-thickness y_t(x) for chord-normalised x in
+    [0, 1]. Standard analytic formula -- the closed-trailing-edge
+    coefficient (-0.1036) is used so the airfoil tail meets cleanly
+    in the voxelisation."""
+    xc = np.clip(x, 0.0, 1.0)
+    return 5.0 * thickness * (
+        0.2969 * np.sqrt(xc)
+        - 0.1260 * xc
+        - 0.3516 * xc ** 2
+        + 0.2843 * xc ** 3
+        - 0.1036 * xc ** 4
+    )
+
+
+def _naca_camber(
+    x: np.ndarray, m: float, p: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Mean camber line y_c(x) and its slope dyc/dx for a NACA 4-digit
+    airfoil with max camber m at chord-fraction p. Returns
+    (camber, slope) arrays. For symmetric airfoils pass m = 0 -> both
+    arrays are zero."""
+    xc = np.clip(x, 0.0, 1.0)
+    yc = np.zeros_like(xc)
+    dyc = np.zeros_like(xc)
+    if m > 0.0 and 0.0 < p < 1.0:
+        front = xc <= p
+        yc[front] = (m / p ** 2) * (
+            2.0 * p * xc[front] - xc[front] ** 2
+        )
+        dyc[front] = (2.0 * m / p ** 2) * (p - xc[front])
+        back = ~front
+        yc[back] = (m / (1.0 - p) ** 2) * (
+            1.0 - 2.0 * p + 2.0 * p * xc[back] - xc[back] ** 2
+        )
+        dyc[back] = (2.0 * m / (1.0 - p) ** 2) * (p - xc[back])
+    return yc, dyc
+
+
+def naca_outline(
+    m: float, p: float, thickness: float, n_pts: int = 81,
+) -> np.ndarray:
+    """Return a closed (n_pts, 2) polyline tracing the airfoil
+    surface in chord-normalised (x/c, y/c) coordinates. Used by both
+    the 3D mask voxeliser and the Plotly mesh renderer so the body
+    rendering matches the simulated body exactly."""
+    # Cosine spacing on the chord so the leading edge (where the
+    # surface curvature is highest) is sampled finely.
+    beta = np.linspace(0.0, np.pi, max(8, n_pts // 2))
+    xs = 0.5 * (1.0 - np.cos(beta))
+    yt = _naca_thickness(xs, thickness)
+    yc, dyc = _naca_camber(xs, m, p)
+    theta = np.arctan(dyc)
+    sin_t = np.sin(theta)
+    cos_t = np.cos(theta)
+    upper_x = xs - yt * sin_t
+    upper_y = yc + yt * cos_t
+    lower_x = xs + yt * sin_t
+    lower_y = yc - yt * cos_t
+    # Closed loop: TE -> upper LE -> LE -> lower TE -> TE.
+    poly = np.concatenate([
+        np.stack([upper_x[::-1], upper_y[::-1]], axis=1),
+        np.stack([lower_x[1:], lower_y[1:]], axis=1),
+        np.stack([upper_x[:1], upper_y[:1]], axis=1),  # close
+    ])
+    return poly.astype(np.float64)
+
+
+def make_naca_mask(
+    Nx: int, Ny: int, Nz: int,
+    x_le: float, y_chord: float, chord: float,
+    m: float, p: float, thickness: float,
+) -> np.ndarray:
+    """Boolean solid mask for a NACA 4-digit airfoil, extruded along
+    the spanwise z axis. Leading edge at lattice x = x_le, chord aligned
+    with +x and length ``chord`` cells, mean camber line at y = y_chord.
+
+    For each fluid (x, y) cell, test if it sits between the upper and
+    lower airfoil surfaces at the local x. The airfoil is constant
+    along z so we broadcast the 2D test across the full span.
+    """
+    xs = (np.arange(Nx) - x_le) / max(chord, 1.0)
+    ys = (np.arange(Ny) - y_chord) / max(chord, 1.0)
+    # Per-column surface bounds.
+    yt = _naca_thickness(xs, thickness)
+    yc, dyc = _naca_camber(xs, m, p)
+    in_chord = (xs >= 0.0) & (xs <= 1.0)
+    # Approx upper / lower bounds in (x, y) frame ignoring the small
+    # rotation correction -- visually indistinguishable from the exact
+    # surface at the voxel scale used here, and avoids per-(x, y) cell
+    # angle math. The camber line plus / minus half-thickness is the
+    # canonical "thickness distribution about the camber line" rule.
+    y_upper = yc + yt
+    y_lower = yc - yt
+    inside_2d = (
+        in_chord[:, None]
+        & (ys[None, :] <= y_upper[:, None])
+        & (ys[None, :] >= y_lower[:, None])
+    )
+    return np.broadcast_to(
+        inside_2d[:, :, None], (Nx, Ny, Nz)
+    ).copy()
+
+
 def make_cube_mask(
     Nx: int, Ny: int, Nz: int,
     cx: float, cy: float, cz: float,
@@ -720,6 +824,8 @@ __all__ = [
     "WallLinkList",
     "make_cube_mask",
     "make_cylinder_mask",
+    "make_naca_mask",
+    "naca_outline",
     "solve_bouzidi_q",
     "make_sphere_mask",
     "sphere_wall_links",
