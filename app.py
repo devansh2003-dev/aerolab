@@ -1433,6 +1433,74 @@ if view == "3D dev bench (local)":
 # Empty-state UX shows the bake command to run.
 # ---------------------------------------------------------------------------
 
+
+# Module-level cached helper: scene swap on the gallery dropdown was
+# crashing (2026-05-29) when this function was defined inside the
+# `if view == "3D gallery (preview)":` block -- @st.cache_data's
+# function-identity hashing got confused by the closure binding to
+# load_baked_field in the enclosing scope, surfacing as a Streamlit
+# rerun error when the user changed scenes. Hoisted to module level
+# with lazy imports inside the body so the function has no closure
+# dependencies on the gallery view block.
+@st.cache_data(
+    show_spinner=":material/auto_awesome: Computing smoke tracers...",
+    max_entries=4,
+)
+def _gallery_smoke_snapshots(scene_path_str: str):
+    """Run the RK4 particle advection through a baked field and
+    return a list of (px, py, pz, speeds) snapshots for the animation.
+
+    Caching is keyed by the .npz path -- swapping scenes invalidates,
+    toggling viz overlays does not.
+    """
+    from src.baked_fields import load_baked_field
+    from src.lbm_3d_smoke_particles import (
+        seed_inflow_particles,
+        step_smoke,
+        trilerp_3d,
+    )
+
+    f = load_baked_field(scene_path_str)
+    u_in = float(f.meta.get("u_in", 0.05))
+    target_cross_frames = max(40, f.Nx)
+    dt_per_frame = f.Nx / float(target_cross_frames * max(u_in, 1e-6))
+    n_frames_inner = max(int(1.4 * target_cross_frames), 90)
+    n_keyframes_inner = 28
+    warmup = target_cross_frames // 4
+    stride = max(1, (n_frames_inner - warmup) // n_keyframes_inner)
+
+    y_rows = np.linspace(3.0, f.Ny - 4.0, 6)
+    z_rows = np.linspace(3.0, f.Nz - 4.0, 6)
+
+    rng_local = np.random.default_rng(7)
+    ppx = np.empty(0, dtype=np.float64)
+    ppy = np.empty(0, dtype=np.float64)
+    ppz = np.empty(0, dtype=np.float64)
+    page = np.empty(0, dtype=np.int32)
+
+    snaps_local = []
+    for i_step in range(n_frames_inner):
+        seed = seed_inflow_particles(
+            n_per_row=1, y_rows=y_rows, z_rows=z_rows,
+            x=2.0, rng=rng_local,
+        )
+        ppx, ppy, ppz, page = step_smoke(
+            ppx, ppy, ppz, page, f.ux, f.uy, f.uz,
+            body_mask=f.body, dt=dt_per_frame, n_substeps=4,
+            max_age=int(1.6 * target_cross_frames),
+            inflow_seed_xyz=seed,
+        )
+        if i_step >= warmup and (
+            (i_step - warmup) % stride == 0
+            or i_step == n_frames_inner - 1
+        ):
+            snap_speed = trilerp_3d(f.ux, ppx, ppy, ppz)
+            snaps_local.append(
+                (ppx.copy(), ppy.copy(), ppz.copy(), snap_speed.copy())
+            )
+    return snaps_local
+
+
 if view == "3D gallery (preview)":
     from pathlib import Path
 
@@ -1770,61 +1838,9 @@ if view == "3D gallery (preview)":
     # via the standard updatemenus + slider pattern. This mirrors the
     # 2D playground's "stationary frame + animated content" model.
     #
-    # The snapshots are expensive to compute (~10 s of numba-JITted
-    # RK4 advection per scene), so they're cached by scene path via
-    # st.cache_data -- toggling sidebar widgets that DON'T change the
-    # scene (Q, body, box, streamline density) won't re-run the loop.
-    @st.cache_data(
-        show_spinner=":material/auto_awesome: Computing smoke tracers...",
-    )
-    def _gallery_smoke_snapshots(scene_path_str: str):
-        from src.lbm_3d_smoke_particles import (
-            seed_inflow_particles,
-            step_smoke,
-            trilerp_3d,
-        )
-        f = load_baked_field(scene_path_str)
-        u_in = float(f.meta.get("u_in", 0.05))
-        target_cross_frames = max(40, f.Nx)
-        dt_per_frame = (
-            f.Nx / float(target_cross_frames * max(u_in, 1e-6))
-        )
-        n_frames_inner = max(int(1.4 * target_cross_frames), 90)
-        n_keyframes_inner = 28
-        warmup = target_cross_frames // 4
-        stride = max(1, (n_frames_inner - warmup) // n_keyframes_inner)
-
-        y_rows = np.linspace(3.0, f.Ny - 4.0, 6)
-        z_rows = np.linspace(3.0, f.Nz - 4.0, 6)
-
-        rng_local = np.random.default_rng(7)
-        ppx = np.empty(0, dtype=np.float64)
-        ppy = np.empty(0, dtype=np.float64)
-        ppz = np.empty(0, dtype=np.float64)
-        page = np.empty(0, dtype=np.int32)
-
-        snaps_local = []
-        for i_step in range(n_frames_inner):
-            seed = seed_inflow_particles(
-                n_per_row=1, y_rows=y_rows, z_rows=z_rows,
-                x=2.0, rng=rng_local,
-            )
-            ppx, ppy, ppz, page = step_smoke(
-                ppx, ppy, ppz, page, f.ux, f.uy, f.uz,
-                body_mask=f.body, dt=dt_per_frame, n_substeps=4,
-                max_age=int(1.6 * target_cross_frames),
-                inflow_seed_xyz=seed,
-            )
-            if i_step >= warmup and (
-                (i_step - warmup) % stride == 0
-                or i_step == n_frames_inner - 1
-            ):
-                snap_speed = trilerp_3d(f.ux, ppx, ppy, ppz)
-                snaps_local.append(
-                    (ppx.copy(), ppy.copy(), ppz.copy(), snap_speed.copy())
-                )
-        return snaps_local
-
+    # Snapshots cached at module level (see _gallery_smoke_snapshots
+    # above the if-blocks). Cache key is the scene path; toggling
+    # overlays / density / Q etc does NOT invalidate.
     snapshots = _gallery_smoke_snapshots(str(preset_options[chosen_name]))
     last_px, last_py, last_pz, last_sp = snapshots[-1]
 
