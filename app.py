@@ -1423,15 +1423,195 @@ if view == "3D dev bench (local)":
 # ---------------------------------------------------------------------------
 # 3D Gallery: pre-baked field replay (consumer-mode, Cloud-safe)
 #
-# Loads a .npz produced by scripts/bake_3d_field.py, streams smoke
-# particles through the steady velocity field, renders Plotly Scatter3d
-# + (optional) sphere Surface + (optional) Q-criterion shell. No kernel
-# compute on the page -- the heavy work happened offline.
+# Loads a .npz produced by scripts/bake_3d_field.py and renders streamlines
+# through the steady velocity field as a Plotly Scatter3d line trace, with
+# the body (sphere / cylinder) and a wireframe chamber overlay.
 #
-# The presets live in data/baked/*.npz (gitignored; user runs the bake
-# script once locally OR a future deploy includes them via Git LFS).
-# Empty-state UX shows the bake command to run.
+# Why compute streamlines server-side (this module) instead of via
+# go.Streamtube? Streamtube does the streamline integration AND geometry
+# tessellation in JavaScript on the browser's main thread, which blocks
+# the UI thread for ~3-8 s per scene swap on Cloud-tier CPUs and prevents
+# Streamlit's progress bar from updating in real time. Tracing in Python
+# with numba-jitted trilerp_3d takes ~50-100 ms total, lets the progress
+# bar tick visibly, and ships only ~12 k line vertices to the browser
+# (instead of ~60 k triangles) so the WebGL render is essentially free.
 # ---------------------------------------------------------------------------
+
+
+def _trace_streamlines(
+    ux: np.ndarray,
+    uy: np.ndarray,
+    uz: np.ndarray,
+    body_mask: np.ndarray,
+    seeds_x: np.ndarray,
+    seeds_y: np.ndarray,
+    seeds_z: np.ndarray,
+    *,
+    dt: float = 12.0,
+    max_steps: int = 400,
+    min_speed: float = 1e-5,
+    progress_callback=None,
+):
+    """Trace forward streamlines (RK2 midpoint) through a steady 3D
+    velocity field. Vectorised over all alive seeds per step.
+
+    Returns flat NumPy arrays (x, y, z, speed) with NaN separators
+    between seeds -- ready to plot as a single ``go.Scatter3d`` trace
+    with ``mode="lines"`` and per-vertex ``line.color``.
+
+    Streamlines terminate on body contact, out-of-domain, or stagnation
+    (``|u| < min_speed``). RK2 is second-order accurate (twice the work
+    of Euler, visibly smoother paths) -- sufficient for visualisation
+    even though it's not what the underlying solver used.
+
+    Parameters
+    ----------
+    ux, uy, uz : (Nx, Ny, Nz) ndarray
+        Steady velocity field components in lattice units.
+    body_mask : (Nx, Ny, Nz) bool ndarray
+        True where the cell is solid.
+    seeds_x, seeds_y, seeds_z : 1D ndarray
+        Seed positions in lattice coordinates.
+    dt : float, default 12.0
+        Integration step. Tuned so a typical inflow displacement
+        (u ~ 0.04) covers ~0.5 lattice cell per step.
+    max_steps : int, default 400
+        Hard cap on integration steps per seed.
+    min_speed : float, default 1e-5
+        Stagnation threshold.
+    progress_callback : callable, optional
+        Called periodically as ``cb(fraction)`` where fraction in [0, 1].
+    """
+    from src.lbm_3d_smoke_particles import trilerp_3d
+
+    seeds_x = np.asarray(seeds_x, dtype=np.float64)
+    seeds_y = np.asarray(seeds_y, dtype=np.float64)
+    seeds_z = np.asarray(seeds_z, dtype=np.float64)
+
+    Nx, Ny, Nz = ux.shape
+    n_seeds = len(seeds_x)
+    if n_seeds == 0:
+        empty = np.array([], dtype=np.float32)
+        return empty, empty, empty, empty
+
+    # Path storage. (n_seeds, max_steps + 1). NaN at slot k means
+    # "this seed had already died by step k". Plotly's Scatter3d
+    # treats NaN as a line break, which is what we want at the path
+    # end for each seed in the final concatenated trace.
+    paths_x = np.full((n_seeds, max_steps + 1), np.nan, dtype=np.float32)
+    paths_y = np.full((n_seeds, max_steps + 1), np.nan, dtype=np.float32)
+    paths_z = np.full((n_seeds, max_steps + 1), np.nan, dtype=np.float32)
+    paths_speed = np.full((n_seeds, max_steps + 1), np.nan, dtype=np.float32)
+    paths_x[:, 0] = seeds_x.astype(np.float32)
+    paths_y[:, 0] = seeds_y.astype(np.float32)
+    paths_z[:, 0] = seeds_z.astype(np.float32)
+
+    # Initial seed speed (so the colorbar gradient looks coherent from
+    # the very first vertex of each line).
+    seed_u = trilerp_3d(ux, seeds_x, seeds_y, seeds_z)
+    seed_v = trilerp_3d(uy, seeds_x, seeds_y, seeds_z)
+    seed_w = trilerp_3d(uz, seeds_x, seeds_y, seeds_z)
+    paths_speed[:, 0] = np.sqrt(
+        seed_u ** 2 + seed_v ** 2 + seed_w ** 2
+    ).astype(np.float32)
+
+    cur_x = seeds_x.copy()
+    cur_y = seeds_y.copy()
+    cur_z = seeds_z.copy()
+    alive = np.ones(n_seeds, dtype=bool)
+
+    # Tick the progress callback ~16 times across the loop -- coarser
+    # than per-step (which would saturate the WebSocket) but fine
+    # enough for a smooth-feeling bar.
+    progress_period = max(1, max_steps // 16)
+
+    for step in range(max_steps):
+        if not alive.any():
+            break
+
+        ai = np.where(alive)[0]
+        ax = cur_x[ai]
+        ay = cur_y[ai]
+        az = cur_z[ai]
+
+        # RK2 midpoint. k1 sample at the current position, half-step
+        # forward to the midpoint, k2 sample there, full step using k2.
+        k1_u = trilerp_3d(ux, ax, ay, az)
+        k1_v = trilerp_3d(uy, ax, ay, az)
+        k1_w = trilerp_3d(uz, ax, ay, az)
+
+        mid_x = np.clip(ax + 0.5 * dt * k1_u, 0.5, Nx - 1.5)
+        mid_y = np.clip(ay + 0.5 * dt * k1_v, 0.5, Ny - 1.5)
+        mid_z = np.clip(az + 0.5 * dt * k1_w, 0.5, Nz - 1.5)
+
+        k2_u = trilerp_3d(ux, mid_x, mid_y, mid_z)
+        k2_v = trilerp_3d(uy, mid_x, mid_y, mid_z)
+        k2_w = trilerp_3d(uz, mid_x, mid_y, mid_z)
+
+        new_x = ax + dt * k2_u
+        new_y = ay + dt * k2_v
+        new_z = az + dt * k2_w
+        speed = np.sqrt(k2_u * k2_u + k2_v * k2_v + k2_w * k2_w)
+
+        in_bounds = (
+            (new_x > 0.5) & (new_x < Nx - 0.5)
+            & (new_y > 0.5) & (new_y < Ny - 0.5)
+            & (new_z > 0.5) & (new_z < Nz - 0.5)
+        )
+        ix = np.clip(new_x.astype(np.int32), 0, Nx - 1)
+        iy = np.clip(new_y.astype(np.int32), 0, Ny - 1)
+        iz = np.clip(new_z.astype(np.int32), 0, Nz - 1)
+        not_in_body = ~body_mask[ix, iy, iz]
+        moving = speed > min_speed
+        survives = in_bounds & not_in_body & moving
+
+        surviving_global = ai[survives]
+        dying_global = ai[~survives]
+
+        cur_x[surviving_global] = new_x[survives]
+        cur_y[surviving_global] = new_y[survives]
+        cur_z[surviving_global] = new_z[survives]
+        paths_x[surviving_global, step + 1] = new_x[survives].astype(np.float32)
+        paths_y[surviving_global, step + 1] = new_y[survives].astype(np.float32)
+        paths_z[surviving_global, step + 1] = new_z[survives].astype(np.float32)
+        paths_speed[surviving_global, step + 1] = speed[survives].astype(np.float32)
+        alive[dying_global] = False
+
+        if progress_callback is not None and (
+            step % progress_period == 0 or step == max_steps - 1
+        ):
+            progress_callback((step + 1) / max_steps)
+
+    if progress_callback is not None:
+        progress_callback(1.0)
+
+    # Flatten with NaN separators. One Plotly trace, multiple
+    # streamlines, NaN breaks the line between them.
+    out_x, out_y, out_z, out_speed = [], [], [], []
+    nan_sep = np.array([np.nan], dtype=np.float32)
+    for s in range(n_seeds):
+        valid_count = int(np.isfinite(paths_x[s]).sum())
+        if valid_count < 2:
+            continue
+        out_x.append(paths_x[s, :valid_count])
+        out_x.append(nan_sep)
+        out_y.append(paths_y[s, :valid_count])
+        out_y.append(nan_sep)
+        out_z.append(paths_z[s, :valid_count])
+        out_z.append(nan_sep)
+        out_speed.append(paths_speed[s, :valid_count])
+        out_speed.append(nan_sep)
+
+    if not out_x:
+        empty = np.array([], dtype=np.float32)
+        return empty, empty, empty, empty
+
+    return (
+        np.concatenate(out_x),
+        np.concatenate(out_y),
+        np.concatenate(out_z),
+        np.concatenate(out_speed),
+    )
 
 
 if view == "3D gallery (preview)":
@@ -1486,15 +1666,14 @@ if view == "3D gallery (preview)":
                 "render. Above ~40 the WebGL frame rate may drop."
             ),
         )
-        tube_thickness = st.slider(
-            "Thickness",
-            min_value=0.2, max_value=1.5, value=0.3, step=0.1,
-            key="tube_thickness_gallery",
+        line_width = st.slider(
+            "Line width",
+            min_value=1, max_value=8, value=3,
+            key="line_width_gallery",
             help=(
-                "Visual width of each streamline ribbon. Thicker "
-                "tubes mesh into more triangles per segment, so the "
-                "browser does more work -- raise gradually if the "
-                "scene feels sluggish."
+                "Pixel width of each streamline. WebGL line "
+                "rendering is essentially free at any width -- this "
+                "is purely a visual preference."
             ),
         )
         st.divider()
@@ -1564,86 +1743,69 @@ if view == "3D gallery (preview)":
         unsafe_allow_html=True,
     )
     st.caption(
-        "Streamline ribbons trace how the air wraps around the body. "
+        "Streamlines trace how the air wraps around the body. "
         "Colour shows speed (Plasma colormap: purple slow, yellow fast). "
         "Drag to rotate, scroll to zoom."
     )
 
-    _gallery_prog.progress(45, text="Sub-sampling velocity field...")
-    # --- Streamtube construction --------------------------------------
-    # go.Streamtube takes the velocity field on a regular grid plus
-    # seed positions; each tube traces the path a tracer would follow
-    # from its seed under the steady velocity field. Static (the field
-    # is steady), but the streamlines themselves communicate motion
-    # spatially -- you SEE where the air goes.
-    #
-    # Grid is subsampled by factor 2 in each dimension before being
-    # handed to Plotly. The full 96x48x48 = 220 k-cell field would
-    # push ~5 MB per scene to the browser; subsampled to 48x24x24 =
-    # 27.6 k cells, payload drops 8x. Plotly's streamline integrator
-    # interpolates between grid points anyway, so the subsampled tube
-    # paths are visually indistinguishable.
-    _sub = 2
-    _gx = np.arange(0, Nx, _sub, dtype=np.float32)
-    _gy = np.arange(0, Ny, _sub, dtype=np.float32)
-    _gz = np.arange(0, Nz, _sub, dtype=np.float32)
-    _X, _Y, _Z = np.meshgrid(_gx, _gy, _gz, indexing="ij")
-    _ux_sub = field.ux[::_sub, ::_sub, ::_sub]
-    _uy_sub = field.uy[::_sub, ::_sub, ::_sub]
-    _uz_sub = field.uz[::_sub, ::_sub, ::_sub]
-
-    # Seed positions on the inflow plane (x = 2 cells from the inlet).
-    # Spaced as a regular grid in (y, z) with density set by the
-    # sidebar slider. Aspect-ratio-aware so the grid isn't squashed
-    # for non-square cross-sections.
+    # --- Seed positions on the inflow plane ---------------------------
+    # Regular (y, z) grid at x = 2 cells from the inlet. The density
+    # slider sets the total seed count; we split it across y and z
+    # proportional to the cross-section aspect so the grid isn't
+    # squashed on non-square sections.
+    _gallery_prog.progress(40, text="Building seed positions...")
     aspect = max(Nz / max(Ny, 1), 1e-3)
     n_y_seeds = max(2, int(round((n_seeds / aspect) ** 0.5)))
     n_z_seeds = max(2, int(round(n_seeds / n_y_seeds)))
     sy = np.linspace(3.0, float(Ny) - 4.0, n_y_seeds)
     sz = np.linspace(3.0, float(Nz) - 4.0, n_z_seeds)
     _SY, _SZ = np.meshgrid(sy, sz)
-    seeds_x = np.full(_SY.size, 2.0, dtype=np.float32)
-    seeds_y = _SY.flatten().astype(np.float32)
-    seeds_z = _SZ.flatten().astype(np.float32)
+    seeds_x = np.full(_SY.size, 2.0, dtype=np.float64)
+    seeds_y = _SY.flatten().astype(np.float64)
+    seeds_z = _SZ.flatten().astype(np.float64)
 
-    # Streamtubes give the STRUCTURAL ribbons (where the air goes);
-    # they're static and read as the wind-tunnel scaffolding. The
-    # animated tracer overlay added further down gives the MOTION
-    # (the air visibly going past you). Opacity is dialled down here
-    # to 0.55 so the bright tracers on top stand out. maxdisplayed
-    # bumped to 10000 (from Plotly's default 1000) so long tubes
-    # spanning the streamwise extent aren't truncated mid-domain.
-    _gallery_prog.progress(60, text="Building streamlines...")
+    # --- Server-side streamline tracing -------------------------------
+    # See _trace_streamlines docstring above for the rationale: the
+    # alternative go.Streamtube does this integration in JavaScript on
+    # the browser's main thread, freezing the UI on scene swap. Doing
+    # it server-side with numba-jitted trilerp_3d gives us real
+    # progress updates AND lets the browser just render lines.
+    def _trace_prog(frac):
+        pct = int(50 + 40 * frac)
+        _gallery_prog.progress(
+            pct,
+            text=f"Tracing streamlines ({int(frac * 100)}%)...",
+        )
+
+    flat_x, flat_y, flat_z, flat_speed = _trace_streamlines(
+        field.ux, field.uy, field.uz, field.body,
+        seeds_x, seeds_y, seeds_z,
+        progress_callback=_trace_prog,
+    )
+
+    _gallery_prog.progress(92, text="Composing scene...")
     scene_traces = [
-        go.Streamtube(
-            x=_X.flatten(),
-            y=_Y.flatten(),
-            z=_Z.flatten(),
-            u=_ux_sub.flatten(),
-            v=_uy_sub.flatten(),
-            w=_uz_sub.flatten(),
-            starts=dict(x=seeds_x, y=seeds_y, z=seeds_z),
-            sizeref=float(tube_thickness),
-            colorscale="Plasma",
-            cmin=0.0, cmax=cmax_speed,
-            showscale=True,
-            colorbar=dict(
-                title="speed",
-                thickness=10, len=0.45,
-                x=1.02, xanchor="left",
+        go.Scatter3d(
+            x=flat_x, y=flat_y, z=flat_z,
+            mode="lines",
+            line=dict(
+                color=flat_speed,
+                colorscale="Plasma",
+                cmin=0.0, cmax=cmax_speed,
+                width=float(line_width),
+                showscale=True,
+                colorbar=dict(
+                    title="speed",
+                    thickness=10, len=0.45,
+                    x=1.02, xanchor="left",
+                ),
             ),
-            opacity=0.85,
-            lighting=dict(
-                ambient=0.55, diffuse=0.7, specular=0.25,
-                roughness=0.4,
-            ),
-            maxdisplayed=3000,
             name="streamlines",
             hoverinfo="skip",
+            showlegend=False,
         )
     ]
 
-    _gallery_prog.progress(75, text="Building body + overlays...")
     # Q-criterion shell (optional, controlled from sidebar).
     if show_q:
         from src.lbm_3d_qcriterion import compute_q_field, extract_q_isosurface
@@ -1801,7 +1963,6 @@ if view == "3D gallery (preview)":
     # a much smaller tracer count) once the static version is confirmed
     # stable on Cloud.
 
-    _gallery_prog.progress(90, text="Composing scene...")
     fig = go.Figure(data=scene_traces)
     fig.update_layout(
         scene=dict(
@@ -1813,14 +1974,19 @@ if view == "3D gallery (preview)":
             zaxis=dict(visible=False, range=[-2.0, Nz + 2.0]),
             aspectmode="data",
             bgcolor="#0a0a0a",
-            camera=dict(eye=dict(x=1.5, y=1.15, z=0.9)),
+            # Camera tightened from (1.5, 1.15, 0.9) so the body fills
+            # more of the viewport on first load (user note: spheres
+            # were looking lost inside the long chamber).
+            camera=dict(eye=dict(x=1.15, y=0.9, z=0.65)),
         ),
         height=640,
         margin=dict(l=0, r=0, t=10, b=10),
         paper_bgcolor="#0a0a0a",
         showlegend=False,
     )
-    _gallery_prog.progress(100, text="Ready -- handing off to your browser to render.")
+    _gallery_prog.progress(
+        100, text="Ready -- rendering in your browser."
+    )
     _gallery_prog.empty()
     st.plotly_chart(fig, width="stretch")
 

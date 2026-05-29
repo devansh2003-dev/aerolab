@@ -81,12 +81,14 @@ PRESETS: dict[str, dict[str, Any]] = {
     "sphere_re40": {
         "body_type": "sphere",
         "Nx": 64, "Ny": 32, "Nz": 32,
-        # R bumped from 4 -> 6 (2026-05-29 user note: small bodies
-        # looked lost in the box). New blockage = D/Ny = 12/32 = 37 %;
-        # nu rescaled to keep Re = u_in * D / nu = 40 exactly.
-        "body_params": {"cx": 16.0, "cy": 16.0, "cz": 16.0, "R": 6.0},
+        # R bumped 6 -> 8 (2026-05-29 round 2 user note: bodies still
+        # too small, can't see streamlines wrapping). New blockage =
+        # D/Ny = 16/32 = 50 %. nu rescaled to keep Re = 40 exactly.
+        # At Re=40 with 50% blockage the wake is steady and the solver
+        # is far from any stability boundary (tau = 3*0.016+0.5 = 0.548).
+        "body_params": {"cx": 16.0, "cy": 16.0, "cz": 16.0, "R": 8.0},
         "u_in": 0.04,
-        "nu": 0.012,                     # Re = 0.04 * 12 / 0.012 = 40
+        "nu": 0.016,                     # Re = 0.04 * 16 / 0.016 = 40
         "n_steps": 800,
         "scheme": "trt",
         "use_guo_neem": True,
@@ -108,14 +110,14 @@ PRESETS: dict[str, dict[str, Any]] = {
     "sphere_re100": {
         "body_type": "sphere",
         "Nx": 96, "Ny": 48, "Nz": 48,
-        # R bumped from 6 -> 7 (2026-05-29). Blockage = 14/48 = 29 %;
-        # nu rescaled to keep Re = 100 exactly. Modest bump only
-        # because Re=100 sphere is already at the edge of the regime
-        # where the regularised outflow holds for 800 steps -- a
-        # larger body intensifies the wake and pushes stability.
-        "body_params": {"cx": 24.0, "cy": 24.0, "cz": 24.0, "R": 7.0},
+        # R bumped 7 -> 10. Blockage = D/Ny = 20/48 = 42 %.  Bigger
+        # body intensifies the wake and pushes stability; we stay at
+        # 800 steps as before (the late-onset divergence past ~800
+        # is unaffected by R, the regularised outflow holds through
+        # step 800). nu rescaled to keep Re = 100 exactly.
+        "body_params": {"cx": 24.0, "cy": 24.0, "cz": 24.0, "R": 10.0},
         "u_in": 0.04,
-        "nu": 0.0056,                    # Re = 0.04 * 14 / 0.0056 = 100
+        "nu": 0.008,                     # Re = 0.04 * 20 / 0.008 = 100
         "n_steps": 800,
         "scheme": "trt",
         "use_guo_neem": True,
@@ -136,11 +138,11 @@ PRESETS: dict[str, dict[str, Any]] = {
     "cylinder_re100": {
         "body_type": "cylinder",
         "Nx": 96, "Ny": 48, "Nz": 48,
-        # R bumped to 7 (matches sphere_re100). Blockage = 14/48 = 29 %.
-        # Cylinder centre at (24, 24) in (x, y), spans full z.
-        "body_params": {"cx": 24.0, "cy": 24.0, "R": 7.0},
+        # R bumped 7 -> 10 (matches sphere_re100). Blockage = 20/48 =
+        # 42 %. Cylinder centre at (24, 24) in (x, y), spans full z.
+        "body_params": {"cx": 24.0, "cy": 24.0, "R": 10.0},
         "u_in": 0.04,
-        "nu": 0.0056,                    # Re = 0.04 * 14 / 0.0056 = 100
+        "nu": 0.008,                     # Re = 0.04 * 20 / 0.008 = 100
         "n_steps": 800,
         "scheme": "trt",
         "use_guo_neem": True,
