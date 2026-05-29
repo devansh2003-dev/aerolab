@@ -1054,9 +1054,10 @@ if view == "3D gallery (preview)":
             label_visibility="collapsed",
             key="gallery_shape_select",
             help=(
-                "Built-in: spheres, cylinders, cubes shed wakes of "
-                "different character. NACA wings + custom-upload "
-                "support are queued for the next release."
+                "Built-in: spheres, cylinders, and cubes shed wakes "
+                "of different character; NACA 0012 / 4412 wings "
+                "ship at AoA = 0 and AoA = 10 deg. Custom STL/PNG "
+                "upload is queued for a future release."
             ),
         )
         chosen_shape = _shape_label_to_key[shape_display_3d]
