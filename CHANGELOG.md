@@ -2,6 +2,32 @@
 
 All notable changes to AeroLab. Dates are absolute; versions follow [SemVer](https://semver.org/).
 
+## [0.6.2] — 2026-05-29
+
+**3D gallery polish + sphere Cd error-budget falsification.**
+
+Two threads:
+
+1. **3D viewer fixes**: streamlines no longer clip into the body (mesh now follows the snapped baked AoA, not the continuous slider), streamlines no longer cut off mid-flow on slow regions (`dt` 12 → 8, `max_steps` 400 → 700, 3-iteration binary-search body-collision snap), pressure became actual gauge pressure with a symmetric diverging colormap, velocity color now sampled at the polyline vertex.
+2. **Sphere Cd low-blockage cross-check**: ran the experiment §8.3 of VALIDATION.md proposed. Halving blockage from 42 % to 25 % was supposed to drop Cd from 1.57 toward ~1.30. It didn't — Cd ticked UP to 1.65. The blockage hypothesis is falsified. Revised error budget points at simplified Ladd 1994 momentum exchange + D = 20 grid resolution as the prime suspects instead.
+
+### Added
+
+- **`scripts/validate_3d_sphere_cd_lowblock.py`** — same physics as the high-blockage validation but on a 160 × 80 × 80 grid (blockage 42 % → 25 %, D unchanged at 20). 1100 s solve time.
+- **`tests/test_validation_3d_sphere_cd_lowblock.py`** (8 gates) — same physics-validity checks as the high-blockage gate plus two cross-check gates: `test_blockage_is_not_dominant_bias` (locks in that the two Cd values land within 15 % of each other, i.e. blockage is NOT the dominant gap) and `test_blockage_is_lower_than_shipped_bake` (sanity check on grid).
+- **VALIDATION.md §8.3.1** — full low-blockage results table side-by-side with the high-blockage measurement, narrative of what the experiment was supposed to show vs what it actually showed, revised error budget.
+- **`data/validation_3d_sphere_re100_lowblock.json`** — measured result, committed.
+
+### Changed
+
+- **3D body mesh (cube + NACA)** rendered at the snapped baked AoA, not the continuous slider value. With the mesh disagreeing with the flow field by up to 8°, streamlines were cutting visibly through the rotated body. Aligning the mesh to `aoa_actual` eliminates the clipping. The slider caption already announces the snap, so the discrete jump is honest.
+- **`_trace_streamlines` defaults** in `app.py`: `dt` 12.0 → 8.0 (each step now covers ~0.32 cell instead of ~0.48; polyline tracks curvature more closely and doesn't chord-cut through curved bodies), `max_steps` 400 → 700 (streamlines reach the outlet even through low-speed wake regions where each step covers far less than 0.32 cell).
+- **Body-collision snap** upgraded from a single bisection to a 3-iteration binary search; endpoint now lands within ~`dt·|u| / 8` (~0.04 cell at `u_in=0.04`) of the analytic wall instead of the previous ~0.12 cell.
+- **3D Pressure mode** now plots **gauge pressure** `p = c_s²·(ρ − ρ_ref)` with `c_s² = 1/3` (D3Q19) and `ρ_ref = median(ρ_fluid)`. Colorbar is symmetric about zero, so RdBu_r reads as **red = stagnation, blue = suction, white = freestream** instead of the previous near-flat raw-density slice (Δρ ≈ 5e-3 was being percentile-stretched into a monochrome lump). The caption and colorbar title updated accordingly.
+- **3D Velocity mode** colors via vertex-trilerp of `|u|` over the field, matching the Vorticity / Pressure pattern. Previously it reused the RK2 midpoint speed which lagged the geometry by half a step.
+- **VALIDATION.md §8.3** — added a status callout up top noting the budget below was falsified by §8.3.1; the original budget is kept as a record of the prediction the cross-check refuted.
+- **VALIDATION.md §8.7 priority list** — "Low-blockage sphere Cd sweep" moved to the **Closed** section with a note explaining why (hypothesis refuted, not confirmed). "Mei-Yu-Shyy-Luo 2002 Bouzidi-aware momentum exchange + D ≥ 40 sphere bake" promoted to item #1.
+
 ## [0.6.1] — 2026-05-29
 
 **Sphere Re=100 drag validation — first quantitative 3D Cd comparison.**

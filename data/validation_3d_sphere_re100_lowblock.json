@@ -1,0 +1,30 @@
+{
+  "A_proj_lattice": 314.1592653589793,
+  "Cd_error_pct": 50.928381971492755,
+  "Cd_in_band": true,
+  "Cd_raw": 1.6451193634892711,
+  "Cd_ref_clift_grace_weber": 1.09,
+  "Cd_tolerance_band": 0.7,
+  "F_drag_lattice": 0.4134635925292969,
+  "F_lift_lattice": 0.02277374267578125,
+  "F_side_lattice": 0.0,
+  "Re_actual": 100.0,
+  "Re_target": 100,
+  "advective_times": 5.0,
+  "blockage_pct": 25.0,
+  "grid": [
+    160,
+    80,
+    80
+  ],
+  "mass_drift_rel": 0.00168646240234375,
+  "n_steps": 2500,
+  "nu": 0.008,
+  "outflow_scheme": "regularised",
+  "ref": "Clift-Grace-Weber 1978",
+  "scheme": "trt",
+  "solve_wall_time_s": 1102.2862386703491,
+  "u_in": 0.04,
+  "u_peak_lattice": 0.04758870601654053,
+  "use_bouzidi": true
+}
