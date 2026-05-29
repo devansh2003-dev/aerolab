@@ -1485,42 +1485,17 @@ if view == "3D gallery (preview)":
     )
     field = load_baked_field(preset_options[chosen_name])
 
-    # Diagnostics row: grid, Re estimate, mass drift, peak speed.
+    # Engineering chrome (metrics, solver line, Q-criterion controls,
+    # Manifest) is collapsed into an "Engineering details" expander
+    # rendered AFTER the chart. The consumer-facing default view is
+    # title -> scene picker -> animation, nothing else above the fold.
+    # We still compute the values we will need to display below.
     _Re_est = (
         float(field.meta.get("u_in", 0.0))
         * 2.0 * float(field.meta.get("body_params", {}).get("R", 0.0))
         / max(float(field.meta.get("nu", 1.0)), 1e-9)
     )
     _solver = field.meta.get("solver_diag", {})
-    diag_cols = st.columns(4)
-    diag_cols[0].metric(
-        "Grid", f"{field.Nx} × {field.Ny} × {field.Nz}"
-    )
-    diag_cols[1].metric(
-        "Re (approx)", f"{_Re_est:.0f}",
-        help="u_in · D / nu, using sphere diameter D = 2R from the "
-             "preset's body params.",
-    )
-    diag_cols[2].metric(
-        "Mass drift", f"{_solver.get('mass_drift_rel', 0):.2%}",
-        help="Mass change between the simulation's first and last "
-             "step. Small drift means the boundary conditions are "
-             "well-balanced.",
-    )
-    diag_cols[3].metric(
-        "Peak u_x", f"{_solver.get('u_peak', 0):.4f}",
-        help="Maximum streamwise velocity in the domain (lattice "
-             "units).",
-    )
-
-    _scheme = str(field.meta.get("scheme", "?")).upper()
-    _outflow = str(field.meta.get("outflow_scheme", "guo"))
-    _n_steps = int(field.meta.get("n_steps", 0))
-    st.caption(
-        f"*Solver: {_scheme} collision, "
-        f"{'Bouzidi' if field.meta.get('use_bouzidi') else 'half-way BB'} "
-        f"wall BC, {_outflow} outflow, {_n_steps} steps.*"
-    )
 
     # Particle pool: heavier than the dev-bench because there is no
     # compute pressure -- the kernel already ran.
@@ -1597,47 +1572,43 @@ if view == "3D gallery (preview)":
     # initially; the slider scrubs back into earlier transient states.
     px, py, pz, speeds = snapshots[-1]
 
-    # Q-criterion toggle (reuse the dev-bench pattern).
-    q_col1, q_col2 = st.columns([1, 3])
-    with q_col1:
-        show_q = st.checkbox(
-            "Q-criterion vortex shell",
-            value=False,
-            key="show_q_gallery",
-            help=(
-                "Render the Q = level isosurface around vortex tubes "
-                "in the wake. Q = (1/2)(|Ω|² - |S|²); positive Q means "
-                "rotation dominates strain. The shell carves out where "
-                "the flow swirls."
-            ),
-        )
-    with q_col2:
-        q_level_pct = st.slider(
-            "Q threshold (% of max)", 1, 50, 10,
-            key="q_level_pct_gallery",
-            disabled=not show_q,
-        )
+    # Q-criterion state is READ here (so the chart below can render with
+    # the right setting on the first pass) and the widgets that WRITE
+    # this state live in the engineering-details expander at the bottom
+    # of the block. Streamlit's session_state bridges the two: when the
+    # user toggles Q in the expander, the script reruns, and these
+    # reads return the new value before the chart is rebuilt.
+    show_q = st.session_state.get("show_q_gallery", False)
+    q_level_pct = st.session_state.get("q_level_pct_gallery", 10)
 
-    # Build the 3D scene. Smaller markers + lower opacity vs the
-    # dev-bench so the cloud reads as smoke, not a constellation.
+    # Build the 3D scene. Large translucent markers (size 5.5,
+    # opacity 0.35) read as a smoke cloud rather than a constellation
+    # of dots -- the reviewer note from 2026-05-29 was that the prior
+    # size 2.4 + opacity 0.78 combo looked like scientific debug
+    # output, not wind-tunnel smoke. Lowering opacity is the key: a
+    # 10 k-particle field at 0.35 layered translucency reads as
+    # volumetric, while the same field at 0.78 reads as discrete points.
     scene_traces = [
         go.Scatter3d(
             x=px, y=py, z=pz,
             mode="markers",
             name="smoke",
             marker=dict(
-                size=2.4,
+                size=5.5,
                 color=speeds,
                 colorscale="Plasma",
                 cmin=0.0,
                 cmax=u_in_meta * 1.6,
                 colorbar=dict(
                     title="u<sub>x</sub>",
-                    thickness=12,
-                    len=0.6,
+                    thickness=10,
+                    len=0.45,
+                    x=1.02, xanchor="left",
                 ),
-                opacity=0.78,
+                opacity=0.35,
+                line=dict(width=0),
             ),
+            hoverinfo="skip",
         )
     ]
 
@@ -1694,29 +1665,77 @@ if view == "3D gallery (preview)":
                 go.Surface(
                     x=sph_x, y=sph_y, z=sph_z,
                     showscale=False,
-                    colorscale=[[0, "#475569"], [1, "#475569"]],
-                    opacity=0.6,
+                    # Subtle z-gradient (darker bottom, lighter top)
+                    # reads as a studio-lit matte sphere instead of the
+                    # flat grey blob it was. Combined with the lighting
+                    # block below this produces highlight + fresnel
+                    # edge glow without needing a real PBR shader.
+                    colorscale=[[0, "#64748b"], [0.5, "#cbd5e1"], [1, "#f1f5f9"]],
+                    opacity=1.0,
                     lighting=dict(
-                        ambient=0.55, diffuse=0.7,
-                        specular=0.3, roughness=0.5,
+                        ambient=0.42, diffuse=0.85,
+                        specular=0.55, roughness=0.28,
+                        fresnel=0.45,
                     ),
-                    lightposition=dict(x=100, y=200, z=0),
+                    lightposition=dict(x=2000, y=2500, z=1500),
                     name="sphere",
                     hoverinfo="skip",
                 )
             )
+
+    # Wireframe box around the simulation domain -- reads as a
+    # "wind tunnel chamber" outline so the smoke + body don't float
+    # in empty space. 12 edges of an axis-aligned box drawn as a
+    # single Scatter3d in lines mode (with None-separated segments).
+    _bx0, _by0, _bz0 = 0.0, 0.0, 0.0
+    _bx1, _by1, _bz1 = float(field.Nx), float(field.Ny), float(field.Nz)
+    _box_pts = [
+        # Bottom face (z=z0)
+        (_bx0, _by0, _bz0), (_bx1, _by0, _bz0), (_bx1, _by1, _bz0), (_bx0, _by1, _bz0), (_bx0, _by0, _bz0),
+        (None, None, None),
+        # Top face (z=z1)
+        (_bx0, _by0, _bz1), (_bx1, _by0, _bz1), (_bx1, _by1, _bz1), (_bx0, _by1, _bz1), (_bx0, _by0, _bz1),
+        (None, None, None),
+        # Four vertical edges
+        (_bx0, _by0, _bz0), (_bx0, _by0, _bz1),
+        (None, None, None),
+        (_bx1, _by0, _bz0), (_bx1, _by0, _bz1),
+        (None, None, None),
+        (_bx1, _by1, _bz0), (_bx1, _by1, _bz1),
+        (None, None, None),
+        (_bx0, _by1, _bz0), (_bx0, _by1, _bz1),
+    ]
+    scene_traces.append(
+        go.Scatter3d(
+            x=[p[0] for p in _box_pts],
+            y=[p[1] for p in _box_pts],
+            z=[p[2] for p in _box_pts],
+            mode="lines",
+            line=dict(color="#475569", width=2),
+            opacity=0.55,
+            name="tunnel",
+            hoverinfo="skip",
+            showlegend=False,
+        )
+    )
 
     # Build the per-snapshot frames. The smoke Scatter3d is trace 0
     # in ``scene_traces``; every frame overrides just that trace via
     # ``traces=[0]``, leaving sphere + Q-criterion (static across
     # time, since the velocity field is steady) untouched.
     smoke_marker_template = dict(
-        size=2.4,
+        size=5.5,
         colorscale="Plasma",
         cmin=0.0,
         cmax=u_in_meta * 1.6,
-        opacity=0.78,
-        colorbar=dict(title="u<sub>x</sub>", thickness=12, len=0.6),
+        opacity=0.35,
+        line=dict(width=0),
+        colorbar=dict(
+            title="u<sub>x</sub>",
+            thickness=10,
+            len=0.45,
+            x=1.02, xanchor="left",
+        ),
     )
     frames = []
     for k, (snap_px, snap_py, snap_pz, snap_sp) in enumerate(snapshots):
@@ -1814,32 +1833,87 @@ if view == "3D gallery (preview)":
     )
     st.plotly_chart(fig, use_container_width=True)
     st.caption(
-        f"{len(snapshots)} animation frames over a {n_frames}-step "
-        f"advection at dt = {dt_per_frame:.1f} lattice-time / frame "
-        f"(sized so a particle at u_in covers the domain in "
-        f"~{target_cross_frames} frames). Click **▶ Play** to watch "
-        f"the smoke develop; drag the slider to scrub. Rotation and "
-        f"zoom work mid-playback."
+        f"Click **▶ Play** to watch the smoke develop; drag the slider "
+        f"to scrub through the {len(snapshots)} keyframes. Drag the "
+        f"scene with the mouse to rotate, scroll to zoom -- the box "
+        f"and sphere stay fixed; only the smoke moves."
     )
 
-    # Manifest expander -- the "show me the receipt" panel.
-    with st.expander(":material/receipt_long: &nbsp; **Manifest**", expanded=False):
+    # Engineering details: everything the curious-but-CFD-literate
+    # visitor wants, collapsed by default so the consumer-facing view
+    # stays a clean "title -> picker -> animation -> caption" strip.
+    # The Q-criterion widgets here WRITE to st.session_state under the
+    # keys the chart-build code at the top of this block READ at the
+    # start of the run; toggling Q triggers a Streamlit rerun, which
+    # picks up the new session_state value before rebuilding the figure.
+    with st.expander(
+        ":material/tune: &nbsp; **Engineering details**",
+        expanded=False,
+    ):
+        _Re_disp = _Re_est
+        _scheme = str(field.meta.get("scheme", "?")).upper()
+        _outflow = str(field.meta.get("outflow_scheme", "guo"))
+        _n_steps = int(field.meta.get("n_steps", 0))
+        st.caption(
+            f"*Solver: {_scheme} collision, "
+            f"{'Bouzidi' if field.meta.get('use_bouzidi') else 'half-way BB'} "
+            f"wall BC, {_outflow} outflow, {_n_steps} steps.*"
+        )
+        diag_cols = st.columns(4)
+        diag_cols[0].metric(
+            "Grid", f"{field.Nx} × {field.Ny} × {field.Nz}"
+        )
+        diag_cols[1].metric(
+            "Re (approx)", f"{_Re_disp:.0f}",
+            help="u_in · D / nu, using sphere diameter D = 2R from the "
+                 "preset's body params.",
+        )
+        diag_cols[2].metric(
+            "Mass drift", f"{_solver.get('mass_drift_rel', 0):.2%}",
+            help="Mass change between the simulation's first and last "
+                 "step. Small drift means the boundary conditions are "
+                 "well-balanced.",
+        )
+        diag_cols[3].metric(
+            "Peak u_x", f"{_solver.get('u_peak', 0):.4f}",
+            help="Maximum streamwise velocity in the domain (lattice "
+                 "units).",
+        )
+        st.markdown("##### Q-criterion vortex shell")
+        q_col1, q_col2 = st.columns([1, 3])
+        with q_col1:
+            st.checkbox(
+                "Show shell",
+                value=show_q,
+                key="show_q_gallery",
+                help=(
+                    "Render the Q = level isosurface around vortex tubes "
+                    "in the wake. Q = (1/2)(|Ω|² - |S|²); positive Q "
+                    "means rotation dominates strain. The shell carves "
+                    "out where the flow swirls."
+                ),
+            )
+        with q_col2:
+            st.slider(
+                "Q threshold (% of max)", 1, 50, q_level_pct,
+                key="q_level_pct_gallery",
+                disabled=not show_q,
+            )
+        st.markdown("##### Manifest")
         st.caption(
             f"Preset hash: `{field.meta.get('hash', '?')[:16]}...` "
             f"&middot; Schema v{field.meta.get('version', '?')} "
             f"&middot; Baked at {field.meta.get('ts_baked', '?')}"
         )
         st.json(field.meta, expanded=False)
-
-    st.divider()
-    st.caption(
-        "Source: [src/baked_fields.py](https://github.com/devansh2003-dev/"
-        "aerolab/blob/main/src/baked_fields.py), "
-        "[scripts/bake_3d_field.py](https://github.com/devansh2003-dev/"
-        "aerolab/blob/main/scripts/bake_3d_field.py) &middot; "
-        "Tests: [tests/test_baked_fields.py](https://github.com/"
-        "devansh2003-dev/aerolab/blob/main/tests/test_baked_fields.py)"
-    )
+        st.caption(
+            "Source: [src/baked_fields.py](https://github.com/devansh2003-dev/"
+            "aerolab/blob/main/src/baked_fields.py), "
+            "[scripts/bake_3d_field.py](https://github.com/devansh2003-dev/"
+            "aerolab/blob/main/scripts/bake_3d_field.py) &middot; "
+            "Tests: [tests/test_baked_fields.py](https://github.com/"
+            "devansh2003-dev/aerolab/blob/main/tests/test_baked_fields.py)"
+        )
     st.stop()
 
 # --- 2D validity thresholds (single source of truth) ---

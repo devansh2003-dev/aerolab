@@ -2,7 +2,7 @@
 # GitHub Actions runs pytest on every push, but mismatches between Cloud's
 # resolved versions and ours could still surface in production -- pin both
 # here and in pyproject.toml.
-streamlit==1.57.0
+streamlit==1.59.1
 aerosandbox==4.2.9
 neuralfoil==0.3.2
 matplotlib==3.10.9
