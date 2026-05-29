@@ -1478,20 +1478,23 @@ if view == "3D gallery (preview)":
         st.markdown("### :material/air: &nbsp; Streamlines")
         n_seeds = st.slider(
             "Density",
-            min_value=12, max_value=80, value=36,
+            min_value=12, max_value=50, value=24,
             key="n_seeds_gallery",
             help=(
                 "Number of streamlines released at the inflow plane. "
-                "Higher = denser smoke field but slower render."
+                "Higher = denser smoke field but slower in-browser "
+                "render. Above ~40 the WebGL frame rate may drop."
             ),
         )
         tube_thickness = st.slider(
             "Thickness",
-            min_value=0.2, max_value=1.5, value=0.7, step=0.1,
+            min_value=0.2, max_value=1.5, value=0.3, step=0.1,
             key="tube_thickness_gallery",
             help=(
-                "Visual width of each streamline ribbon. Lower for "
-                "delicate filaments, higher for a denser look."
+                "Visual width of each streamline ribbon. Thicker "
+                "tubes mesh into more triangles per segment, so the "
+                "browser does more work -- raise gradually if the "
+                "scene feels sluggish."
             ),
         )
         st.divider()
@@ -1523,10 +1526,19 @@ if view == "3D gallery (preview)":
             disabled=not show_q,
         )
 
+    # Progress bar: gives the user visible feedback during scene swap.
+    # Each stage is fast in Python (<1 s each) but the browser-side
+    # WebGL render after st.plotly_chart can take 2-5 s on a fresh
+    # scene; that part we can't progress-bar (it's client-side). The
+    # explicit ticks here at least signal "something is happening"
+    # during the Python-side prep instead of a frozen-looking page.
+    _gallery_prog = st.progress(0, text="Loading scene...")
+    _gallery_prog.progress(10, text="Loading velocity field...")
     field = load_baked_field(preset_options[chosen_name])
     u_in_meta = float(field.meta.get("u_in", 0.05))
     Nx, Ny, Nz = field.Nx, field.Ny, field.Nz
 
+    _gallery_prog.progress(25, text="Computing colormap range...")
     # Per-scene colormap normalisation. The previous cmax = u_in * 1.6
     # under-saturated the colormap on higher-Re scenes where peak
     # speed past the body is closer to 2.5 - 3 x u_in -- the Plasma
@@ -1557,6 +1569,7 @@ if view == "3D gallery (preview)":
         "Drag to rotate, scroll to zoom."
     )
 
+    _gallery_prog.progress(45, text="Sub-sampling velocity field...")
     # --- Streamtube construction --------------------------------------
     # go.Streamtube takes the velocity field on a regular grid plus
     # seed positions; each tube traces the path a tracer would follow
@@ -1600,6 +1613,7 @@ if view == "3D gallery (preview)":
     # to 0.55 so the bright tracers on top stand out. maxdisplayed
     # bumped to 10000 (from Plotly's default 1000) so long tubes
     # spanning the streamwise extent aren't truncated mid-domain.
+    _gallery_prog.progress(60, text="Building streamlines...")
     scene_traces = [
         go.Streamtube(
             x=_X.flatten(),
@@ -1629,6 +1643,7 @@ if view == "3D gallery (preview)":
         )
     ]
 
+    _gallery_prog.progress(75, text="Building body + overlays...")
     # Q-criterion shell (optional, controlled from sidebar).
     if show_q:
         from src.lbm_3d_qcriterion import compute_q_field, extract_q_isosurface
@@ -1786,6 +1801,7 @@ if view == "3D gallery (preview)":
     # a much smaller tracer count) once the static version is confirmed
     # stable on Cloud.
 
+    _gallery_prog.progress(90, text="Composing scene...")
     fig = go.Figure(data=scene_traces)
     fig.update_layout(
         scene=dict(
@@ -1804,6 +1820,8 @@ if view == "3D gallery (preview)":
         paper_bgcolor="#0a0a0a",
         showlegend=False,
     )
+    _gallery_prog.progress(100, text="Ready -- handing off to your browser to render.")
+    _gallery_prog.empty()
     st.plotly_chart(fig, width="stretch")
 
     # Engineering details: collapsed, on the main page, below the
