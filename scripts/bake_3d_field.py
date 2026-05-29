@@ -56,6 +56,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from src.baked_fields import save_baked_field  # noqa: E402
 from src.lbm_3d_bouzidi import (  # noqa: E402
+    make_cube_mask,
     make_cylinder_mask,
     make_sphere_mask,
     sphere_wall_links,
@@ -150,6 +151,55 @@ PRESETS: dict[str, dict[str, Any]] = {
         "rho_outflow": 1.0,
         "outflow_scheme": "regularised",
     },
+    # ---- Additional Re bands (2026-05-29) ---------------------------
+    # The 3D gallery exposes a Reynolds slider with two snap-to bakes
+    # per shape (Re = 40 and 100). Re = 200 was attempted but the
+    # 96x48x48 BGK/TRT bake diverges to NaN (tau ~ 0.512, on the edge
+    # of stability with 42 % blockage) -- a larger grid or lower u_in
+    # would be needed to push past Re = 100, and is left as follow-up.
+    # All shipped bakes use TRT collision and the regularised outflow
+    # that held cylinder_re100 stable.
+    "cylinder_re40": {
+        "body_type": "cylinder",
+        "Nx": 64, "Ny": 32, "Nz": 32,
+        "body_params": {"cx": 16.0, "cy": 16.0, "R": 8.0},
+        "u_in": 0.04,
+        "nu": 0.016,                     # Re = 0.04 * 16 / 0.016 = 40
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "cube_re100": {
+        "body_type": "cube",
+        "Nx": 96, "Ny": 48, "Nz": 48,
+        # half_extent 9 -> cube spans 18 lattice units on each side.
+        # Blockage 18/48 = 37 %. Re = u_in * (2 * half_extent) / nu.
+        "body_params": {"cx": 24.0, "cy": 24.0, "cz": 24.0, "half_extent": 9.0},
+        "u_in": 0.04,
+        "nu": 0.0072,                    # Re = 0.04 * 18 / 0.0072 = 100
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
+    "cube_re40": {
+        "body_type": "cube",
+        "Nx": 64, "Ny": 32, "Nz": 32,
+        "body_params": {"cx": 16.0, "cy": 16.0, "cz": 16.0, "half_extent": 7.0},
+        "u_in": 0.04,
+        "nu": 0.014,                     # Re = 0.04 * 14 / 0.014 = 40
+        "n_steps": 800,
+        "scheme": "trt",
+        "use_guo_neem": True,
+        "use_bouzidi": True,
+        "rho_outflow": 1.0,
+        "outflow_scheme": "regularised",
+    },
 }
 
 
@@ -177,6 +227,18 @@ def _build_body(
         cy = float(body_params["cy"])
         R = float(body_params["R"])
         mask = make_cylinder_mask(Nx, Ny, Nz, cx, cy, R)
+        wall_links = voxel_wall_links(mask)
+        return mask, wall_links
+    if body_type == "cube":
+        # Axis-aligned cube. Same voxelised wall-link approach as the
+        # cylinder; the flat cube faces line up exactly with cell
+        # boundaries at integer ``half_extent``, so q is effectively 0.5
+        # everywhere on the surface.
+        cx = float(body_params["cx"])
+        cy = float(body_params["cy"])
+        cz = float(body_params["cz"])
+        h = float(body_params["half_extent"])
+        mask = make_cube_mask(Nx, Ny, Nz, cx, cy, cz, h)
         wall_links = voxel_wall_links(mask)
         return mask, wall_links
     raise ValueError(f"unknown body_type: {body_type!r}")

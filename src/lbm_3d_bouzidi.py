@@ -176,6 +176,26 @@ def make_cylinder_mask(
     return np.broadcast_to(in_circle_2d, (Nx, Ny, Nz)).copy()
 
 
+def make_cube_mask(
+    Nx: int, Ny: int, Nz: int,
+    cx: float, cy: float, cz: float,
+    half_extent: float,
+) -> np.ndarray:
+    """Boolean solid mask for an axis-aligned cube centred at
+    (cx, cy, cz) with half-edge ``half_extent``. Cells whose centres
+    fall inside the cube (chebyshev distance from centre <= h) are
+    solid. Voxel-stair walls are handled by ``voxel_wall_links``.
+    """
+    xs = np.arange(Nx)[:, None, None]
+    ys = np.arange(Ny)[None, :, None]
+    zs = np.arange(Nz)[None, None, :]
+    return (
+        (np.abs(xs - cx) <= half_extent)
+        & (np.abs(ys - cy) <= half_extent)
+        & (np.abs(zs - cz) <= half_extent)
+    )
+
+
 def sphere_wall_links(
     Nx: int, Ny: int, Nz: int,
     cx: float, cy: float, cz: float,
@@ -698,6 +718,7 @@ def apply_bouzidi_correction_trt(
 
 __all__ = [
     "WallLinkList",
+    "make_cube_mask",
     "make_cylinder_mask",
     "solve_bouzidi_q",
     "make_sphere_mask",
