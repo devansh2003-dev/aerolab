@@ -1083,26 +1083,25 @@ final populations with the simplified Ladd 1994 momentum exchange
 | F_side / F_drag | <10⁻⁴ | expected ~0 by axisymmetry |
 | Mass drift over 2 500 steps | −0.14 % | budget 1 % |
 
-**What the +44 % tells us.** The error is positive, systematic, and
-dominated by **blockage**:
+#### (Superseded) Original error budget — kept as a record of the prediction §8.3.1 refuted
 
-- **42 % blockage (D/Ny = 20/48).** This is duct flow, not
-  free-stream. The channel walls accelerate the bypass flow and
-  deepen the wake pressure deficit, raising Cd. For *cylinders* the
-  Allen-Vincenti formula predicts roughly +20 % at this blockage; an
-  equivalent sphere correction isn't in the standard tables. Largest
-  single contribution to the gap.
-- **Halfway bounce-back momentum exchange.** The simplified Ladd 1994
-  formula (`F = sum 2·c_i·f_i`) differs from the Mei-Yu-Shyy-Luo 2002
-  Bouzidi-aware refinement by ~5–10 % at q ≠ 0.5. We use the simpler
-  form on purpose; the Bouzidi-aware variant is on the roadmap.
-- **Grid resolution.** D = 20 lattice cells across the sphere is on
-  the low end of the Mei-Luo-Shyy 1999 D ≥ 40 guideline for
-  quantitative 2D-LBM Cd. At D = 40 the residual error budget would
-  drop by ~5–10 %.
-- **Finite advective time.** 5 D/u is past the startup transient but
-  not fully spectrally settled; the sphere wake is steady at Re=100,
-  so this contribution is small (~2–5 %).
+> The four-bullet budget below was written on the assumption that
+> blockage was the dominant +44 % bias. The §8.3.1 low-blockage
+> cross-check (2026-05-29) refuted that assumption: halving blockage
+> moved Cd in the *wrong direction*. **Do not cite the budget below.**
+> The current best-estimate budget is in §8.3.1. The original is kept
+> here so the reader can see exactly which prediction was tested and
+> which one failed.
+>
+> - ~~**42 % blockage (D/Ny = 20/48)** — largest single contribution.
+>   Channel walls accelerate bypass flow, deepen wake pressure
+>   deficit, raise Cd.~~ Refuted: at B = 25 % Cd was essentially
+>   unchanged (+5 %, not -15 %).
+> - ~~**Halfway bounce-back momentum exchange (~5–10 %).**~~
+>   Promoted in §8.3.1 to the prime suspect (~+30–40 %).
+> - ~~**Grid resolution D = 20 (~5–10 %).**~~ Promoted in §8.3.1
+>   (~+10–15 %).
+> - ~~**Finite advective time (~2–5 %).**~~ Unchanged.
 
 **Why the test still passes a +44 % error.** The senior-engineer
 question this section answers is "does the solver produce a
@@ -1111,9 +1110,10 @@ from the configuration?" — yes, it does. The forces are correctly
 signed (drag is positive, downstream), axisymmetry is preserved
 (`F_lift`/`F_drag` < 2 %, `F_side`/`F_drag` < 10⁻⁴), the magnitude
 sits in the physical envelope, mass is conserved to 0.14 %, and the
-error is in the direction blockage predicts. The next round of
-validation work (D ≥ 40 grid, Mei-Yu-Shyy-Luo Bouzidi momentum
-exchange, lower-blockage bake) would close most of the remaining gap.
+remaining gap is fully accounted for by the §8.3.1 revised budget
+(simplified Ladd 1994 momentum exchange + D = 20 grid resolution).
+The next round of validation work (Mei-Yu-Shyy-Luo Bouzidi-aware
+momentum exchange + D ≥ 40 grid, see §8.7) would close most of it.
 
 **Reproduce:**
 

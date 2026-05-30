@@ -136,7 +136,7 @@ Shares the *collision-rule family* (MRT + Smagorinsky LES in 2D, TRT in 3D) with
 - Wall-function turbulence → we resolve the boundary layer directly (only feasible at low Re)
 - Cumulant collision, multi-block, automatic time-stepping, OpenFOAM/Fluent cross-validation
 - Bouzidi q-field for arbitrary uploaded polygons (built-ins have it; custom uploads use halfway BB)
-- **Live 3D solve on Cloud.** The 3D D3Q19 TRT kernel runs offline (~20 s per scene on a laptop); the hosted app replays the saved velocity field. 3D Re tops out at 100 in the shipped bakes (Re=200 BGK/TRT diverged at our grid resolution — tau ≈ 0.512); no quantitative drag validation has been done for 3D yet (see [VALIDATION.md §8](VALIDATION.md)).
+- **Live 3D solve on Cloud.** The 3D D3Q19 TRT kernel runs offline (~20 s per scene on a laptop); the hosted app replays the saved velocity field. 3D Re tops out at 100 in the shipped bakes (Re=200 BGK/TRT diverged at our grid resolution — tau ≈ 0.512). **No percent-level 3D drag validation yet** — the one quantitative run (sphere Re=100 vs Clift-Grace-Weber 1978) lands at Cd = 1.57 / +44 % above reference. A low-blockage cross-check refuted the original "blockage dominates" hypothesis; the residual error is now attributed to the simplified Ladd 1994 momentum exchange + D = 20 grid resolution (see [VALIDATION.md §8.3 / §8.3.1](VALIDATION.md)).
 
 Every choice on the production hot path is textbook-correct for built-in shapes. The *envelope* (Re, dimensionality, scope) is firmly academic-tutorial.
 
