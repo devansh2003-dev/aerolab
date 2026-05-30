@@ -1,0 +1,35 @@
+#!/bin/bash
+# Allrun driver for the OpenFOAM cylinder Re=100 cross-validation.
+# Standard OpenFOAM tutorial-style script: mesh + solve + (optional)
+# postProcess. Cd / Cl time series land in
+# postProcessing/forceCoeffs/0/forceCoeffs.dat (the function object
+# in system/controlDict handles that automatically during the solve).
+#
+# Usage from the case directory (with OpenFOAM 11 sourced):
+#
+#     ./Allrun
+#
+# Expected wall-time on a single core: ~30 - 60 min for endTime = 150
+# at deltaT = 0.005 on ~12 500 cells.
+
+cd "${0%/*}" || exit 1
+
+# Source RunFunctions from OpenFOAM 11 (provides runApplication and
+# runParallel). $WM_PROJECT_DIR points to the install root.
+. "${WM_PROJECT_DIR:?OpenFOAM not sourced}/bin/tools/RunFunctions"
+
+# Generate the mesh.
+runApplication blockMesh
+
+# Sanity-check the mesh: writes constant/polyMesh/sets/* if anything
+# is wrong, and an exit code we can react to.
+runApplication checkMesh
+
+# Solve. foamRun reads "solver incompressibleFluid" from controlDict
+# and dispatches to the internal PIMPLE solver (the modern OpenFOAM 11
+# replacement for pimpleFoam).
+runApplication foamRun
+
+# Forces / coefficients are already written every time step by the
+# function object in controlDict. Nothing else to do here.
+echo "Done. Forces written to postProcessing/forceCoeffs/0/forceCoeffs.dat"

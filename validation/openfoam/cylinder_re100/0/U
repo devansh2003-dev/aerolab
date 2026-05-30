@@ -1,0 +1,61 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     | Website:  https://openfoam.org
+    \\  /    A nd           | Version:  11
+     \\/     M anipulation  |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    format      ascii;
+    class       volVectorField;
+    object      U;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+dimensions      [0 1 -1 0 0 0 0];
+
+internalField   uniform (0 0 0);
+
+boundaryField
+{
+    inlet
+    {
+        type            fixedValue;
+        value           uniform (1 0 0);
+    }
+
+    outlet
+    {
+        type            zeroGradient;
+    }
+
+    // Slip top / bottom: free-stream-like outer walls. Matches the
+    // AeroLab Validation preset (D = 20 cells in a 400-cell-tall
+    // channel) where the wall influence is negligible at B = 5 %.
+    // Using slip instead of noSlip is essential here: noSlip would
+    // grow boundary layers off the top and bottom that would close
+    // a ~20 D channel by Re = 100 and skew Cd vs the Williamson
+    // free-stream reference.
+    bottom
+    {
+        type            slip;
+    }
+
+    top
+    {
+        type            slip;
+    }
+
+    cylinder
+    {
+        type            noSlip;
+    }
+
+    defaultFaces
+    {
+        type            empty;
+    }
+}
+
+// ************************************************************************* //

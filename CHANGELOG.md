@@ -2,6 +2,109 @@
 
 All notable changes to AeroLab. Dates are absolute; versions follow [SemVer](https://semver.org/).
 
+## [0.6.4] — 2026-05-30
+
+**V2 cross-check is now measured.** OpenFOAM 11 ran the cylinder
+Re = 100 case (`foamRun -solver incompressibleFluid` on a 6 480-cell
+planar O-grid, 200 D/U with shedding fully developed past t ≈ 200 s).
+The cross-check **runs and reports numbers**; the reviewer's 5 %
+acceptance gates from card #6 do **not** pass — OpenFOAM's Cd lands
+at -10 % vs Williamson and St at -28 %, both consistent with
+under-resolution of the outer downstream wake mesh. The diagnosis is
+documented honestly in §8.4 and the mesh-refined re-run is promoted
+to the #1 item in §8.8.
+
+### Added
+
+- **`validation/openfoam/cylinder_re100/{0,constant,system}/`** —
+  full OpenFOAM 11 case files (was previously empty placeholder
+  directories). Symmetric 30 D × 20 D channel mirroring AeroLab's
+  Validation preset (B = 5 %), 8-block planar O-grid topology copied
+  from the OF11 `offsetCylinder` tutorial and scaled to symmetric
+  domain. Slip top/bottom walls (matches B = 5 % free-stream
+  expectation), velocity inlet, pressure outlet, no-slip cylinder.
+  Newtonian laminar via `model Stokes` (OF11's name for the
+  constant-viscosity stress model).
+- **`validation/openfoam/cylinder_re100/Allrun`** — driver script
+  that runs `blockMesh + checkMesh + foamRun`. Forces / coefficients
+  written every time step by the `forceCoeffs` function object in
+  `system/controlDict`.
+- **`validation/openfoam/cylinder_re100/postProcessing/forceCoeffs/0/forceCoeffs.dat`**
+  — the actual time-series output from the 200 D/U run (40 010 lines;
+  startup pulse from t = 0, symmetric steady wake until ~t = 150,
+  shedding develops between t = 160 – 200, fully saturated past
+  t = 200; Cl_std reaches 0.32 by t = 400).
+- **`validation/openfoam/cylinder_re100/diagnose.py`** — committed
+  Cd / Cl diagnostic. Splits the time series into 10 windows
+  (Cd_mean / Cd_amp / Cl_std per window) so the shedding-bootstrap
+  transient is visible at a glance, then computes Strouhal three
+  ways over the saturated tail (FFT(Cl), FFT(Cd) → ½ f, and
+  zero-crossing). All three agree on St = 0.120 to within 0.4 %,
+  ruling out an analysis artefact in the §8.4 St gap.
+- **VALIDATION.md §8.4 (rewritten)** — three-way Cd / St table (AeroLab
+  corrected, AeroLab raw, OpenFOAM, Williamson 1996), result reading
+  with sign-of-error analysis on the two solvers, explicit
+  "Does V2 pass the 5 % gates?" subsection that answers *no* with
+  numbers, and Strouhal extraction methodology.
+- **`validation/cross_validation.md` (extended)** — same three-way
+  table as §8.4 plus "what this comparison closes and does not close"
+  notes; written by the compare script and committed.
+
+### Changed
+
+- **`validation/compare_aerolab_vs_openfoam.py`** — Cd window is now
+  scaled by `CASE_T_PER_DU = CASE_D / CASE_U_INF` (was hard-coded
+  to 0.01 assuming a D = 0.01 m case). The shipped case uses D = 2,
+  U = 1, so 50 D/U = last 100 s of the time series. Added a Strouhal
+  computation via FFT of Cl over the same window, the OF11 column
+  layout (`# Time Cm Cd Cl Cl(f) Cl(r)`) is auto-detected from the
+  header comment so the script also handles older OF versions. Output
+  table gained an `St` column with deviation vs Williamson.
+- **`validation/openfoam/cylinder_re100/README.md`** — rewrote
+  "Status: scaffolded, run pending" → "Status: case implemented,
+  runnable on OpenFOAM 11"; documented the symmetric-domain
+  modifications vs the source `offsetCylinder` tutorial, the OF11
+  `foamRun + incompressibleFluid` solver dispatch (not standalone
+  `pisoFoam`), and the path-with-spaces gotcha (`Study & Work` paths
+  must be copied into a clean home directory before running).
+- **VALIDATION.md §8.5** — bullet about the cylinder cross-check
+  updated from "templated, not measured" to "measured but does not
+  pass the 5 % gates; diagnosed as outer-wake under-resolution".
+- **VALIDATION.md §8.8 priority list** — item #1 changed from "Run
+  the SimScale cylinder Re=100 cross-check" to "Refine the OpenFOAM
+  cylinder wake mesh and re-run". Item #3 (Strouhal on the cylinder
+  3D bake) now also references the §8.4 missing-cell.
+
+### Notes for the next round
+
+The OpenFOAM result is interpretable but doesn't *pass* yet. The
+next iteration would:
+
+- Bump outer downstream blocks from 18 × 18 to ~50 × 50 cells
+  (or apply `simpleGrading 4 1 1` to cluster cells near the inner
+  ring), target h / D ≤ 0.25 in the wake.
+- Run to endTime ≥ 600 so Cl_std plateaus (currently still slowly
+  rising at t = 400).
+- Re-run the comparison; if Cd lands within ±5 % of Williamson and
+  St within ±10 %, the V2 reviewer gates from card #6 close cleanly.
+
+## [0.6.3] — 2026-05-29
+
+**Reviewer-polish pass + V2 cross-check made executable from a Windows machine.**
+
+### Added
+
+- **`validation/simscale/cylinder_re100/RUNBOOK.md`** — browser-only path to V2 (OpenFOAM cylinder Re=100 cross-check). SimScale's Community plan runs OpenFOAM `pimpleFoam` in the cloud, so the cross-validation claim is identical to a local OpenFOAM run but with no WSL/Linux requirement. Account setup → Cd / St numbers in ~30–45 min. Includes account setup, geometry / BC / mesh / time-step choices, post-processing snippet that pulls forces CSV and extracts Cd, St (FFT on Cl), and L/D, and a failure-modes section.
+- **VALIDATION.md §8.4** — three-way result template (Williamson 1996 vs AeroLab Validation preset vs SimScale OpenFOAM) with `TBD` cells to fill once the SimScale run completes. Pass criterion and "what to do if they disagree by > 10 %" notes inline.
+
+### Changed
+
+- **VALIDATION.md §8.4–8.7 renumbered to §8.5–§8.8.** New §8.4 is the SimScale cross-check; existing "What we don't validate", "Blockage", "Reproducing", and "What a senior reviewer should ask next" each shift down one. Internal §8.7 → §8.8 reference in §8.3 updated. `What we still do NOT validate in 3D` bullet about OpenFOAM rewritten to "Cylinder cross-check is templated, not measured" since the install barrier is gone.
+- **VALIDATION.md §8.8 priority list** — "Run the SimScale cylinder Re=100 cross-check" promoted to item #1 (it's the cheapest open item now that the install barrier is gone). MYSL 2002 + D≥40 demoted to #2 but flagged as still the highest *absolute impact* item.
+- **README.md** (under "What this solver isn't") — "no quantitative drag validation has been done for 3D yet" rewritten to acknowledge the §8.3 sphere measurement exists at +44 %, attribute the residual to Ladd 1994 + D=20 (not blockage, per the §8.3.1 cross-check refutation), and link both sections.
+- **VALIDATION.md §8.3** — the original four-bullet error budget is now wrapped in a `> (Superseded)` blockquote with each bullet struck through and annotated with what §8.3.1 found instead. The lead-in explicitly says "Do not cite the budget below." Skim-readers can't quote the falsified paragraph by accident.
+- **`app.py:357`** — header version chip bumped `v0.5.0 → v0.6.3`. The string had been frozen at v0.5.0 since the 2D launch, even as 0.6.x shipped 3D.
+
 ## [0.6.2] — 2026-05-29
 
 **3D gallery polish + sphere Cd error-budget falsification.**

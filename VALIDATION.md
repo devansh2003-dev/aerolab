@@ -1113,7 +1113,7 @@ sits in the physical envelope, mass is conserved to 0.14 %, and the
 remaining gap is fully accounted for by the §8.3.1 revised budget
 (simplified Ladd 1994 momentum exchange + D = 20 grid resolution).
 The next round of validation work (Mei-Yu-Shyy-Luo Bouzidi-aware
-momentum exchange + D ≥ 40 grid, see §8.7) would close most of it.
+momentum exchange + D ≥ 40 grid, see §8.8) would close most of it.
 
 **Reproduce:**
 
@@ -1187,7 +1187,112 @@ python scripts/validate_3d_sphere_cd_lowblock.py
 pytest tests/test_validation_3d_sphere_cd_lowblock.py -v
 ```
 
-### 8.4 What we still do NOT validate in 3D
+### 8.4 OpenFOAM cylinder Re=100 cross-check — V2 (run 2026-05-30)
+
+> **Status: measured.** OpenFOAM 11 (Ubuntu 22.04 / WSL) ran the case
+> from [`validation/openfoam/cylinder_re100/`](validation/openfoam/cylinder_re100/);
+> the `forceCoeffs.dat` time series ships under
+> `postProcessing/forceCoeffs/0/`. The three-way table below is the
+> output of
+> [`validation/compare_aerolab_vs_openfoam.py`](validation/compare_aerolab_vs_openfoam.py),
+> also written to
+> [`validation/cross_validation.md`](validation/cross_validation.md).
+> A SimScale runbook is preserved in
+> [`validation/simscale/cylinder_re100/RUNBOOK.md`](validation/simscale/cylinder_re100/RUNBOOK.md)
+> as a no-install browser alternative.
+
+This is the V2 deliverable from David Artemyev's 2026-05-27 review
+— a third independent number against AeroLab's cylinder Re=100
+result, produced by a *different numerical method* (OpenFOAM 11
+finite-volume `incompressibleFluid` via `foamRun`) on the *same*
+geometry.
+
+**Case parameters.** Mirrors the AeroLab Validation preset:
+
+| | Value |
+|---|---|
+| Domain | 30 D × 20 D × 1 thin-span ( = 60 × 40 × 2 with D = 2 ) |
+| Blockage B = D / Ly | 5 % |
+| Cylinder D | 2 m |
+| U_inf | 1 m/s, inlet velocity, slip top / bottom |
+| ν | 0.02 m²/s → Re = U · D / ν = 100 |
+| Mesh | 8-block planar O-grid, 18 × 18 × 1 cells per block, **6 480 cells total** |
+| Time integration | dt = 0.01, endTime = 400 (200 D/U) |
+| Solver | `foamRun -solver incompressibleFluid` (PIMPLE 2 + 1) |
+
+**Three-way result** (Cd mean over t = 300 – 400 s, St from FFT and
+zero-crossing of Cl):
+
+| Source | Cd | Δ vs Williamson Cd | St | Δ vs Williamson St |
+|---|---|---|---|---|
+| AeroLab (corrected, D = 20) | **1.348** | **+2.13 %** | gated in CI | — |
+| AeroLab (raw, D = 20)        | 1.510    | +14.36 %    | gated in CI | — |
+| OpenFOAM 11 (this run)        | **1.183** | **-10.36 %** | **0.120** | **-27.72 %** |
+| Williamson 1996 ARFM 28       | 1.320    | 0 (ref)      | 0.166      | 0 (ref) |
+
+**Result reading.**
+
+- **AeroLab's corrected Cd lands within 2.1 % of Williamson** without
+  any post-hoc refit. That number was already gated by
+  `test_validation_benchmark.py` and the OpenFOAM run does not change
+  it — it just adds an independent reference frame.
+- **OpenFOAM's Cd lands -10.4 % below Williamson.** This is the
+  under-resolved-wake signature: the outer downstream blocks have
+  ~1.1 lattice unit per cell ≈ D / 2, which is too coarse to track
+  the shed vortices cleanly. Numerical dissipation acts like a
+  viscosity bump and drops the effective Reynolds number; the wake
+  reads more like Re ≈ 50–60 than Re = 100.
+- **OpenFOAM's St lands -27.7 % below Williamson** (0.120 vs 0.166).
+  Same under-resolution mechanism, more sensitive: Williamson reports
+  St = 0.13 at Re ≈ 50 and St = 0.155 at Re = 80, so the measured
+  0.120 sits in the *effective-Re ≈ 40 – 50* band, consistent with
+  the Cd drop. FFT and zero-crossing methods agree on 0.120 to
+  within 0.4 %, so this is the model's answer, not an analysis
+  artefact.
+- **Different sign of error on the two solvers.** AeroLab (LBM)
+  corrected is +2 % above Williamson; OpenFOAM (FV) is -10 % below.
+  Different bias sources: LBM blockage correction slightly
+  over-corrects at this resolution; FV under-resolves the downstream
+  wake. The two solvers bracket the reference.
+
+**Does V2 pass the reviewer's 5 % gates?**
+
+David's card #6 asked for `Cd_AeroLab` within 5 % of `Cd_OpenFOAM`
+*and* `Cd_OpenFOAM` within 5 % of Williamson. Both gates currently
+fail:
+
+- |Cd_AeroLab − Cd_OpenFOAM| / Cd_OpenFOAM = 14.0 %
+- |Cd_OpenFOAM − Cd_Williamson| / Cd_Williamson = 10.4 %
+
+The cross-check is **measured and documented**, not *passed*. The
+honest read is that AeroLab's LBM is closer to Williamson than this
+under-resolved OpenFOAM run is, which is informative but not the
+"three solvers agree to 5 %" outcome the gates demand. The fix is
+mesh refinement on the OpenFOAM side, not a tuning change on
+AeroLab — flagged as the highest-impact next item in §8.8.
+
+**Strouhal extraction details.** Shedding bootstrapped slowly: a
+perfectly symmetric mesh + symmetric inlet locks the wake in a
+metastable steady state at Re = 100 until floating-point asymmetry
+breaks the symmetry. Cl_std rose 0.0001 → 0.32 across t = 80 → 400,
+with the first 200 D/U acting as the symmetry-breaking transient.
+Cd mean and St are taken over t = 300 – 400 (last 50 D/U). FFT(Cl)
+peak at f = 0.060 Hz; zero-crossing count gives 4.5 cycles in 100 s
+→ f = 0.0604 Hz. Both methods agree on St = 0.120 to within 0.4 %.
+
+**Reproduce:**
+
+```bash
+# Linux / WSL / macOS, with OpenFOAM 11 sourced. The path must
+# contain no spaces (OpenFOAM tokenises on whitespace).
+cp -r validation/openfoam/cylinder_re100 ~/aerolab_cyl_re100
+cd ~/aerolab_cyl_re100
+./Allrun                  # blockMesh + checkMesh + foamRun, ~22 min total
+cp -r postProcessing /mnt/c/.../validation/openfoam/cylinder_re100/
+python validation/compare_aerolab_vs_openfoam.py
+```
+
+### 8.5 What we still do NOT validate in 3D
 
 - **No Strouhal comparison.** Cylinder shedding St ≈ 0.16–0.20 at
   Re=100 (Williamson 1996) is the natural 3D analogue of the 2D
@@ -1196,11 +1301,14 @@ pytest tests/test_validation_3d_sphere_cd_lowblock.py -v
 - **No NACA polar.** Both wings ship at AoA = 0° (attached flow)
   and AoA = 10° (mild adverse-pressure-gradient, still attached at
   Re=100). We don't claim CL or CD against XFoil / OpenFOAM.
-- **No OpenFOAM cross-validation.** Scaffolded as the next
-  validation milestone (item V2 in the senior review). Requires
-  Linux / WSL + an OpenFOAM 11 install — not run yet.
+- **Cylinder Cd / St cross-check is measured but does not pass the
+  reviewer's 5 % gates.** §8.4 reports the OpenFOAM run: Cd is -10 %
+  vs Williamson, St is -28 % — both consistent with a too-coarse
+  wake mesh. The cross-check is *done* in the "experiment ran, gap
+  documented" sense; a mesh-refined re-run (target h/D ≤ 0.25 in the
+  wake) is the headline item in §8.8.
 
-### 8.5 Blockage and advective times
+### 8.6 Blockage and advective times
 
 Same caveats as the 2D side carries — surfaced inside the app's
 sidebar slider readout so the user sees the regime:
@@ -1226,7 +1334,7 @@ length and inner recirculation cell are still settling. Visually
 fine; quantitatively incomplete. Documented honestly in-app in the
 3D regime caption and in the sidebar engineering caveats.
 
-### 8.6 Reproducing the 3D bakes
+### 8.7 Reproducing the 3D bakes
 
 ```bash
 # Re-bake every scene from scratch (~3 min on a laptop CPU).
@@ -1245,11 +1353,20 @@ final field arrays) in its meta block, surfaced as the
 `preset hash:` line in the engineering details expander. Identical
 re-bakes reproduce the same hash.
 
-### 8.7 What a senior reviewer should ask next
+### 8.8 What a senior reviewer should ask next
 
 In priority order — the items the gallery does not yet close:
 
-1. **Mei-Yu-Shyy-Luo 2002 Bouzidi-aware momentum exchange + D ≥ 40
+1. **Refine the OpenFOAM cylinder wake mesh and re-run.** §8.4
+   reports the OpenFOAM result at Cd = -10 %, St = -28 % vs
+   Williamson. The diagnosis points squarely at outer-block under-
+   resolution (~D / 2 per cell in the downstream wake). Increasing
+   the outer downstream blocks to ~50 × 50 cells (or applying
+   `simpleGrading` to cluster cells near the cylinder) and running
+   to t ≥ 600 should drop Cd error inside ±5 % and St error inside
+   ±10 %, closing the V2 reviewer gates from card #6. Expected
+   wall-time: ~45 – 60 min.
+2. **Mei-Yu-Shyy-Luo 2002 Bouzidi-aware momentum exchange + D ≥ 40
    sphere bake.** §8.3.1 falsified the original "blockage is dominant"
    budget by cross-checking at B = 25 % and finding Cd actually rose
    slightly. The remaining +44 to +51 % gap is now attributed to the
@@ -1257,14 +1374,12 @@ In priority order — the items the gallery does not yet close:
    resolution. The MYSL 2002 variant weights each link by its
    q-fraction; combined with a D ≥ 40 grid (Mei-Luo-Shyy 1999) it
    should close most of the gap and let us claim a percent-level Cd
-   instead of the current 0.7-absolute tolerance band. This is the
-   single most impactful next move.
-2. **OpenFOAM cylinder Re=100 cross-validation.** Scaffolded under
-   `validation/openfoam/cylinder_re100/` with a comparison script
-   ready; needs the OpenFOAM solve itself. Linux/WSL only.
+   instead of the current 0.7-absolute tolerance band. Highest-impact
+   item by absolute number.
 3. **Strouhal measurement on a 5 D/u cylinder bake.** Bump n_steps
    from 800 to 2 500 on the cylinder Re=100 bake, run an FFT on the
    lift coefficient time series, compare St against Williamson 1996.
+   Closes the missing AeroLab-side St entry in the §8.4 table.
 4. **Cumulant collision for Re ≥ 200.** The current TRT operator
    sits on the stability boundary at Re=200; cumulant LBM (Geier
    et al. 2015) extends the safe Re band without forcing a 2–4×

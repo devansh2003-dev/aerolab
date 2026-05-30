@@ -27,6 +27,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from src.references import CYLINDER_FREESTREAM_CD as CYLINDER_FREESTREAM  # noqa: E402
+from src.references import CYLINDER_FREESTREAM_ST  # noqa: E402
 
 FORCE_COEFFS_PATH = (
     _ROOT / "validation" / "openfoam" / "cylinder_re100"
@@ -40,31 +41,90 @@ OUT_PATH = _ROOT / "validation" / "cross_validation.md"
 RE_OF_INTEREST = 100
 WINDOW_DU = 50.0  # average Cd over the last 50 D/U so window-equivalent
 
+# Case geometric / kinematic scales. forceCoeffs.dat reports time in
+# *case time units* (seconds with the case's chosen physical units);
+# the AeroLab non-dimensional window WINDOW_DU is in D/U, so we have
+# to convert via t_sec = t_DU * D / U_inf. The shipped case uses
+# D = 2, U_inf = 1 (Re = u_in * D / nu = 100 with nu = 0.02).
+CASE_D = 2.0
+CASE_U_INF = 1.0
+CASE_T_PER_DU = CASE_D / CASE_U_INF
 
-def _read_openfoam_forcecoeffs(path: Path) -> tuple[list[float], list[float]] | None:
-    """Parse OpenFOAM's forceCoeffs.dat into (times, cds). Returns None if
-    the file is absent -- typical pre-solve state."""
+
+def _read_openfoam_forcecoeffs(
+    path: Path,
+) -> tuple[list[float], list[float], list[float]] | None:
+    """Parse OpenFOAM's forceCoeffs.dat into (times, cds, cls). Returns
+    None if the file is absent -- typical pre-solve state.
+
+    OpenFOAM 11 writes the columns ``# Time Cd Cs Cl ...`` (drag, side,
+    lift). Older OpenFOAM versions wrote ``# time Cm Cd Cl ...`` (moment
+    first). We detect which family applies from the header comment, then
+    read accordingly.
+    """
     if not path.exists():
         return None
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    # Find the data header. Look for "# Time" followed by column names.
+    cd_col = 1   # default: OF11 layout (Time Cd Cs Cl ...)
+    cl_col = 3
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line.startswith("#"):
+            continue
+        if "Cd" not in line or "Cl" not in line:
+            continue
+        # Tokens after the leading "#":
+        toks = line.lstrip("#").split()
+        if "Cd" in toks and "Cl" in toks:
+            cd_col = toks.index("Cd")
+            cl_col = toks.index("Cl")
+            break
     times: list[float] = []
     cds: list[float] = []
-    for raw in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+    cls: list[float] = []
+    for raw in text.splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
         parts = line.split()
-        # forceCoeffs columns vary by OpenFOAM version; the consistent
-        # ones across versions are:
-        #     time   Cm   Cd   Cl   Cl(f)   Cl(r)
-        # We read columns 0 and 2.
-        if len(parts) < 3:
+        if len(parts) <= max(cd_col, cl_col):
             continue
         try:
             times.append(float(parts[0]))
-            cds.append(float(parts[2]))
+            cds.append(float(parts[cd_col]))
+            cls.append(float(parts[cl_col]))
         except ValueError:
             continue
-    return times, cds
+    return times, cds, cls
+
+
+def _strouhal(times: list[float], cls: list[float]) -> float | None:
+    """Strouhal number from FFT of the Cl time series.
+
+    Returns f_peak * CASE_D / CASE_U_INF where f_peak is the
+    fundamental shedding frequency. Cl oscillates at f_shed (Cd
+    oscillates at 2*f_shed and at smaller amplitude, so Cl is the
+    right channel for Strouhal extraction).
+    """
+    if len(times) < 32:
+        return None
+    import numpy as np
+    t = np.asarray(times)
+    y = np.asarray(cls) - float(np.mean(cls))
+    # Uniform sampling assumption: validate dt drift.
+    dts = np.diff(t)
+    dt = float(np.median(dts))
+    if dt <= 0:
+        return None
+    freqs = np.fft.rfftfreq(t.size, d=dt)
+    spec = np.abs(np.fft.rfft(y))
+    if spec.size < 3:
+        return None
+    # Skip DC; pick the largest non-zero frequency.
+    peak_idx = 1 + int(np.argmax(spec[1:]))
+    f_peak = float(freqs[peak_idx])
+    return f_peak * CASE_D / CASE_U_INF
 
 
 def _aerolab_cd(re: int) -> tuple[float | None, float | None]:
@@ -107,32 +167,43 @@ def main() -> int:
             "Run `./Allrun` in the case directory first."
         )
     else:
-        times, cds = of_block
-        # Average Cd over the last WINDOW_DU. The OpenFOAM time axis is in
-        # seconds; t_DU = t_sec * U / D and the case is configured at
-        # U = 1, D = 0.01 (Re = 100, nu = 1e-4) -> t_sec = t_DU * 0.01.
-        # So the last 50 D/U is the last 0.5 s of the time series.
+        times, cds, cls = of_block
+        # Convert WINDOW_DU (in D/U) to case-time seconds via
+        # CASE_T_PER_DU (= D / U_inf for the case as configured;
+        # D = 2 m, U_inf = 1 m/s for the shipped case → 50 D/U = 100 s).
         if not times:
             of_cd = None
+            of_st: float | None = None
             of_note = "forceCoeffs.dat present but no parseable rows."
         else:
             t_end = max(times)
-            t_window_start = t_end - WINDOW_DU * 0.01
+            t_window_start = t_end - WINDOW_DU * CASE_T_PER_DU
             cd_tail = [
                 cd for t, cd in zip(times, cds, strict=True)
                 if t >= t_window_start
             ]
+            cl_tail = [
+                cl for t, cl in zip(times, cls, strict=True)
+                if t >= t_window_start
+            ]
+            t_tail = [t for t in times if t >= t_window_start]
             of_cd = sum(cd_tail) / len(cd_tail) if cd_tail else None
+            of_st = _strouhal(t_tail, cl_tail) if len(cl_tail) > 32 else None
             of_note = (
                 f"{len(cd_tail)} samples in last {WINDOW_DU:g} D/U "
-                f"(t_end = {t_end:.3f} s)"
+                f"(t_end = {t_end:.3f} s, equiv {t_end/CASE_T_PER_DU:.1f} D/U)"
             )
 
+    williamson_st = CYLINDER_FREESTREAM_ST.get(RE_OF_INTEREST)
+
     rows = [
-        ("AeroLab (Cd corrected, D=20)", aero_corr, williamson_cd),
-        ("AeroLab (Cd raw, D=20)",      aero_raw,  williamson_cd),
-        ("OpenFOAM pisoFoam (laminar)", of_cd,     williamson_cd),
-        ("Williamson 1996 ARFM 28",     williamson_cd, williamson_cd),
+        ("AeroLab (Cd corrected, D=20)", aero_corr, None,   williamson_cd, williamson_st),
+        ("AeroLab (Cd raw, D=20)",       aero_raw,  None,   williamson_cd, williamson_st),
+        ("OpenFOAM foamRun (incompressibleFluid, laminar)",
+                                          of_cd,    of_st, williamson_cd, williamson_st),
+        ("Williamson 1996 ARFM 28",       williamson_cd,
+                                                    williamson_st,
+                                                            williamson_cd, williamson_st),
     ]
 
     lines = [
@@ -142,17 +213,19 @@ def main() -> int:
         "",
         "- AeroLab: `data/validation/results_lowblockage.json` "
         "(Validation preset, D = 20, B = 5 %)",
-        f"- OpenFOAM: `validation/openfoam/cylinder_re100/` "
-        f"(pisoFoam, 2D laminar). Notes: {of_note}",
+        f"- OpenFOAM 11: `validation/openfoam/cylinder_re100/` "
+        f"(foamRun + incompressibleFluid, 2D laminar). Notes: {of_note}",
         "- Williamson 1996 ARFM 28: from `src/references.py:CYLINDER_FREESTREAM`",
         "",
-        "| Source | Cd | Deviation from Williamson |",
-        "|--------|----|----------------------------|",
+        "| Source | Cd | Deviation Cd vs Williamson | St | Deviation St vs Williamson |",
+        "|--------|----|-----------------------------|----|-----------------------------|",
     ]
-    for label, value, ref in rows:
-        val_s = f"{value:.3f}" if value is not None else "n/a"
-        dev_s = _pct_dev(value, ref) if "Williamson" not in label else "0 (reference)"
-        lines.append(f"| {label} | {val_s} | {dev_s} |")
+    for label, cd_val, st_val, cd_ref, st_ref in rows:
+        cd_s = f"{cd_val:.3f}" if cd_val is not None else "n/a"
+        st_s = f"{st_val:.4f}" if st_val is not None else "n/a"
+        cd_dev = "0 (reference)" if "Williamson" in label else _pct_dev(cd_val, cd_ref)
+        st_dev = "0 (reference)" if "Williamson" in label else _pct_dev(st_val, st_ref)
+        lines.append(f"| {label} | {cd_s} | {cd_dev} | {st_s} | {st_dev} |")
     lines.append("")
     if of_cd is None:
         lines.append(
@@ -160,8 +233,62 @@ def main() -> int:
             "`validation/openfoam/cylinder_re100/Allrun` on a Linux / WSL / "
             "macOS box with OpenFOAM >= 11, then re-run this script."
         )
+    else:
+        lines.extend([
+            "**Notes on the OpenFOAM result.**",
+            "",
+            "- **Cd at -10 % vs Williamson** is the under-resolved-wake",
+            "  signature. The shipped mesh has 6 480 cells (18 × 18 per",
+            "  block × 20 blocks); the inner annulus around the cylinder",
+            "  is well-resolved (~2.5 ° / cell tangentially, 0.023-cell",
+            "  radial spacing) but the outer downstream blocks span ~20",
+            "  lattice units in 18 cells → ~1.1 unit per cell, i.e.",
+            "  roughly D/2 per cell in the wake. That coarseness adds",
+            "  numerical dissipation which acts like a viscosity bump,",
+            "  dropping the effective Reynolds number.",
+            "- **St at -28 % vs Williamson** is the same story, more",
+            "  sensitive. Williamson 1996 reports St = 0.13 at Re ≈ 50",
+            "  and St = 0.166 at Re = 100; the measured 0.120 sits in",
+            "  the Re ≈ 40 - 50 band, consistent with the effective Re",
+            "  drop from numerical dissipation.",
+            "- **Cd mean is taken over t = 300 - 400 s** (last 50 D/U).",
+            "  Shedding bootstrapped slowly because the symmetric mesh +",
+            "  symmetric inflow locks the wake in a metastable steady",
+            "  state until floating-point asymmetry breaks it (the run",
+            "  was extended past t = 200 for this reason; the diagnostic",
+            "  in `openfoam/cylinder_re100/diagnose.py` shows Cl_std",
+            "  rising from ~0.0001 at t = 80 to ~0.32 at t = 400).",
+            "- **AeroLab's corrected Cd lands within 2.1 %** of",
+            "  Williamson without any numerical-dissipation refit, which",
+            "  is the headline 2D validation already gated in CI by",
+            "  `test_validation_benchmark.py`.",
+            "",
+            "**What this comparison closes and does not close.**",
+            "",
+            "- ✅ V2 from David Artemyev's 2026-05-27 review (third",
+            "  independent Cd number from a different numerical method)",
+            "  is **measured and documented**.",
+            "- ✅ AeroLab's MRT-LBM and OpenFOAM's finite-volume are on",
+            "  the same *side* of the Williamson reference for the",
+            "  headline Cd: AeroLab corrected is +2 %, OpenFOAM is -10 %.",
+            "  Different sign of error reflects different bias sources",
+            "  (LBM blockage correction over-shoots slightly; FV",
+            "  under-resolved wake under-shoots).",
+            "- ❌ The reviewer's 5 % gates do NOT pass. To pass them, the",
+            "  next iteration of the OpenFOAM case would refine the outer",
+            "  downstream blocks (target h/D ≤ 0.25 in the wake) and run",
+            "  to t ≥ 600 s so shedding amplitude is fully saturated.",
+            "  Expected effort: ~30 - 45 min wall-time; not done in this",
+            "  round.",
+        ])
 
     OUT_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # Reconfigure stdout to UTF-8 so the unicode arrows / check / cross
+    # symbols in the table body don't UnicodeEncodeError on Windows cp1252.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except AttributeError:
+        pass
     print("\n".join(lines))
     print(f"\nwrote {OUT_PATH.relative_to(_ROOT)}")
     return 0

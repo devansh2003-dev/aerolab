@@ -1,0 +1,31 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     | Website:  https://openfoam.org
+    \\  /    A nd           | Version:  11
+     \\/     M anipulation  |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    object      momentumTransport;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// Pure laminar (Re = 100 < 200, well below the 3D wake transition at
+// Re ~ 190 per Williamson 1996). No turbulence model required.
+simulationType laminar;
+
+// OpenFOAM 11 names the standard constant-viscosity Navier-Stokes
+// stress model "Stokes" (after the Cauchy-Stokes stress derivation;
+// equivalent to "Newtonian" in the engineering sense, i.e. tau =
+// 2 mu S). Other options (generalisedNewtonian, Maxwell, PTT,
+// Giesekus) bring shear-thinning or viscoelastic terms that we do
+// NOT want for a cylinder Re=100 validation.
+laminar
+{
+    model        Stokes;
+}
+
+// ************************************************************************* //
