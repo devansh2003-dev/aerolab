@@ -7,7 +7,7 @@
 Drop in a 2D shape (cylinder, square, ellipse, NACA 4-digit airfoil, **upload your own image**, or **sketch one in the browser**), set wind speed, watch the wake develop. Two modes — one is a **neural-network surrogate**, the other is a **live simulation**, and the difference matters when you read the numbers:
 
 - **Fast (ML surrogate)** — NeuralFoil neural-network prediction of lift / drag polars for NACA airfoils. Trained on XFoil / RANS data; not a live simulation. Good for sweeping cases in &lt;1 s each.
-- **CFD (LBM solver)** — full 2D Lattice Boltzmann simulation rendered as an animated GIF, on any shape you can sketch. Validated against Williamson 1996 / Okajima 1982 in the laminar-shedding band; see [VALIDATION.md](VALIDATION.md).
+- **CFD (LBM solver)** — full 2D Lattice Boltzmann simulation rendered as an animated GIF, on any shape you can sketch. Validated against Williamson 1996 / Okajima 1982 in the laminar-shedding band, and **cross-checked against an independent OpenFOAM 11 finite-volume solve at cylinder Re=100 within ±5 %**; see [VALIDATION.md](VALIDATION.md).
 
 CPU-only, free to use, mobile-friendly.
 
@@ -23,13 +23,15 @@ CPU-only, free to use, mobile-friendly.
 
 [![tests](https://github.com/devansh2003-dev/aerolab/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/devansh2003-dev/aerolab/actions/workflows/tests.yml)
 [![benchmarks](https://img.shields.io/badge/benchmarks-Williamson%201996%20%2B%20Okajima%201982-success)](VALIDATION.md)
+[![cross-check](https://img.shields.io/badge/cross--check-OpenFOAM%2011%20%C2%B11.6%25-success)](VALIDATION.md#84-openfoam-cylinder-re100-cross-check--v2-refined-run-2026-05-31)
 
-The 2D D2Q9 MRT-LES solver has been benchmarked against Williamson 1996 (cylinder) and Okajima 1982 (square). Two rounds of senior CFD review (2026-05-26, 2026-05-27) scoped "validated" to the regime where the comparison is honest. The current headline comes from the **Resolved preset** (D = 40, B = 10 %), the configuration that simultaneously meets the Mei-Luo-Shyy 1999 D ≥ 40 literature guideline for 2D-LBM Cd and keeps blockage low enough that the Allen-Vincenti correction is small:
+The 2D D2Q9 MRT-LES solver has been benchmarked against Williamson 1996 (cylinder) and Okajima 1982 (square), and as of 2026-05-31 it has an independent **OpenFOAM 11** cross-check on the same cylinder Re=100 case. Three rounds of senior CFD review (2026-05-26, 2026-05-27, 2026-05-29) scoped "validated" to the regime where the comparison is honest. The current headline comes from the **Resolved preset** (D = 40, B = 10 %), the configuration that simultaneously meets the Mei-Luo-Shyy 1999 D ≥ 40 literature guideline for 2D-LBM Cd and keeps blockage low enough that the Allen-Vincenti correction is small:
 
-| Quantity                  | Re band   | Median error | Max error | Independent reference            |
-|---------------------------|-----------|--------------|-----------|----------------------------------|
-| Cylinder Cd (corrected)   | 100 – 200 | **5.6 %**    | **10.2 %**| Williamson 1996 ARFM 28          |
-| Square Cd (raw, see note) | 150 – 200 | **4.5 %**    | **5.1 %** | Okajima 1982 JFM 123; Sohankar 1998 |
+| Quantity                       | Re band   | Median error | Max error | Independent reference            |
+|--------------------------------|-----------|--------------|-----------|----------------------------------|
+| Cylinder Cd (corrected)        | 100 – 200 | **5.6 %**    | **10.2 %**| Williamson 1996 ARFM 28          |
+| Square Cd (raw, see note)      | 150 – 200 | **4.5 %**    | **5.1 %** | Okajima 1982 JFM 123; Sohankar 1998 |
+| Cylinder Cd vs OpenFOAM 11     | 100       | **0.5 %**    | **0.5 %** | OpenFOAM 11 `incompressibleFluid`, 31 200-cell graded O-grid, 500 D/U |
 
 **Why the square row is uncorrected.** The Resolved sweep exposed that the K = 1.00 Allen-Vincenti correction for the square (fitted at the Standard preset B = 0.35) *over-corrects* at low blockage. At D = 40 / B = 10 % the AV-corrected square Cd is off by ~15 %, while the **raw** measurement is within 5 % of Okajima. The honest reading is that the correction is calibrated at the wrong blockage; the raw measurement IS the solver result at this preset. K-recalibration is roadmapped. See [VALIDATION.md §3.2](VALIDATION.md) for the analysis.
 
@@ -37,9 +39,11 @@ Re = 200 is the Williamson mode-A 3D-instability threshold -- above it a 2D solv
 
 The Standard interactive preset (35 % blockage) is the user-facing convenience; its corrected Cd numbers look excellent (4.3 % cyl / 8.9 % sq median across Re 100 – 1000) because the 2.6 × Allen-Vincenti rescale absorbs both blockage and any other systematic the solver carries. We keep those numbers in the doc for transparency, but a senior reader should read them as a property of the correction, not of the solver -- the validation claim is anchored to the Resolved sweep above. See [VALIDATION.md §3.6](VALIDATION.md).
 
+**Independent OpenFOAM 11 cross-check (2026-05-31).** The same cylinder Re = 100 geometry was meshed and run on OpenFOAM 11 with `foamRun -solver incompressibleFluid` on a 31 200-cell graded O-grid for 500 D/U (4 MPI ranks, ~5.6 h wall-time). The result lands at **Cd = 1.341 (+1.60 % vs Williamson)** and **St = 0.1600 (−3.62 %)** — both inside the reviewer's ±5 % gate. AeroLab corrected (+2.13 %) and OpenFOAM (+1.60 %) bracket the Williamson reference *from the same side*, with the cross-method Cd gap at **0.5 %**. Different solver families, same number. See [VALIDATION.md §8.4](VALIDATION.md#84-openfoam-cylinder-re100-cross-check--v2-refined-run-2026-05-31) for the case files, methodology, and the three-way table.
+
 Mass conservation: **machine precision** in a closed box (drift ≈ 3 × 10⁻¹³ over 5000 steps), **0.84 %** of throughflow in the open channel (the documented Zou-He BC tradeoff, not a leak). On every push, `tests/test_doc_validation_consistency.py` gates the headline numbers against the committed `results_resolved.json` and `tests/test_validation_benchmark.py` runs the Standard-preset regression guard.
 
-See [VALIDATION.md](VALIDATION.md) for the full methodology, the K-flaw analysis for the square correction, the FFT-bin-quantisation argument behind the Strouhal demotion, the LES-bias-at-low-Re note, and 14 academic citations.
+See [VALIDATION.md](VALIDATION.md) for the full methodology, the K-flaw analysis for the square correction, the FFT-bin-quantisation argument behind the Strouhal demotion, the LES-bias-at-low-Re note, the OpenFOAM cross-check details, and 14 academic citations.
 
 ## Performance
 
@@ -134,7 +138,7 @@ Shares the *collision-rule family* (MRT + Smagorinsky LES in 2D, TRT in 3D) with
 - GPU acceleration → Re envelope tops at 1500 in 2D (industrial: Re ≥ 10⁶ on GPU clusters)
 - Adaptive mesh refinement → uniform 320×80 (Standard) or 960×240 (Detailed); offline 700×400 (Validation) and 1200×400 (Resolved)
 - Wall-function turbulence → we resolve the boundary layer directly (only feasible at low Re)
-- Cumulant collision, multi-block, automatic time-stepping (OpenFOAM 11 cross-validation now lands within ±5 % at cylinder Re=100; Fluent cross-validation not run)
+- Cumulant collision, multi-block, automatic time-stepping, Fluent cross-validation (OpenFOAM 11 cross-validation *is* done — see Validation section above)
 - Bouzidi q-field for arbitrary uploaded polygons (built-ins have it; custom uploads use halfway BB)
 - **Live 3D solve on Cloud.** The 3D D3Q19 TRT kernel runs offline (~20 s per scene on a laptop); the hosted app replays the saved velocity field. 3D Re tops out at 100 in the shipped bakes (Re=200 BGK/TRT diverged at our grid resolution — tau ≈ 0.512). **No percent-level 3D drag validation yet** — the one quantitative run (sphere Re=100 vs Clift-Grace-Weber 1978) lands at Cd = 1.57 / +44 % above reference. A low-blockage cross-check refuted the original "blockage dominates" hypothesis; the residual error is now attributed to the simplified Ladd 1994 momentum exchange + D = 20 grid resolution (see [VALIDATION.md §8.3 / §8.3.1](VALIDATION.md)).
 

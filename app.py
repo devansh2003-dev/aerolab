@@ -375,9 +375,12 @@ st.markdown(
     "letter-spacing:0.01em;' "
     "title='Blockage-corrected Cd against Williamson 1996 (cylinder, "
     "median 4 percent, max 12 percent) and Okajima 1982 (square, "
-    "median 9 percent, max 22 percent) across Re 100-1000. The Standard "
-    "preset runs at 35 percent blockage so the correction is large; click "
-    "for the full honest methodology.'>"
+    "median 9 percent, max 22 percent) across Re 100-1000. Independently "
+    "cross-checked vs OpenFOAM 11 at cylinder Re=100: AeroLab corrected "
+    "+2.1 percent, OpenFOAM +1.6 percent vs Williamson, cross-method gap "
+    "0.5 percent (refined-mesh run 2026-05-31, both inside the +/-5 percent "
+    "gate). The Standard preset runs at 35 percent blockage so the "
+    "correction is large; click for the full honest methodology.'>"
     # U+2713 check mark; :material/X: shortcodes don't render inside
     # raw HTML markdown, so we use the unicode glyph.
     "<span style='font-size:0.85rem;line-height:1;'>&#10003;</span>"
@@ -431,7 +434,9 @@ with st.sidebar:
         help=(
             "**2D**: the shipped D2Q9 LBM solver. Validated against "
             "Williamson 1996 (cylinder) and Okajima 1982 (square) to "
-            "single-digit percent up to Re ~ 200. See VALIDATION.md.\n\n"
+            "single-digit percent up to Re ~ 200, and independently "
+            "cross-checked vs OpenFOAM 11 at cylinder Re=100 "
+            "(cross-method Cd gap 0.5%). See VALIDATION.md.\n\n"
             "**3D gallery**: pre-baked field replay. The kernel ran "
             "offline; this view loads the saved velocity field and "
             "streams smoke particles through it. No live compute, "
@@ -2335,6 +2340,22 @@ if mode == "Validation":
         "10+ academic citations live in "
         "[VALIDATION.md](https://github.com/devansh2003-dev/"
         "aerolab/blob/main/VALIDATION.md)."
+    )
+
+    # Headline cross-check callout (v0.6.5, 2026-05-31). Surface the
+    # OpenFOAM 11 result up-top so a first-time visitor on the Validation
+    # tab sees the independent cross-check before scrolling into the
+    # AeroLab-only tables below.
+    st.success(
+        ":material/verified: **Independent cross-check (2026-05-31): "
+        "OpenFOAM 11 cylinder Re=100.** "
+        "AeroLab corrected Cd = 1.348 (+2.13 % vs Williamson 1996); "
+        "OpenFOAM 11 (`incompressibleFluid`, 31 200-cell graded O-grid, "
+        "500 D/U on 4 MPI ranks) Cd = 1.341 (+1.60 %), St = 0.1600 "
+        "(-3.62 %). Cross-method Cd gap = **0.5 %**. Both inside the "
+        "reviewer's ±5 % gate. "
+        "[See VALIDATION.md §8.4 →](https://github.com/devansh2003-dev/"
+        "aerolab/blob/main/VALIDATION.md#84-openfoam-cylinder-re100-cross-check--v2-refined-run-2026-05-31)"
     )
 
     # The Resolved preset (D = 40, B = 10 %) is the headline data. We
