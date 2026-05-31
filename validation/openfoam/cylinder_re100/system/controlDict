@@ -18,27 +18,23 @@ application     foamRun;
 
 solver          incompressibleFluid;
 
-// Restart from latest written snapshot (t = 200) so the first 200
-// time units of symmetric-wake development are kept and we just
-// extend. The perfectly symmetric mesh / inlet locks the wake in a
-// steady symmetric state for ~150 D/U before shedding bootstraps off
-// floating-point asymmetry; at t = 200 Cl_std had reached 0.11 and
-// was growing exponentially, so saturation lands inside the next
-// ~20 D/U. endTime = 400 gives ~100 D/U of fully-developed shedding
-// after saturation -- plenty for Cd mean and St FFT.
-startFrom       latestTime;
+// Comprehensive run targeting Williamson 1996 to ±5 %. Mesh refined
+// per-block + simpleGrading clustering cells near the cylinder, and
+// fvSchemes div(phi,U) switched from Gauss linear to linearUpwindV
+// (less numerical diffusion). endTime = 1000 = 500 D/U: past startup
+// (~150 D/U) + ~350 D/U of fully-saturated shedding for clean Cd
+// mean and St FFT.
+startFrom       startTime;
 
 startTime       0;
 
 stopAt          endTime;
 
-endTime         400;
+endTime         1000;
 
-// dt = 0.01 keeps CFL < 0.3 in the finest cells near the cylinder
-// (h_min ~ 0.056 with 18x18 mesh per block, U_max ~ 1.5 in the
-// throat). PIMPLE is unconditionally stable but accuracy still wants
-// CFL well under 1.
-deltaT          0.01;
+// dt = 0.005 keeps CFL < 0.5 in the finest cells near the cylinder
+// (graded mesh first cell ~0.014, U_max ~ 1.5 in the throat).
+deltaT          0.005;
 
 writeControl    runTime;
 

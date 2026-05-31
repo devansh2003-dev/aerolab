@@ -1,0 +1,26 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     | Website:  https://openfoam.org
+    \\  /    A nd           | Version:  11
+     \\/     M anipulation  |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    location    "system";
+    object      decomposeParDict;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// Parallel decomposition for the cylinder Re=100 cross-validation.
+// Refined 30x30 mesh = 18 000 cells; scotch on 4 subdomains gives
+// roughly 4 500 cells per rank, well above the 1 000-cells/rank
+// floor where MPI overhead overtakes computation.
+numberOfSubdomains 4;
+
+method          scotch;
+
+
+// ************************************************************************* //

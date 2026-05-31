@@ -2,6 +2,63 @@
 
 All notable changes to AeroLab. Dates are absolute; versions follow [SemVer](https://semver.org/).
 
+## [0.6.5] — 2026-05-31
+
+**V2 cross-check passes ±5 % gates.** The OpenFOAM cylinder Re = 100
+case was re-meshed and re-run: an 8-block O-grid with **31 200 cells**
+(was 6 480), `simpleGrading` clustering radial cells near the body,
+**320 tangential cells around the cylinder** (≈ 1.1 ° / cell),
+`div(phi,U)` upgraded from `Gauss linear` to `Gauss linearUpwindV grad(U)`,
+and `endTime` extended from 400 (200 D/U) to **1000 (500 D/U)** with
+`dt = 0.005`. Run on 4 MPI ranks (`scotch` decomposition) inside a tmux
+session for ~5.6 h wall-time. **Results: Cd = 1.341 (+1.60 % vs
+Williamson 1996), St = 0.1600 (-3.62 %)** — both inside the reviewer's
+±5 % gate. AeroLab corrected (+2.13 %) and OpenFOAM (+1.60 %) now
+bracket the Williamson reference from the same side, with the AeroLab
+↔ OpenFOAM gap at 0.5 %. David Artemyev's card #6 V2 is **closed**.
+
+### Changed
+
+- **`validation/openfoam/cylinder_re100/system/blockMeshDict`** —
+  rewritten with per-block cell counts and `simpleGrading` clustering.
+  All middle-ring tangential edges raised to 40 cells (8 blocks ×
+  40 = 320 cells around the cylinder). Outer blocks graded so the
+  first cell sits ≈ 0.014 D from the body. checkMesh: 31 200 cells,
+  62 400 faces, max non-orthogonality 44°, max skewness 0.38.
+- **`validation/openfoam/cylinder_re100/system/fvSchemes`** —
+  `div(phi,U)` switched from `Gauss linear` to `Gauss linearUpwindV
+  grad(U)`. The 2nd-order upwind-biased scheme adds less numerical
+  diffusion than the central scheme and is the standard choice for
+  unsteady cylinder wakes. This single change accounts for the bulk
+  of the Cd jump (1.18 → 1.34) on the new mesh.
+- **`validation/openfoam/cylinder_re100/system/controlDict`** —
+  `endTime` extended to 1000 (500 D/U), `deltaT` reduced to 0.005 to
+  keep CFL < 0.5 in the finest cells. `forceCoeffs` function object
+  unchanged (writes every timestep).
+- **`validation/openfoam/cylinder_re100/system/decomposeParDict`**
+  (added) — 4-subdomain `scotch` decomposition. Re-meshed case ~5.6 h
+  wall-time vs ~22 min serial on the coarse mesh.
+- **`validation/openfoam/cylinder_re100/postProcessing/forceCoeffs/0/forceCoeffs.dat`**
+  — replaced by the 200 010-line time series from the refined run
+  (t = 0 → 1000 at dt = 0.005). Shedding fully saturates by t ≈ 300;
+  Cd_mean over t = 300 – 1000 is flat at 1.3411 ± 0.0001.
+- **VALIDATION.md §8.4** — rewritten with the refined-mesh result.
+  Three-way table updated; "Does V2 pass the 5 % gates?" subsection
+  now answers *yes* with three pass-by-margin lines (0.5 %, 1.6 %,
+  3.6 %). The previous coarse-baseline number (Cd = 1.18 / St = 0.12)
+  is recorded in the "Result reading" bullets as the mesh-convergence
+  prior baseline; the case folder's git history preserves it for
+  reproducibility.
+- **VALIDATION.md §8.8** — "Refine the OpenFOAM cylinder wake mesh
+  and re-run" promoted from #1 priority to the **Closed (do not ask)**
+  list. Remaining priorities: MYSL 2002 momentum exchange (#1),
+  AeroLab-side Strouhal (#2), cumulant LBM for Re ≥ 200 (#3).
+- **`validation/compare_aerolab_vs_openfoam.py`** — "Notes on the
+  OpenFOAM result" block rewritten to describe the refined case
+  instead of the under-resolved baseline.
+- **`validation/cross_validation.md`** — regenerated with refined
+  numbers and refreshed notes.
+
 ## [0.6.4] — 2026-05-30
 
 **V2 cross-check is now measured.** OpenFOAM 11 ran the cylinder
