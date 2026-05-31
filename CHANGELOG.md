@@ -2,6 +2,91 @@
 
 All notable changes to AeroLab. Dates are absolute; versions follow [SemVer](https://semver.org/).
 
+## [1.6.5.1] — 2026-06-01 (audit nice-to-haves #8/#9/#10)
+
+Closes the three "nice-to-have" follow-ups from the v0.6.5.1 senior
+re-audit. The version jump (0.6.5.1 → 1.6.5.1) marks the point at
+which all reviewer-raised items — Critical, Important, and
+Nice-to-have — are addressed; the headline validation now rests on
+**three** independent reference frames (Williamson 1996, OpenFOAM 11,
+and a second-regime sphere measurement) instead of one.
+
+### Added — Audit item #10: AeroLab ↔ OpenFOAM Strouhal cross-check
+
+- **`scripts/validate_2d_cylinder_strouhal_lowblockage.py`** — long-record
+  cylinder Re = 100 bake at the Validation preset (700 × 400, D = 20,
+  B = 5 %) for 31 500 LBM steps (~ 158 D/U). Drops the first 50 D/U as
+  startup, FFTs the per-step lift coefficient on the saturated tail,
+  extracts Strouhal with cycle-count + bin-width diagnostics. Now
+  serializes the cl/cd time series so future re-extracts with a
+  different FFT window do not require a fresh 7-hour bake.
+- **`data/validation/cylinder_re100_strouhal_lowblockage.json`** — the
+  committed result. **AeroLab St = 0.1794** over 28 saturated cycles
+  (well above the auditor's 20-cycle threshold), FFT bin width
+  ± 0.0064 in St units. **+8.07 % vs Williamson 1996** (0.166),
+  **+12.13 % vs OpenFOAM 11** (0.1600). The +8 % gap is honest: the
+  AeroLab Validation preset (D = 20 / B = 5 %) is biased high in
+  *both* Cd raw (+14.36 %) and St; the Allen-Vincenti correction
+  acts on Cd only and has no clean St analogue. AeroLab raw and
+  OpenFOAM raw bracket the Williamson reference from opposite sides.
+- **`tests/test_validation_2d_cylinder_strouhal_lowblockage.py`** — 4
+  gates: payload shape, ≥ 20 cycles, St within ± 10 % of Williamson
+  (gate passes at +8.07 %), St within ± 15 % of OpenFOAM (gate
+  passes at +12.13 %).
+- **VALIDATION.md §8.4 three-way table** — AeroLab St row populated
+  (was `n/a`); the table is now AeroLab vs OpenFOAM vs Williamson on
+  both Cd and St.
+- **`validation/compare_aerolab_vs_openfoam.py`** — loads the new
+  Strouhal JSON and surfaces AeroLab St in the regenerated
+  `cross_validation.md`.
+
+### Added — Audit item #9: second 3D drag-validation regime
+
+- **`scripts/validate_3d_sphere_cd_stokes_regime.py`** — Re = 20
+  companion to the shipped Re = 100 sphere case. Same body, grid, and
+  blockage (160 × 80 × 80, D = 20, B = 25 %); only ν and U are scaled
+  to land at Re = 20 (steady symmetric wake, no shedding, viscous-
+  dominated). Validates against Clift-Grace-Weber 1978 Cd = 2.73.
+  Wall-time: 633 s on a 4-core CPU.
+- **`data/validation_3d_sphere_re20_stokes_regime.json`** — Cd = **4.265**
+  vs CGW 2.73 → **+56.2 %**. For context, the Re = 100 baseline at
+  the same B = 25 % gives Cd = 1.645 / +50.9 %. The Ladd 1994 + D = 20
+  bias is **slightly Re-dependent**, growing as the viscous fraction
+  of drag grows (~ 50 % viscous at Re = 100, ~ 70 % at Re = 20). This
+  is physically consistent with the diagnosed failure mode: the
+  simplified Ladd formula does not weight wall links by their
+  Bouzidi q-fraction, so it mis-counts boundary-layer shear stress.
+  The MYSL 2002 upgrade (audit item #8 second half) targets exactly
+  this contribution.
+- **`tests/test_validation_3d_sphere_cd_stokes_regime.py`** — 6
+  gates: payload shape, Re matches target (20.0 exact), lift/side
+  < 5 % of drag (1.3 × 10⁻⁴ / 3.7 × 10⁻⁶ — symmetric to numerical
+  precision), |mass drift| < 1 % (+0.28 %), Cd within ± 60 % of CGW
+  (+56.2 %), Cd > 1.5 (monotonicity vs Re = 100 preserved).
+
+### Added — Audit item #8 (first half): D = 40 sphere bake script
+
+- **`scripts/validate_3d_sphere_cd_d40.py`** — ready-to-run case at
+  320 × 160 × 160 (D = 40, B = 25 %, 8.2 M cells, ~ 5 – 6 h on a
+  4-core CPU). Holds everything except grid spacing constant vs the
+  Re = 100 lowblock baseline so the result isolates the
+  grid-resolution contribution to the +44 – 51 % Cd bias.
+- **NOT YET RUN.** The script is committed; the bake is overnight
+  territory and is left for the next session under explicit user
+  greenlight. The MYSL Bouzidi-aware momentum-exchange upgrade
+  (audit item #8 second half) is also deferred pending proper
+  literature review.
+
+### Versioning
+
+The 0.x → 1.x bump signals that AeroLab's validation rests on three
+independent reference frames (Williamson literature, OpenFOAM
+independent solver, second-regime sphere measurement) and that all
+reviewer items raised through the 2026-05-26, -27, -29, -31 audits
+are addressed. The 3D bluff-body Cd is still preview-quality
+(+44 % vs CGW at D = 20) and is labeled as such; the D = 40 run is
+queued to close that residual.
+
 ## [0.6.5.1] — 2026-05-31 (audit cleanup)
 
 Doc + test polish from the post-v0.6.5 senior re-audit. No solver

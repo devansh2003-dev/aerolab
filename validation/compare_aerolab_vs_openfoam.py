@@ -140,6 +140,27 @@ def _aerolab_cd(re: int) -> tuple[float | None, float | None]:
     return None, None
 
 
+# Strouhal source: the dedicated long-record Validation-preset bake.
+# results_lowblockage.json has st_raw too, but only ~ 4 cycles of FFT
+# window (insufficient_record flag set); the long-record bake gets
+# 28 cycles so the FFT bin width is comparable to the percent-error
+# we are reporting.
+AEROLAB_STROUHAL_PATH = (
+    _ROOT / "data" / "validation"
+    / "cylinder_re100_strouhal_lowblockage.json"
+)
+
+
+def _aerolab_strouhal() -> float | None:
+    if not AEROLAB_STROUHAL_PATH.exists():
+        return None
+    data = json.loads(AEROLAB_STROUHAL_PATH.read_text(encoding="utf-8"))
+    try:
+        return float(data["strouhal_extraction"]["strouhal"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _williamson_cd(re: int) -> float | None:
     # CYLINDER_FREESTREAM_CD is {Re -> Cd_freestream}; scalar value not tuple.
     entry = CYLINDER_FREESTREAM.get(re)
@@ -195,10 +216,11 @@ def main() -> int:
             )
 
     williamson_st = CYLINDER_FREESTREAM_ST.get(RE_OF_INTEREST)
+    aero_st = _aerolab_strouhal()
 
     rows = [
-        ("AeroLab (Cd corrected, D=20)", aero_corr, None,   williamson_cd, williamson_st),
-        ("AeroLab (Cd raw, D=20)",       aero_raw,  None,   williamson_cd, williamson_st),
+        ("AeroLab (Cd corrected, D=20)", aero_corr, aero_st, williamson_cd, williamson_st),
+        ("AeroLab (Cd raw, D=20)",       aero_raw,  aero_st, williamson_cd, williamson_st),
         ("OpenFOAM foamRun (incompressibleFluid, laminar)",
                                           of_cd,    of_st, williamson_cd, williamson_st),
         ("Williamson 1996 ARFM 28",       williamson_cd,
@@ -268,11 +290,18 @@ def main() -> int:
             "  independent Cd number from a different numerical method)",
             "  is **measured, refined, and within ±5 %**.",
             "- ✅ Both AeroLab (corrected) and OpenFOAM clear the reviewer's",
-            "  5 % gates on Cd; OpenFOAM also clears it on St. AeroLab's",
-            "  Strouhal is not reported by the validation preset (the",
-            "  AeroLab cylinder run is steady-state benchmark, not a",
-            "  Strouhal extraction); that line of the table is intentionally",
-            "  `n/a` for AeroLab.",
+            "  5 % gates on Cd; OpenFOAM also clears it on St.",
+            "- **AeroLab Strouhal (added 2026-06-01):** the long-record",
+            "  Validation-preset bake gives St = 0.1794 = +8.07 % vs",
+            "  Williamson and +12.13 % vs OpenFOAM (28 cycles in the",
+            "  FFT window, bin width ±0.0064 in St units). AeroLab raw",
+            "  Cd and St are both biased UP at this preset (+14.36 %,",
+            "  +8.07 %); OpenFOAM raw Cd and St are both biased DOWN",
+            "  (-10.36 % on the coarse mesh, -3.62 % refined). Both",
+            "  numerical methods bracket Williamson on Cd and St. Source:",
+            "  `scripts/validate_2d_cylinder_strouhal_lowblockage.py`,",
+            "  data committed at",
+            "  `data/validation/cylinder_re100_strouhal_lowblockage.json`.",
             "- ✅ The previous under-resolved baseline (Cd = 1.18, St = 0.12)",
             "  is preserved in the case folder's git history for",
             "  reproducibility; the headline numbers reported in",

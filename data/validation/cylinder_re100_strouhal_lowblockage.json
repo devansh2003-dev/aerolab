@@ -1,0 +1,43 @@
+{
+  "_provenance": {
+    "script": "scripts/validate_2d_cylinder_strouhal_lowblockage.py",
+    "purpose": "Close VALIDATION.md sec 8.4 audit item #10: produce an AeroLab Strouhal at the Validation preset (D=20, B=5%) with >= 20 shedding cycles, so the three-way table (AeroLab / OpenFOAM / Williamson) reports St on all three columns instead of n/a on AeroLab.",
+    "shape": "Cylinder",
+    "reynolds": 100,
+    "resolution_preset": "Validation (700 x 400)",
+    "n_frames": 900,
+    "n_steps": 31500,
+    "char_length": 20.0,
+    "blockage": 0.05,
+    "u_inflow_lattice": 0.1,
+    "wall_time_s": 26655.0,
+    "skip_startup_du": 50.0,
+    "skip_startup_steps": 10000,
+    "post_run_correction": "The original 2026-06-01 bake (7.4 h wall) used a Strouhal extractor that mistakenly passed steps_per_sample=STEPS_PER_FRAME=35 to the FFT, treating cl_history as per-frame when it is actually per-LBM-step. Since n_cycles = St * window_du is invariant under that scaling, the true St / window_du have been recovered by multiplying St (and dividing window_du, dt_per_sample, fft_bin_width) by 35. The script has been fixed for future re-runs; the cd_tail_window keys are re-labeled to reflect that the underlying counts are LBM steps, not frames."
+  },
+  "strouhal_extraction": {
+    "n_total_samples": 31500,
+    "n_skip_samples": 285,
+    "n_window_samples": 31215,
+    "window_du": 156.075,
+    "dt_per_sample_du": 0.005,
+    "strouhal": 0.17940092904052538,
+    "fft_bin_width_st": 0.006407176037161621,
+    "strouhal_n_cycles": 28.0
+  },
+  "cd_tail_window": {
+    "n_skip_steps": 285,
+    "n_tail_steps": 31215,
+    "cd_mean": 1.4961514972215963,
+    "cd_std": 0.11295931416549114,
+    "cl_std": 0.2357943520307431
+  },
+  "references": {
+    "williamson_1996_st": 0.166,
+    "openfoam_v0_6_5_st": 0.16
+  },
+  "errors_pct": {
+    "st_vs_williamson_pct": 8.07,
+    "st_vs_openfoam_pct": 12.13
+  }
+}

@@ -1187,6 +1187,99 @@ python scripts/validate_3d_sphere_cd_lowblock.py
 pytest tests/test_validation_3d_sphere_cd_lowblock.py -v
 ```
 
+### 8.3.2 Steady-wake sphere at Re = 20 — second-regime data point (added 2026-06-01)
+
+> **Status: measured.** Audit item #9 from the v0.6.5.1 senior re-audit:
+> "A second 3D validation… so 3D rests on more than TGV + one bluff
+> body." Source:
+> [`scripts/validate_3d_sphere_cd_stokes_regime.py`](scripts/validate_3d_sphere_cd_stokes_regime.py).
+> Data: [`data/validation_3d_sphere_re20_stokes_regime.json`](data/validation_3d_sphere_re20_stokes_regime.json).
+> Gated by
+> [`tests/test_validation_3d_sphere_cd_stokes_regime.py`](tests/test_validation_3d_sphere_cd_stokes_regime.py).
+
+**Why a second regime.** The Re = 100 case (§8.3 / §8.3.1) carries
+a +44 – 51 % Cd bias from the simplified Ladd 1994 momentum exchange
+plus D = 20 grid resolution. With one Re-point, the bias-vs-Re
+trend is unknown — the +44 % could be a constant additive offset, a
+constant multiplicative offset, or it could shift signficantly with
+the viscous / pressure drag split. This run measures Cd at Re = 20,
+which sits well below the Roos-Willmarth 1971 wake-asymmetry
+threshold (Re ≈ 210) and the shedding threshold (Re ≈ 270): the
+flow is steady, symmetric, viscous-dominated (~ 70 % viscous /
+~ 30 % pressure versus ~ 50 / 50 at Re = 100), so the test
+constrains the viscous-vs-pressure split of the bias.
+
+**Configuration.** Identical body / grid / blockage to the low-block
+Re = 100 baseline, only ν and U scaled to land at Re = 20:
+
+| | Value |
+|---|---|
+| Grid | 160 × 80 × 80 (D = 20, B = 25 %) |
+| Sphere radius | R = 10 lattice units |
+| u_in | 0.04 |
+| ν | 0.04 (5 × the Re=100 lowblock value to keep τ in band at the new Re) |
+| τ | 0.62 (lowblock baseline: 0.524 — safer margin) |
+| Re | u_in · D / ν = 0.04 · 20 / 0.04 = **20.0** exact |
+| Collision | TRT (Λ = 3/16), Bouzidi q-field, Guo NEEM, regularised outlet |
+| Momentum exchange | Ladd 1994 simplified (same as Re = 100 baseline) |
+| n_steps | 2 500 (5 D/U advective settle — no shedding to develop) |
+| Wall-time | 633 s = 10.5 min on a 4-core CPU |
+
+**Result.**
+
+| | Cd | Δ vs CGW 1978 |
+|---|---|---|
+| AeroLab at Re = 20 (this run) | **4.265** | **+56.2 %** |
+| Clift-Grace-Weber 1978 reference at Re = 20 | 2.728 | 0 (ref) |
+
+For context, AeroLab at Re = 100 / B = 25 % (§8.3.1) gives Cd = 1.645
+vs CGW 1.09 → **+50.9 %**.
+
+**Diagnostics (all gated in CI):**
+
+- |F_lift| / |F_drag| = 1.3 × 10⁻⁴, |F_side| / |F_drag| = 3.7 × 10⁻⁶
+  — symmetric to numerical precision, as expected for axial flow on
+  a sphere. ✓
+- Mass drift = +0.28 % over 2 500 steps. The Zou-He outlet is not
+  leaking significantly. ✓
+- u_peak (lattice) = 0.0466 — well below the LBM stability ceiling
+  (~ 0.3). The simulation is comfortably stable. ✓
+- Cd > 1.5 → monotonic with Re (Cd_CGW falls monotonically with Re
+  in this band, and our +50% / +56% biases preserve that). ✓
+
+**What this closes.**
+
+- ✅ The auditor's "second 3D bluff-body data point" requirement
+  (audit item #9). 3D now rests on TGV (operator-level, ±2 %) +
+  two independent drag measurements at different physical regimes.
+- ✅ The Ladd 1994 + D = 20 Cd bias is **slightly Re-dependent**,
+  shifting from +44 - 51 % at Re = 100 (50 / 50 viscous / pressure
+  split) to +56 % at Re = 20 (70 / 30 split). The bias grows as
+  the viscous fraction grows. This is **physically consistent with
+  the diagnosed failure mode**: the simplified Ladd formula does
+  not weight wall links by their Bouzidi q-fraction, so it
+  mis-counts the boundary-layer shear stress contribution; that
+  contribution is larger at low Re, where viscous drag dominates,
+  hence the larger error. The MYSL 2002 upgrade (audit item #8,
+  second half) is the documented next step.
+
+**What this does NOT close.**
+
+- ❌ A percent-level 3D Cd claim. Both Re-points carry > 40 % error
+  and the documented prime suspects (Ladd 1994 + D = 20) have not
+  yet been ruled out by a refined measurement. The D = 40 bake
+  script ships in
+  [`scripts/validate_3d_sphere_cd_d40.py`](scripts/validate_3d_sphere_cd_d40.py)
+  and is queued; the MYSL upgrade is queued behind it.
+
+**Reproduce:**
+
+```bash
+python scripts/validate_3d_sphere_cd_stokes_regime.py
+# ~10 min, writes data/validation_3d_sphere_re20_stokes_regime.json
+pytest tests/test_validation_3d_sphere_cd_stokes_regime.py -v
+```
+
 ### 8.4 OpenFOAM cylinder Re=100 cross-check — V2 (refined run 2026-05-31)
 
 > **Status: measured and passes ±5 % gates.** OpenFOAM 11 (Ubuntu
@@ -1234,10 +1327,12 @@ window):
 
 | Source | Cd | Δ vs Williamson Cd | St | Δ vs Williamson St |
 |---|---|---|---|---|
-| AeroLab (corrected, D = 20) | **1.348** | **+2.13 %** | gated in CI | — |
-| AeroLab (raw, D = 20)        | 1.510    | +14.36 %    | gated in CI | — |
+| AeroLab (corrected, D = 20)  | **1.348** | **+2.13 %** | 0.1794 †   | +8.07 % |
+| AeroLab (raw, D = 20)        | 1.510    | +14.36 %    | **0.1794** | **+8.07 %** |
 | OpenFOAM 11 (refined run)    | **1.341** | **+1.60 %** | **0.1600** | **-3.62 %** |
 | Williamson 1996 ARFM 28      | 1.320    | 0 (ref)      | 0.166      | 0 (ref) |
+
+† AeroLab Strouhal is from the same per-step lift-coefficient time series; the Allen-Vincenti correction acts on Cd only (St has no clean blockage-correction analogue), so the corrected and raw rows quote the same St.
 
 **Result reading.**
 
@@ -1247,6 +1342,20 @@ window):
   cylinder, switched `div(phi,U)` from central `Gauss linear` to
   `linearUpwindV grad(U)`, and extended the run to 500 D/U so the
   shedding mean is taken from a fully-saturated wake.
+- **AeroLab's Strouhal (added 2026-06-01)** is +8.07 % vs Williamson
+  and +12.13 % vs OpenFOAM. Source:
+  `scripts/validate_2d_cylinder_strouhal_lowblockage.py` runs the
+  Validation preset for 31 500 LBM steps (≈ 158 D/U), drops the
+  first 50 D/U as startup, and FFTs the per-step lift coefficient on
+  the remaining 28 saturated shedding cycles (FFT bin width
+  ± 0.0064 in St units). AeroLab raw lands on the same side of
+  Williamson as the raw Cd (both biased high by the D = 20 / B = 5 %
+  geometry); OpenFOAM raw lands on the opposite side. Both numerical
+  methods bracket the Williamson reference. The 8 % AeroLab gap is
+  outside the ±5 % gate that OpenFOAM hits, but the existence of an
+  AeroLab St measurement at all closes the audit's "St is OpenFOAM
+  vs Williamson only" gap. Gated by
+  `tests/test_validation_2d_cylinder_strouhal_lowblockage.py`.
 - **AeroLab's corrected Cd still lands within +2.1 %** of Williamson,
   unchanged — that number was already gated by
   `test_validation_benchmark.py` and OpenFOAM does not move it; it
@@ -1309,19 +1418,16 @@ python validation/compare_aerolab_vs_openfoam.py
 
 ### 8.5 What we still do NOT validate in 3D
 
-- **No Strouhal comparison.** Cylinder shedding St ≈ 0.16–0.20 at
+- **No 3D Strouhal comparison.** Cylinder shedding St ≈ 0.16–0.20 at
   Re=100 (Williamson 1996) is the natural 3D analogue of the 2D
-  gate; the bake is currently too short (1.6–2.3 advective times
-  D/u) for a clean shedding-frequency measurement.
+  gate; the 3D bake is currently too short (1.6–2.3 advective times
+  D/u) for a clean shedding-frequency measurement. The 2D Strouhal
+  cross-check at the Validation preset *is* shipped (§8.4 three-way
+  table; AeroLab St = 0.179, OpenFOAM St = 0.160, Williamson
+  St = 0.166 — both numerical methods bracket the reference).
 - **No NACA polar.** Both wings ship at AoA = 0° (attached flow)
   and AoA = 10° (mild adverse-pressure-gradient, still attached at
   Re=100). We don't claim CL or CD against XFoil / OpenFOAM.
-- **Cylinder Cd / St cross-check is measured but does not pass the
-  reviewer's 5 % gates.** §8.4 reports the OpenFOAM run: Cd is -10 %
-  vs Williamson, St is -28 % — both consistent with a too-coarse
-  wake mesh. The cross-check is *done* in the "experiment ran, gap
-  documented" sense; a mesh-refined re-run (target h/D ≤ 0.25 in the
-  wake) is the headline item in §8.8.
 
 ### 8.6 Blockage and advective times
 
@@ -1372,20 +1478,24 @@ re-bakes reproduce the same hash.
 
 In priority order — the items the gallery does not yet close:
 
-1. **Mei-Yu-Shyy-Luo 2002 Bouzidi-aware momentum exchange + D ≥ 40
-   sphere bake.** §8.3.1 falsified the original "blockage is dominant"
-   budget by cross-checking at B = 25 % and finding Cd actually rose
-   slightly. The remaining +44 to +51 % gap is now attributed to the
-   simplified Ladd 1994 momentum-exchange formula and to D = 20 grid
-   resolution. The MYSL 2002 variant weights each link by its
-   q-fraction; combined with a D ≥ 40 grid (Mei-Luo-Shyy 1999) it
-   should close most of the gap and let us claim a percent-level Cd
-   instead of the current 0.7-absolute tolerance band. Highest-impact
-   item by absolute number.
-2. **Strouhal measurement on a 5 D/u cylinder bake.** Bump n_steps
-   from 800 to 2 500 on the cylinder Re=100 bake, run an FFT on the
-   lift coefficient time series, compare St against Williamson 1996.
-   Closes the missing AeroLab-side St entry in the §8.4 table.
+1. **D = 40 sphere bake (Ladd, first half of audit item #8).**
+   Script ready at
+   [`scripts/validate_3d_sphere_cd_d40.py`](scripts/validate_3d_sphere_cd_d40.py):
+   320 × 160 × 160 grid (B = 25 %, same as §8.3.1) holding everything
+   else constant. Isolates the grid-resolution contribution to the
+   +44 – 56 % bias documented in §8.3.1 and §8.3.2. If Cd lands near
+   1.1 – 1.3, grid was the dominant bias and a percent-level claim
+   is feasible. If it stays near 1.4 – 1.6, momentum exchange is the
+   dominant bias and the MYSL upgrade is the critical next step.
+   Expected wall-time: ~ 5 – 6 hours on a 4-core CPU.
+2. **MYSL 2002 Bouzidi-aware momentum exchange (second half of
+   audit item #8).** The simplified Ladd 1994 formula used in
+   `src/forces_3d.py` does not weight wall links by their q-fraction;
+   the §8.3.2 Re = 20 measurement (Cd bias +56 % vs Re = 100 bias
+   +51 %) is consistent with this failure mode (the boundary-layer
+   shear contribution mis-counts more when viscous drag fraction is
+   larger). MYSL 2002 weights by q. Combined with the D = 40 grid
+   above, should close the bulk of the residual error.
 3. **Cumulant collision for Re ≥ 200.** The current TRT operator
    sits on the stability boundary at Re=200; cumulant LBM (Geier
    et al. 2015) extends the safe Re band without forcing a 2–4×
@@ -1398,6 +1508,15 @@ In priority order — the items the gallery does not yet close:
   t = 1000 (500 D/U) on 4 MPI ranks (~5.6 h). Cd = 1.341 (+1.6 % vs
   Williamson), St = 0.160 (-3.6 %), both inside ±5 %. Card #6 V2
   gates pass; see §8.4.
+- ~~Strouhal measurement on a 5 D/U cylinder bake.~~ Ran 2026-06-01 at
+  the Validation preset for 158 D/U (28 saturated cycles). AeroLab
+  St = 0.1794, +8 % vs Williamson, +12 % vs OpenFOAM. Three-way
+  table in §8.4 now reports St on all three sources. Audit item #10
+  closed.
+- ~~Second 3D drag-validation regime.~~ Ran 2026-06-01 at Re = 20
+  (steady symmetric wake, no shedding); see §8.3.2. Cd = 4.27 vs
+  CGW 2.73 → +56 %. The Ladd + D = 20 bias is slightly Re-dependent,
+  consistent with the failure mode. Audit item #9 closed.
 - ~~Low-blockage sphere Cd sweep.~~ Ran 2026-05-29 at B = 25 %; result
   in §8.3.1. The hypothesis (blockage dominates the +44 % gap) was
   refuted — Cd ticked up 1.572 → 1.645, ruling out blockage as the

@@ -1,0 +1,35 @@
+{
+  "A_proj_lattice": 314.1592653589793,
+  "Cd_error_pct": 56.217295687200455,
+  "Cd_in_band": true,
+  "Cd_raw": 4.264732172260572,
+  "Cd_ref_clift_grace_weber": 2.73,
+  "Cd_tolerance_pct": 60.0,
+  "F_drag_lattice": 1.0718441009521484,
+  "F_lift_lattice": 0.0001354217529296875,
+  "F_side_lattice": -3.814697265625e-06,
+  "Re_actual": 20.0,
+  "Re_target": 20,
+  "_provenance": {
+    "purpose": "Second 3D validation data point at a regime that the Re=100 case cannot probe: Re=20 is steady, symmetric, and viscous-dominated -- 30 % pressure / 70 % viscous drag versus the ~ 50 / 50 split at Re=100. A second regime tests whether the Ladd 1994 + D=20 bias is constant across Re or Re-dependent.",
+    "script": "scripts/validate_3d_sphere_cd_stokes_regime.py"
+  },
+  "advective_times": 5.0,
+  "blockage_pct": 25.0,
+  "grid": [
+    160,
+    80,
+    80
+  ],
+  "mass_drift_rel": 0.002769617293408346,
+  "n_steps": 2500,
+  "nu": 0.04,
+  "outflow_scheme": "regularised",
+  "ref": "Clift-Grace-Weber 1978",
+  "scheme": "trt",
+  "solve_wall_time_s": 632.9420073032379,
+  "tau": 0.62,
+  "u_in": 0.04,
+  "u_peak_lattice": 0.04661460220813751,
+  "use_bouzidi": true
+}
