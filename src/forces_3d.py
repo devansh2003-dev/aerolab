@@ -7,11 +7,22 @@ discretized Boltzmann equation. Part 1. Theoretical foundation."
 J. Fluid Mech. 271, 285-309 (1994).
 
 The simplified momentum-exchange form used here (valid for halfway
-bounce-back; gives sphere Cd to within ~5-10% of Mei-Yu-Shyy-Luo 2002
-refinements at our grid resolution and is enough to validate the
-solver against the canonical Clift-Grace-Weber 1978 curve):
+bounce-back) is:
 
     F = sum over wall-links L of  2 * c_i * f_i(x_f, post-collision)
+
+**Accuracy note (revised 2026-05-31).** An earlier version of this
+docstring claimed this Ladd form lands "within ~5-10% of Mei-Yu-Shyy-Luo
+2002 refinements." VALIDATION.md sec 8.3 / 8.3.1 has since measured
+the sphere Cd at D = 20 / B = 25 % and found Cd = 1.572 - 1.645
+versus Clift-Grace-Weber 1.09 (+44 % to +51 %). The low-blockage
+cross-check at B = 25 % falsified the original "blockage dominates"
+hypothesis; the bulk of the residual error is now attributed to
+**this simplified Ladd 1994 form on a D = 20 grid** -- specifically,
+not weighting each link by its q-fraction (which MYSL 2002 does).
+The MYSL upgrade + D >= 40 grid (Mei-Luo-Shyy 1999) is the priority
+3D-validation next step in VALIDATION.md sec 8.7, and should close
+the bulk of the gap to a percent-level Cd.
 
 Direct 3D analogue of ``src/forces.py``. A wall-link is a pair
 (fluid cell x_f, solid cell x_f + c_i) where the fluid cell is

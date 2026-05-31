@@ -1224,9 +1224,13 @@ preset:
 | Parallelism | 4 MPI ranks (`scotch` decomposition), ~5.6 h wall-time |
 | Solver | `foamRun -solver incompressibleFluid` (PIMPLE 2 + 1) |
 
-**Three-way result** (Cd mean over t = 300 – 400 s = first 50 D/U
-window after shedding saturation; St from FFT and zero-crossing of
-Cl):
+**Three-way result** (Cd mean is over the **last 50 D/U** of the
+record, t = 950 – 1000 s in case time, matching the AeroLab
+benchmarking window in `compare_aerolab_vs_openfoam.py`; the mean
+is flat to 4 dp from t = 300 onward — see Strouhal-extraction
+details — so the choice of late-tail window does not move the
+headline number. St from FFT and zero-crossing of Cl over the same
+window):
 
 | Source | Cd | Δ vs Williamson Cd | St | Δ vs Williamson St |
 |---|---|---|---|---|

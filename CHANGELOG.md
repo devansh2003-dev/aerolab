@@ -2,6 +2,66 @@
 
 All notable changes to AeroLab. Dates are absolute; versions follow [SemVer](https://semver.org/).
 
+## [0.6.5.1] — 2026-05-31 (audit cleanup)
+
+Doc + test polish from the post-v0.6.5 senior re-audit. No solver
+or UI behaviour changes.
+
+### Removed
+
+- **`validation/openfoam/cylinder_re100/postProcessing/forceCoeffs/200/forceCoeffs.dat`**
+  — the old coarse-mesh time series (Cd ≈ 1.183 / St ≈ 0.120) was
+  still tracked in the working tree after the refined-mesh re-run
+  shipped in v0.6.5. A reader pointing `diagnose.py` at this file
+  would have seen numbers that directly contradict the v0.6.5
+  headline; the coarse-baseline narrative is retained only via git
+  history, as the docs already promised.
+
+### Added
+
+- **`tests/test_openfoam_cross_check_consistency.py`** — five
+  consistency gates mirroring `test_doc_validation_consistency.py`:
+  asserts the committed `forceCoeffs/0/forceCoeffs.dat` is the full
+  500-D/U run, that the recomputed Cd_mean = 1.341 still matches
+  VALIDATION.md §8.4 + README, that the FFT-of-Cl Strouhal still
+  lands at 0.160, that the three citation strings (`1.341`,
+  `+1.60`, `0.5 %`) remain in VALIDATION.md, and that the stray
+  coarse-baseline file does not get re-introduced. Locks the
+  headline numbers as derivable from the committed data.
+
+### Changed
+
+- **README.md status line** — "Phases 1 + 2 closed; Phase 3 in
+  progress" → "Phases 1 + 2 + 3 closed" (internal contradiction
+  with the prose two lines below).
+- **README.md test count** — "199 unit tests / ~200" → "320+ unit
+  tests across 22 files." Static count: 323 `def test_` lines.
+- **README.md OpenFOAM headline row** — added a † footnote
+  clarifying that 0.5 % is the cross-method gap, not a validation
+  error against Williamson. The two solver-vs-reference deltas
+  (+2.1 %, +1.6 %) live in the prose; the table number is now
+  unambiguous on skim.
+- **VALIDATION.md §8.4 averaging-window wording** — "Cd mean over
+  t = 300 – 400 s = first 50 D/U" was wrong (the compare script
+  uses the **last** 50 D/U, t = 950 – 1000 s in case time, via
+  `WINDOW_DU = 50`). Same number because Cd_mean is flat from
+  t = 300 onward, but the prose now matches the script.
+- **`validation/compare_aerolab_vs_openfoam.py`** — Notes block
+  matches the corrected window wording; `cross_validation.md`
+  regenerated.
+- **`src/lbm_3d.py` module docstring** — the stale "once smoke
+  passes we can layer MRT on top" line was the source of repeated
+  reviewer confusion that 3D was MRT. 3D production is **TRT** in
+  `src/lbm_3d_trt.py`; the docstring now states that explicitly,
+  flags this file as a constants-export + parity-test scaffold, and
+  warns against extending it with MRT.
+- **`src/forces_3d.py` module docstring** — the earlier "Ladd 1994
+  is within 5 – 10 % of MYSL 2002" line contradicted VALIDATION.md
+  §8.3.1, which attributes the +44 – 51 % sphere Cd gap to exactly
+  this simplified Ladd form on a D = 20 grid. Docstring rewritten
+  to reference §8.3.1 directly and flag the MYSL upgrade as
+  pending.
+
 ## [0.6.5] — 2026-05-31
 
 **V2 cross-check passes ±5 % gates.** The OpenFOAM cylinder Re = 100

@@ -1,15 +1,27 @@
-"""3D Lattice Boltzmann Method (LBM) solver -- scaffold.
+"""3D Lattice Boltzmann Method (LBM) -- D3Q19 lattice constants + BGK scaffold.
 
 D3Q19 lattice, BGK collision, full-way bounce-back on solid + walls,
 Zou-He-style equilibrium inflow, zero-gradient outflow, periodic
 spanwise. NumPy reference + Numba ``@njit`` fused step.
 
-This is the WORK-IN-PROGRESS 3D extension of the 2D solver in
-``src/lbm.py``. It is intentionally minimal:
+**Status (2026-05-31): scaffold superseded for 3D production.** The
+shipped 3D path is TRT (two-relaxation-time) in
+``src/lbm_3d_trt.py`` -- the channel-flow smoke at low Re passed on
+the BGK scaffold below, and TRT (Ginzburg-Verhaeghe-d'Humieres
+2008, magic parameter Lambda = 3/16) was layered on as the
+collision-step upgrade. This module is **kept** because it exports
+the lattice constants (``LATTICE_VELOCITIES_3D``, ``W_3D``,
+``OPPOSITE_3D``, ``CS2``) used by ``lbm_3d_trt.py``,
+``lbm_3d_bouzidi.py``, and ``forces_3d.py``; the BGK ``collide_*``
+routines remain for parity tests and as a low-bar comparison point
+for TRT in the test suite. **Do not extend this with MRT** -- 3D
+production is TRT.
 
-  * BGK (single relaxation time), not MRT. Once the streaming and
-    boundaries pass the channel-flow smoke at low Re, we can layer
-    MRT on top -- it is purely a collision-step change.
+  * BGK (single relaxation time). The viable next-step collision
+    upgrade was TRT (now in ``lbm_3d_trt.py``); MRT for D3Q19 was
+    evaluated but **not** chosen because TRT delivers the same
+    parasitic-mode damping with one extra parameter instead of
+    19 free relaxation rates.
   * Full-way bounce-back on the body, not Bouzidi. The 2D project's
     Bouzidi q-fields are a third-order correction that requires
     geometric ray-cell intersection; bringing them to 3D needs its

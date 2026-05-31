@@ -31,7 +31,9 @@ The 2D D2Q9 MRT-LES solver has been benchmarked against Williamson 1996 (cylinde
 |--------------------------------|-----------|--------------|-----------|----------------------------------|
 | Cylinder Cd (corrected)        | 100 – 200 | **5.6 %**    | **10.2 %**| Williamson 1996 ARFM 28          |
 | Square Cd (raw, see note)      | 150 – 200 | **4.5 %**    | **5.1 %** | Okajima 1982 JFM 123; Sohankar 1998 |
-| Cylinder Cd vs OpenFOAM 11     | 100       | **0.5 %**    | **0.5 %** | OpenFOAM 11 `incompressibleFluid`, 31 200-cell graded O-grid, 500 D/U |
+| Cylinder Cd vs OpenFOAM 11 †   | 100       | **0.5 %**    | **0.5 %** | OpenFOAM 11 `incompressibleFluid`, 31 200-cell graded O-grid, 500 D/U |
+
+† The 0.5 % figure is the **cross-method gap** between AeroLab corrected (1.348) and OpenFOAM (1.341), not a validation error against a published reference. Both numbers independently land within ±5 % of Williamson 1996 (AeroLab +2.1 %, OpenFOAM +1.6 %); the small cross-method gap demonstrates that two different numerical methods agree on the same number, which is a strong sanity check but is not the same kind of claim as "matches the experiment to 0.5 %." See [VALIDATION.md §8.4](VALIDATION.md#84-openfoam-cylinder-re100-cross-check--v2-refined-run-2026-05-31) for the full three-way table.
 
 **Why the square row is uncorrected.** The Resolved sweep exposed that the K = 1.00 Allen-Vincenti correction for the square (fitted at the Standard preset B = 0.35) *over-corrects* at low blockage. At D = 40 / B = 10 % the AV-corrected square Cd is off by ~15 %, while the **raw** measurement is within 5 % of Okajima. The honest reading is that the correction is calibrated at the wrong blockage; the raw measurement IS the solver result at this preset. K-recalibration is roadmapped. See [VALIDATION.md §3.2](VALIDATION.md) for the analysis.
 
@@ -71,7 +73,7 @@ streamlit run app.py
 ```
 
 ```powershell
-pytest -q                                # 199 unit tests (+11 validation-benchmark gates), ~70 s warm
+pytest -q                                # 320+ unit tests across 22 files (+11 validation-benchmark gates), ~70 s warm
 python scripts/dev_validate_cfd.py       # 4 physics gates + 3 diagnostics, ~90 s
 ```
 
@@ -91,7 +93,7 @@ python scripts/dev_validate_cfd.py       # 4 physics gates + 3 diagnostics, ~90 
 
 ## Status
 
-**Day 20 of a 12-week build (started 2026-05-09). Phases 1 + 2 closed; Phase 3 in progress.**
+**Day 23 of a 12-week build (started 2026-05-09). Phases 1 + 2 + 3 closed.**
 
 Phase 1 (solver core, W1–4) shipped Day 5, expanded Days 6–14 with originally-Phase-2/3 work (MRT, Bouzidi, Zou-He, Mei momentum exchange). Phase 2 (W5 image upload, W6 multi-viz, W7 side-by-side compare, W8 gallery, plus a Phase-2.5 click-to-draw canvas) all shipped. Phase 3 closed: NeuralFoil ✅, validation against Williamson 1996 + Okajima 1982 ✅, plain-English UX overhaul ✅, **3D gallery (pre-baked preview) ✅**, **OpenFOAM 11 cylinder Re=100 cross-check ✅** (Cd within +1.6 %, St within −3.6 % of Williamson — both inside the reviewer's ±5 % gate; see [VALIDATION.md §8.4](VALIDATION.md)).
 
@@ -175,7 +177,7 @@ aerolab/
 │   ├── naca0012_aoa_polar.py       # 8-angle airfoil polar
 │   ├── dev_validate_cfd.py         # 4 physics gates + 3 diagnostics
 │   └── dev_grid_convergence.py     # Std vs Detailed + Richardson extrapolation
-└── tests/                          # ~200 unit tests + 11 validation-benchmark gates
+└── tests/                          # 320+ unit tests across 22 files + 11 validation-benchmark gates
 ```
 
 ## License
