@@ -79,3 +79,6 @@ data/validation/*_log*.txt
 # committed record.
 log.*.txt
 log.*.err.txt
+# Per-preset log dir produced by the v1.7.2 wing re-bake driver.
+wing_rebake_logs/
+a3_bake_logs/

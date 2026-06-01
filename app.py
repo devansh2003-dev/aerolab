@@ -354,7 +354,7 @@ st.markdown(
     "<span style='font-size:1.85rem;font-weight:700;letter-spacing:-0.02em;"
     "color:#f5f5f5;line-height:1;'>AeroLab</span>"
     "<span style='font-size:0.72rem;color:#64748b;font-weight:500;"
-    "letter-spacing:0.05em;'>v1.7.1</span>"
+    "letter-spacing:0.05em;'>v1.7.2</span>"
     "</div>"
     "<div style='color:#94a3b8;font-size:0.95rem;line-height:1.35;'>"
     "Watch air move around any shape &mdash; in your browser."
@@ -1232,10 +1232,10 @@ if view == "3D gallery (preview)":
         # reachable cleanly; default 0.30 m/s lands exactly at Re=100.
         _v_default = 0.30
         _v_state = st.session_state.get("gallery_velocity", _v_default)
-        _v_state = float(max(0.10, min(4.50, _v_state)))
+        _v_state = float(max(0.05, min(4.50, _v_state)))
         velocity_mps_3d = st.slider(
             "Flow speed (m/s)",
-            min_value=0.10, max_value=4.50,
+            min_value=0.05, max_value=4.50,
             value=_v_state,
             step=0.05,
             label_visibility="collapsed",
@@ -1244,11 +1244,12 @@ if view == "3D gallery (preview)":
             help=(
                 "Wind speed past the body, in m/s. Same convention "
                 "as the 2D playground (Re = U · 5 mm / 1.5e-5).\n\n"
-                "- **0.12 m/s** ~ Re 40 (creep)\n"
+                "- **0.06 m/s** ~ Re 20 (creeping)\n"
+                "- **0.12 m/s** ~ Re 40 (laminar attached)\n"
                 "- **0.30 m/s** ~ Re 100 (transitional)\n"
-                "- Above ~0.30: the nominal Re exceeds the highest "
-                "baked field, so the render snaps to the closest "
-                "available snapshot ({:s}).".format(
+                "- **0.60 m/s** ~ Re 200 (shedding)\n"
+                "- The slider snaps to the closest baked snapshot "
+                "for this shape ({:s}).".format(
                     ", ".join(str(r) for r in shape_re_options)
                 )
             ),

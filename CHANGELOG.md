@@ -2,6 +2,79 @@
 
 All notable changes to AeroLab. Dates are absolute; versions follow [SemVer](https://semver.org/).
 
+## [1.7.2] — 2026-06-02 (gallery wing convergence fix + Re=20 / Re=200 bake bands)
+
+Direct response to two user-reported gallery issues:
+
+1. **"At 45° the wing doesn't stall."** Root cause: every gallery
+   bake ran at `n_steps = 800`, which at `u_in = 0.04` and chord = 24 LU
+   is only **~1.3 chord-transits**. The flow had no time to develop
+   separation — what the gallery showed was startup transient, not
+   a stalled wake. Re-baked all ±30° and ±45° wing presets with
+   `n_steps = 8 000` (Re = 40, ~10 chord-transits) and `n_steps = 12 000`
+   (Re = 100, ~20 chord-transits).
+2. **"Wind looks the same at different airspeeds."** Root cause: the
+   speed slider only swapped between two baked bands (Re = 40 and
+   Re = 100). Within a band, the same `.npz` replayed — slider felt
+   inert. Added two new bake bands (Re = 20 "creeping" and Re = 200
+   "shedding") so the slider has more snap-points and visible motion.
+
+### Re-baked — ±30° / ±45° wing presets (B fix)
+
+- **`scripts/bake_3d_field.py`** — bumped `n_steps` for 16 wing presets:
+  - `naca{0012,4412}_aoa{±30,±45}_re40`: 800 → **8 000** (~10 chord-transits at u_in = 0.04, chord = 20)
+  - `naca{0012,4412}_aoa{±30,±45}_re100`: 800 → **12 000** (~20 chord-transits at chord = 24)
+- **`data/baked/naca*_aoa{±30,±45}_re{40,100}.npz`** — re-baked artifacts. The hash in each manifest changes; the visible flow at ±45° now shows a developed separated wake (was: laminar attached flow with no separation).
+
+### Added — Re = 20 and Re = 200 baked bands (A3 fix)
+
+- **`scripts/bake_3d_field.py`** — 22 new presets:
+  - Bluff bodies: `sphere_re20`, `cylinder_re20` only. `sphere_re200` and `cylinder_re200` attempted but **diverged to u_peak = NaN** at u_in = 0.04 / ν = 0.0048 (τ = 0.5144). Root cause: 37 % blockage + τ near the TRT stability boundary is outside the stable envelope on consumer-grid sizes. Removed from PRESETS with an in-source comment explaining the deferral. To revive: cumulant collision (VALIDATION.md §8.8 #3) or grid Ny ≥ 128.
+  - NACA 0012 + 4412 at AoA ∈ {0, ±30, ±45} × Re ∈ {20, 200} = 20 wing presets (all stable — the pilot `naca0012_re200` bake converged with `u_peak = 0.054`, well below Ma 0.17).
+  - Re = 20 grids match the existing Re = 40 grids; `nu` scaled so Re = 20 exact. τ = 0.62. n_steps = 6 000 wings / 2 000 bluff.
+  - Re = 200 wing grids refined to chord = 32 LU (was 24) and Ny bumped for the projected wing extent; `nu = 0.0064` → τ = 0.5192 (margin above the τ = 0.5 boundary). n_steps = 16 000.
+- **`data/baked/`** — corresponding `.npz` files (auto-discovered by the gallery's filename parser, no app.py change needed for shape→Re routing).
+- **User-visible result**: the gallery speed slider now has **4 snap-points for wings** (20 / 40 / 100 / 200) and **3 for bluff bodies** (20 / 40 / 100).
+
+### Changed — 3D gallery slider
+
+- **`app.py`** — `Flow speed (m/s)` slider min lowered from 0.10 m/s
+  to **0.05 m/s** so Re = 20 (≈ 0.06 m/s) is reachable cleanly.
+- Help text updated with the new 4-band ladder: 0.06 m/s (creeping) /
+  0.12 m/s (laminar) / 0.30 m/s (transitional) / 0.60 m/s (shedding).
+- Auto-discovery in `_shape_aoa_re_map` picks up the new bands by
+  filename — no code change to the routing.
+
+### Why this isn't a solver-accuracy regression
+
+The B fix is a gallery-side fix only — the validated 3D claim
+(§8.3.4 sphere Cd = 1.16 / +6.44 % at Re = 100) is unchanged. Gallery
+bakes don't share scripts with the validation pipeline; the gallery
+just needed more steps to develop separation, which the validation
+runs already had (6 M+ steps).
+
+### Known limitations
+
+1. **Re = 200 wing bakes sit close to the TRT stability boundary**
+   (τ = 0.5192). The pilot bake confirms convergence on the refined
+   grid; the visible flow at the highest slider setting is
+   shedding-regime (not validated to a literature Cd).
+2. **Cosmetic wing-tip clipping at ±45° / Re = 200.** The Nz = 40
+   gallery grid doesn't fully contain the projected chord at large
+   AoA — the wing body bbox reaches `z = Nz - 1` (top wall). Flow
+   magnitudes remain near mirror-symmetric (6 % difference between
+   +45° and -45° max\|u\|) so the visualization is correct, but the
+   rendered wing tip looks truncated. Fixed by bumping Nz ≥ 64 in a
+   future bake refresh; deferred for this release because it would
+   re-trigger the ~3 h batch.
+3. **u_peak diagnostic** in the .npz manifest is `max(ux)`, not
+   `max|u|`. At high AoA `ux` collapses while overall speed stays
+   healthy — do not interpret a small `u_peak` as a divergence
+   signal without cross-checking `mean|u|` from the field itself.
+   (Source of one false alarm during the v1.7.2 A3 batch.)
+
+---
+
 ## [1.7.1] — 2026-06-02 (Re=20 MYSL companion + AoA±45 wing presets + stale-banner UX)
 
 Follow-on to v1.7.0. Three things landed: the method-consistent Re = 20
