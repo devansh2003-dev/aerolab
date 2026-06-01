@@ -64,18 +64,44 @@ and a second-regime sphere measurement) instead of one.
   precision), |mass drift| < 1 % (+0.28 %), Cd within ± 60 % of CGW
   (+56.2 %), Cd > 1.5 (monotonicity vs Re = 100 preserved).
 
-### Added — Audit item #8 (first half): D = 40 sphere bake script
+### Added — Audit item #8 (first half): D = 40 sphere bake — falsifies grid-dominance
 
-- **`scripts/validate_3d_sphere_cd_d40.py`** — ready-to-run case at
-  320 × 160 × 160 (D = 40, B = 25 %, 8.2 M cells, ~ 5 – 6 h on a
-  4-core CPU). Holds everything except grid spacing constant vs the
-  Re = 100 lowblock baseline so the result isolates the
-  grid-resolution contribution to the +44 – 51 % Cd bias.
-- **NOT YET RUN.** The script is committed; the bake is overnight
-  territory and is left for the next session under explicit user
-  greenlight. The MYSL Bouzidi-aware momentum-exchange upgrade
-  (audit item #8 second half) is also deferred pending proper
-  literature review.
+- **`scripts/validate_3d_sphere_cd_d40.py`** — committed and run at
+  320 × 160 × 160 (D = 40, B = 25 %, 8.2 M cells, **2.2 h wall** on
+  a 4-core CPU — much faster than the 5–6 h estimate). Holds
+  everything except grid spacing constant versus the §8.3.1 D = 20
+  lowblock baseline so the only variable is grid resolution.
+- **`data/validation_3d_sphere_re100_d40.json`** — **Cd = 1.528**,
+  +40.2 % vs CGW 1.09. The D = 20 baseline gives Cd = 1.645 / +50.9 %,
+  so the 8 × cell-count refinement reduced the Cd bias by **only
+  ~ 7 percentage points**.
+- **`tests/test_validation_3d_sphere_cd_d40.py`** — 7 gates: payload
+  shape, grid is [320, 160, 160] exactly, Re = 100 exact,
+  momentum_exchange is "Ladd 1994 simplified" (the entire point —
+  no MYSL pollution), lift/side < 5 % of drag (1.9 % / 5 × 10⁻⁶ —
+  axisymmetry preserved), |mass drift| < 1 % (0.16 %), Cd within
+  ± 60 % of CGW (40.2 %), and the falsification lock-in
+  (1.40 < Cd < 1.645 — refinement improved but did not close).
+- **`scripts/validate_3d_sphere_cd_d40.py` progress callback** —
+  added per-5 %-of-steps stdout line with elapsed minutes, ETA, and
+  step rate. stdout flushed so PowerShell `Tee-Object` and
+  `Get-Content -Wait` show live progress instead of a 5-hour silent
+  block.
+- **Falsification result.** The original "grid resolution is a major
+  component" hypothesis (§8.3.1 budget breakdown: ~ + 5 % grid /
+  ~ + 30 – 40 % momentum exchange) is **rejected**: grid contributes
+  ~ 7 percentage points, the remaining ~ 33 % lives in the
+  simplified Ladd 1994 momentum exchange. MYSL 2002 q-aware
+  momentum exchange is now **the** highest-leverage 3D-validation
+  next step.
+- **VALIDATION.md §8.3.3** — new full subsection with config table,
+  result, falsification narrative, and the corrected error-budget
+  breakdown.
+- **VALIDATION.md §8.8 priority list re-anchored.** MYSL momentum
+  exchange promoted from #2 to #1; D = 40 bake moved to the closed
+  list. The new #2 / #3 are cumulant LBM (for higher-Re 3D) and a
+  follow-on D = 40 / B = 10 % bake (separates the residual lift
+  component).
 
 ### Versioning
 

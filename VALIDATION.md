@@ -1280,6 +1280,111 @@ python scripts/validate_3d_sphere_cd_stokes_regime.py
 pytest tests/test_validation_3d_sphere_cd_stokes_regime.py -v
 ```
 
+### 8.3.3 D = 40 sphere bake — falsifies the grid-resolution hypothesis (added 2026-06-01)
+
+> **Status: measured.** First half of audit item #8 from the v0.6.5.1
+> senior re-audit: "MYSL Bouzidi-aware momentum exchange + D ≥ 40
+> sphere bake." This run does the D ≥ 40 half ONLY, holding the
+> simplified Ladd 1994 momentum exchange constant so the result
+> isolates the **grid-resolution contribution** to the +44 – 51 %
+> Cd bias documented in §8.3 / §8.3.1. Source:
+> [`scripts/validate_3d_sphere_cd_d40.py`](scripts/validate_3d_sphere_cd_d40.py).
+> Data: [`data/validation_3d_sphere_re100_d40.json`](data/validation_3d_sphere_re100_d40.json).
+> Gated by
+> [`tests/test_validation_3d_sphere_cd_d40.py`](tests/test_validation_3d_sphere_cd_d40.py).
+
+**Why it matters.** Up to v1.6.5.1, the +44 – 56 % Cd bias on the 3D
+sphere case was budgeted (per §8.3.1) as roughly:
+
+- ~ + 5 % from D = 20 grid resolution (Mei-Luo-Shyy 1999 guideline
+  D ≥ 40)
+- ~ + 30 – 40 % from the simplified Ladd 1994 momentum exchange
+- ~ + 5 – 10 % residual / nonlinear combinations
+
+That budget was unmeasured — it lived in §8.3.1 as a hypothesis. The
+D = 40 bake is the experimental test. If Cd at D = 40 dropped to
+~ 1.1 – 1.3 (close to CGW 1.09), grid resolution was the dominant
+bias. If it stayed near 1.5 – 1.6, momentum exchange was.
+
+**Configuration.** Holds every variable except grid spacing constant
+versus the §8.3.1 D = 20 / B = 25 % lowblock baseline:
+
+| | Value |
+|---|---|
+| Grid | 320 × 160 × 160 (= 8.2 M cells, 8 × the lowblock case) |
+| Physical extent | 8 D × 4 D × 4 D (matches lowblock) |
+| Sphere radius | R = 20 lattice units (D = 40, **double** the lowblock D = 20) |
+| u_in | 0.04 (unchanged) |
+| ν | 0.016 (= u_in · D / Re = 0.04 · 40 / 100) |
+| τ | 0.548 (lowblock baseline: 0.524 — safer margin at higher resolution) |
+| Re | 100.0 exact |
+| Blockage B = D / Ny | 25 % (unchanged) |
+| Collision | TRT (Λ = 3/16), Bouzidi q-field, Guo NEEM, regularised outlet |
+| Momentum exchange | **Ladd 1994 simplified (unchanged)** — the entire point |
+| n_steps | 5 000 (5 D/U advective settle, matching lowblock) |
+| Wall-time | 7 970 s ≈ **2.2 hours** on a 4-core CPU |
+
+**Result.**
+
+| | Cd | Δ vs CGW 1978 |
+|---|---|---|
+| AeroLab at D = 20 (§8.3.1 lowblock baseline) | 1.645 | +50.9 % |
+| AeroLab at D = 40 (this run)                 | **1.528** | **+40.2 %** |
+| Clift-Grace-Weber 1978 reference             | 1.090 | 0 (ref) |
+
+**Grid-resolution contribution: only ~ 7 percentage points** of the
++51 % bias. The 8 × cell-count refinement (from D = 20 to D = 40)
+moved Cd from 1.645 down to 1.528 — useful, but not the bulk of the
+error.
+
+**Falsification result.** The original "grid is a major component"
+hypothesis is **rejected**. The corrected error budget at D = 40 is:
+
+- ~ + 7 % is grid resolution (measured)
+- ~ + 33 % is everything else — overwhelmingly the simplified Ladd
+  1994 momentum exchange, with possible secondary contributions
+  from Bouzidi quadratic-bounce-back accuracy at curved walls
+
+This makes **MYSL 2002 Bouzidi-aware momentum exchange the
+single highest-leverage next step**, demoting the "more cells"
+direction. The §8.8 priority list is re-ordered accordingly.
+
+**Diagnostics (all gated in CI):**
+
+- |F_lift| / |F_drag| = 1.9 %, |F_side| / |F_drag| = 5 × 10⁻⁶ —
+  axisymmetry largely preserved; the lift component is small but
+  larger than the Re = 20 case (0.013 %), reflecting that the
+  D = 40 staircase voxelisation of the sphere is slightly less
+  symmetric than the D = 20 one even though absolute discretisation
+  error is smaller. Both are below the 5 % gate. ✓
+- Mass drift = +0.16 % over 5 000 steps — well below the 1 % gate. ✓
+- u_peak (lattice) = 0.0475 — comfortable margin from the LBM
+  stability ceiling. ✓
+- Cd ∈ (1.40, 1.645) — gates the "D refinement improved Cd but did
+  not close the gap" falsification. ✓
+
+**What this closes and what it does NOT close.**
+
+- ✅ The auditor's audit item #8 first half (D ≥ 40 bake). Done; the
+  result is committed and gated.
+- ✅ The "is grid resolution the dominant bias?" question. Answer:
+  **no**. The §8.3.1 budget breakdown is now updated with measured
+  numbers.
+- ❌ Percent-level 3D Cd. We now know where the remaining +40 %
+  lives (momentum exchange), but closing it requires the MYSL
+  upgrade — coding work, not just compute. The D = 40 case is also
+  a ready-made apples-to-apples comparison point against a future
+  D = 40 + MYSL run.
+
+**Reproduce:**
+
+```bash
+python scripts/validate_3d_sphere_cd_d40.py
+# ~2.2 h on a 4-core CPU, writes data/validation_3d_sphere_re100_d40.json
+# Progress lines print every 5 % to stdout (Start-Process / Tee-Object friendly).
+pytest tests/test_validation_3d_sphere_cd_d40.py -v
+```
+
 ### 8.4 OpenFOAM cylinder Re=100 cross-check — V2 (refined run 2026-05-31)
 
 > **Status: measured and passes ±5 % gates.** OpenFOAM 11 (Ubuntu
@@ -1478,31 +1583,37 @@ re-bakes reproduce the same hash.
 
 In priority order — the items the gallery does not yet close:
 
-1. **D = 40 sphere bake (Ladd, first half of audit item #8).**
-   Script ready at
-   [`scripts/validate_3d_sphere_cd_d40.py`](scripts/validate_3d_sphere_cd_d40.py):
-   320 × 160 × 160 grid (B = 25 %, same as §8.3.1) holding everything
-   else constant. Isolates the grid-resolution contribution to the
-   +44 – 56 % bias documented in §8.3.1 and §8.3.2. If Cd lands near
-   1.1 – 1.3, grid was the dominant bias and a percent-level claim
-   is feasible. If it stays near 1.4 – 1.6, momentum exchange is the
-   dominant bias and the MYSL upgrade is the critical next step.
-   Expected wall-time: ~ 5 – 6 hours on a 4-core CPU.
-2. **MYSL 2002 Bouzidi-aware momentum exchange (second half of
-   audit item #8).** The simplified Ladd 1994 formula used in
-   `src/forces_3d.py` does not weight wall links by their q-fraction;
-   the §8.3.2 Re = 20 measurement (Cd bias +56 % vs Re = 100 bias
-   +51 %) is consistent with this failure mode (the boundary-layer
-   shear contribution mis-counts more when viscous drag fraction is
-   larger). MYSL 2002 weights by q. Combined with the D = 40 grid
-   above, should close the bulk of the residual error.
-3. **Cumulant collision for Re ≥ 200.** The current TRT operator
+1. **MYSL 2002 Bouzidi-aware momentum exchange (second half of
+   audit item #8).** **Now the single highest-leverage 3D-validation
+   item.** The §8.3.3 D = 40 bake (2026-06-01) measured the
+   grid-resolution contribution at only ~ 7 percentage points of the
+   +51 % bias, falsifying the original "grid is a major component"
+   hypothesis. The remaining +40 % at D = 40 lives almost entirely in
+   the simplified Ladd 1994 momentum-exchange formula, which does not
+   weight wall links by their Bouzidi q-fraction. MYSL 2002 (Mei,
+   Yu, Shyy, Luo, J. Comp. Phys. 178) replaces the link weight with
+   a q-aware form. The implementation lives in `src/forces_3d.py`;
+   the D = 40 case is a ready apples-to-apples comparison point
+   waiting to be re-run with the upgrade. Effort: ~ 1 day of code +
+   2 h of bake time. Highest-impact item by absolute Cd reduction.
+2. **Cumulant collision for Re ≥ 200.** The current TRT operator
    sits on the stability boundary at Re=200; cumulant LBM (Geier
    et al. 2015) extends the safe Re band without forcing a 2–4×
    grid increase. Worth doing before claiming higher-Re 3D.
+3. **D = 40 sphere bake at low blockage (B ≤ 10 %).** §8.3.3 ran at
+   B = 25 % so it would be apples-to-apples with the D = 20 lowblock
+   baseline. A D = 40 / B = 10 % bake would cost ~ 4 × the cells
+   (~ 4 h) and would separate the residual ~ 7 % "lift component"
+   discretisation effect from the ~ 33 % momentum-exchange
+   contribution. Lower priority than MYSL.
 
 **Closed (do not ask):**
 
+- ~~D = 40 sphere bake (Ladd, first half of audit item #8).~~ Ran
+  2026-06-01 in 2.2 h on a 4-core CPU; result in §8.3.3.
+  Cd = 1.528, +40.2 % vs CGW 1.09. Grid-resolution contribution =
+  7 percentage points of the +51 % D=20 baseline. Falsifies the
+  grid-dominance hypothesis; MYSL is now top priority.
 - ~~Refine the OpenFOAM cylinder wake mesh and re-run.~~ Ran 2026-05-31
   with a refined 31 200-cell graded O-grid + `linearUpwindV` to
   t = 1000 (500 D/U) on 4 MPI ranks (~5.6 h). Cd = 1.341 (+1.6 % vs

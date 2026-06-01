@@ -43,6 +43,10 @@ data/validation/*_log*.txt
 # tests/test_validation_3d_sphere_cd_stokes_regime.py; regenerate via
 # scripts/validate_3d_sphere_cd_stokes_regime.py.
 !data/validation_3d_sphere_re20_stokes_regime.json
+# D = 40 sphere bake (audit item #8 first half, v1.6.5.1), read by
+# tests/test_validation_3d_sphere_cd_d40.py; regenerate via
+# scripts/validate_3d_sphere_cd_d40.py.
+!data/validation_3d_sphere_re100_d40.json
 # DO commit pre-baked 3D fields. Cloud has no GPU and runs the
 # 3D LBM kernel as a Numba serial loop -- the gallery's whole value
 # prop is consumer-mode replay of a pre-baked steady-state field, so
@@ -58,3 +62,10 @@ data/validation/*_log*.txt
 # Local venvs created by uv / pyenv for solver-local execution.
 # Project CI + Cloud deploy use requirements.txt, so these are local-only.
 .venv*/
+
+# Bake logs from overnight runs. Pinned per-bake stdout / stderr
+# captures (e.g. log.d40.txt, log.d40.err.txt) are local debugging
+# artifacts -- the JSON results in data/validation*.json are the
+# committed record.
+log.*.txt
+log.*.err.txt
