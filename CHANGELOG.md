@@ -2,6 +2,64 @@
 
 All notable changes to AeroLab. Dates are absolute; versions follow [SemVer](https://semver.org/).
 
+## [1.7.0] — 2026-06-01 (MYSL upgrade closes the bulk of the 3D Cd gap)
+
+Closes the second half of audit item #8 — and with it, the dominant
+residual bias on the 3D sphere Cd. The Mei-Yu-Shyy-Luo 2002
+Bouzidi-aware momentum-exchange formula is implemented, parity-
+tested against the existing Ladd 1994 form at halfway BB, and run
+end-to-end on the D = 40 sphere case. **Headline result: Cd = 1.160,
++6.44 % vs Clift-Grace-Weber 1978** — down from +40.2 % with the
+Ladd form on the same flow, a **33.8 percentage-point** bias
+reduction. **3D bluff-body drag is no longer preview-quality;** it
+is validated against an experimental reference, with the residual
+~ 6 % attributable to known refinement sources (D = 40 voxelisation,
+B = 25 % blockage, Bouzidi quadratic BB).
+
+### Added — Audit item #8 second half: MYSL 2002 momentum exchange
+
+- **`src/forces_3d.py:momentum_exchange_force_3d_mysl`** — full
+  implementation of the MYSL 2002 (Mei, Yu, Shyy, Luo, Phys. Rev.
+  E 65, 041203) Bouzidi-aware momentum-exchange formula. Per wall
+  link: `F = c_i * (f_tilde_i(x_f) + f_opp^{post-BB}(x_f))`, with
+  `f_tilde` reconstructed from the post-stream populations via the
+  same TRT split as `apply_bouzidi_correction_trt` and
+  `f_opp^{post-BB}` computed by the Bouzidi q-aware reflection
+  formula (different for q ≥ 0.5 vs q < 0.5). At q = 0.5 the
+  formula collapses to `2 c_i f_tilde_i` (Ladd), recovered exactly
+  in the parity unit test.
+- **`tests/test_forces_3d_mysl.py`** — 4 unit gates: (1) MYSL
+  returns finite force, (2) drag dominates lift/side on a sphere,
+  (3) at q = 0.5 everywhere MYSL matches Ladd to ~ 1 % at
+  convergence (4 000-step bake fixture), (4) on real curved-wall
+  geometry MYSL and Ladd differ by > 1 % (lock that MYSL is
+  actually doing q-aware work, not silently degenerating).
+- **`scripts/validate_3d_sphere_cd_mysl_d40.py`** — committed and
+  **RUN** in 6 698 s ≈ 1.9 h on a 4-core CPU. Identical flow to
+  §8.3.3 (D = 40 / B = 25 %, same Bouzidi BB, same TRT, same
+  boundary conditions, same n_steps); reports BOTH the Ladd and
+  MYSL force at the end so the comparison is apples-to-apples.
+- **`data/validation_3d_sphere_re100_d40_mysl.json`** — headline
+  result. MYSL Cd = **1.1602 / +6.44 % vs CGW** (vs Ladd-on-same-run
+  1.5282 / +40.20 %). Bias reduction: 33.76 percentage points.
+  Transverse forces stay axisymmetric under MYSL (|F_lift| /
+  |F_drag| = 2.3 %, |F_side| / |F_drag| = 2 × 10⁻⁶).
+- **`tests/test_validation_3d_sphere_cd_mysl_d40.py`** — 8 gates
+  on the bake JSON: payload shape, D=40 grid + Re=100 exact, MYSL
+  marker preserved (no silent refactor swap), Ladd baseline within
+  0.005 of the §8.3.3 standalone bake (apples-to-apples lock),
+  MYSL drag ≥ 15 % below Ladd on this flow, MYSL Cd within ±10 %
+  of CGW, transverse forces small, and total bias reduction ≥
+  25 percentage points.
+- **VALIDATION.md §8.3.4** — new full subsection with the MYSL
+  formula derivation, parity result, configuration table, side-by-
+  side Cd comparison, error-budget breakdown for the residual 6 %,
+  and a "what closes / what remains" section.
+- **VALIDATION.md §8.8 priority list re-anchored.** MYSL closed.
+  New #1 is the D = 60 / B = 10 % MYSL bake (pushes the headline
+  into the percent-level band). #2 cumulant LBM for Re ≥ 200, #3
+  3D Strouhal cross-check.
+
 ## [1.6.5.1] — 2026-06-01 (audit nice-to-haves #8/#9/#10)
 
 Closes the three "nice-to-have" follow-ups from the v0.6.5.1 senior

@@ -1,0 +1,46 @@
+{
+  "Cd_ref_clift_grace_weber": 1.09,
+  "Cd_tolerance_pct": 60.0,
+  "Re_actual": 100.0,
+  "Re_target": 100,
+  "_provenance": {
+    "purpose": "Second half of audit item #8 from v0.6.5.1: same D = 40 bake as VALIDATION.md sec 8.3.3, but with the MYSL 2002 Bouzidi-aware momentum-exchange formula applied at the end. The flow is unchanged; only the force post-processing changes. This isolates the momentum-exchange contribution to the +40 % Cd bias the Ladd form carries at this resolution.",
+    "script": "scripts/validate_3d_sphere_cd_mysl_d40.py"
+  },
+  "advective_times": 5.0,
+  "blockage_pct": 25.0,
+  "delta_mysl_vs_ladd_pct": -24.080580163220322,
+  "grid": [
+    320,
+    160,
+    160
+  ],
+  "ladd": {
+    "Cd_error_pct": 40.20268735742073,
+    "Cd_raw": 1.528209292195886,
+    "F_drag_lattice": 1.5363235473632812,
+    "F_lift_lattice": 0.0291900634765625,
+    "F_side_lattice": -7.62939453125e-06,
+    "momentum_exchange": "Ladd 1994 simplified"
+  },
+  "mass_drift_rel": 0.0015995664509703283,
+  "mysl": {
+    "Cd_error_pct": 6.44106683732787,
+    "Cd_raw": 1.1602076285268739,
+    "F_drag_lattice": 1.166367923974036,
+    "F_lift_lattice": 0.026290898754211867,
+    "F_side_lattice": -2.6119095366539113e-06,
+    "momentum_exchange": "MYSL 2002 (Mei-Yu-Shyy-Luo, q-aware Bouzidi)"
+  },
+  "n_cells": 8192000,
+  "n_steps": 5000,
+  "nu": 0.016,
+  "outflow_scheme": "regularised",
+  "ref": "Clift-Grace-Weber 1978",
+  "scheme": "trt",
+  "solve_wall_time_s": 6697.929940223694,
+  "tau": 0.548,
+  "u_in": 0.04,
+  "u_peak_lattice": 0.047505490481853485,
+  "use_bouzidi": true
+}

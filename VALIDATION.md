@@ -1385,6 +1385,128 @@ python scripts/validate_3d_sphere_cd_d40.py
 pytest tests/test_validation_3d_sphere_cd_d40.py -v
 ```
 
+### 8.3.4 MYSL 2002 momentum exchange at D = 40 — closes the bulk of the Cd gap (added 2026-06-01)
+
+> **Status: measured. Headline 3D drag is now within 6.4 % of CGW.**
+> Second half of audit item #8 from the v0.6.5.1 senior re-audit.
+> Source:
+> [`src/forces_3d.py:momentum_exchange_force_3d_mysl`](src/forces_3d.py)
+> + [`scripts/validate_3d_sphere_cd_mysl_d40.py`](scripts/validate_3d_sphere_cd_mysl_d40.py).
+> Data: [`data/validation_3d_sphere_re100_d40_mysl.json`](data/validation_3d_sphere_re100_d40_mysl.json).
+> Gated by
+> [`tests/test_validation_3d_sphere_cd_mysl_d40.py`](tests/test_validation_3d_sphere_cd_mysl_d40.py)
+> + the implementation parity tests in
+> [`tests/test_forces_3d_mysl.py`](tests/test_forces_3d_mysl.py).
+
+**Why MYSL.** §8.3.3 measured the D = 40 Cd at +40.2 % vs CGW with
+the simplified Ladd 1994 momentum-exchange formula. The grid-doubling
+from D = 20 to D = 40 closed only ~ 7 percentage points; the
+remaining +40 % lived in the force formula itself. The simplified
+Ladd form (`F = 2 c_i f_i_post-collision`) assumes halfway bounce-
+back — wall at q = 0.5 exactly — which is false for any voxelised
+curved geometry where q distributes across (0, 1]. Mei, Yu, Shyy,
+Luo (Phys. Rev. E 65, 041203, 2002) derive a q-aware formula that
+reads:
+
+```
+F_link = c_i * (f_tilde_i(x_f)  +  f_opp^{post-BB}(x_f))
+```
+
+specialised to Bouzidi quadratic BB, this becomes:
+
+```
+q >= 0.5:  f_opp^{post-BB} = (1/2q)*f_tilde_i + (2q-1)/(2q)*f_tilde_opp
+q <  0.5:  f_opp^{post-BB} = 2q*f_tilde_i    + (1-2q)*f_tilde_i(x_f - c_i)
+```
+
+both evaluated at the fluid cell x_f. At q = 0.5 both branches
+collapse to `f_opp^{post-BB} = f_tilde_i`, so MYSL reduces to
+`F = 2 c_i f_tilde_i` — the Ladd form. The
+[`test_forces_3d_mysl.py::test_mysl_at_q_half_matches_ladd`](tests/test_forces_3d_mysl.py)
+unit test locks this parity at every CI run.
+
+**What the bake does.** The flow is **identical** to §8.3.3 — same
+mesh, same Bouzidi BB, same TRT collision, same Guo NEEM boundary
+conditions, same 5000 steps. Only the force at the final converged
+state is computed two ways: Ladd post-stream (for the baseline) and
+MYSL q-aware (for the headline). The MYSL implementation lives in
+`src/forces_3d.py:momentum_exchange_force_3d_mysl` and reconstructs
+`f_tilde_i` from the post-stream populations via the same TRT split
+the Bouzidi correction uses, so the two are mathematically
+consistent.
+
+**Configuration.**
+
+| | Value |
+|---|---|
+| Grid | 320 × 160 × 160 (= 8.2 M cells), identical to §8.3.3 |
+| Sphere | R = 20 (D = 40), B = 25 % |
+| u_in | 0.04 |
+| ν | 0.016 |
+| Re | 100.0 exact |
+| Collision | TRT (Λ = 3/16), Bouzidi q-field, Guo NEEM, regularised outlet |
+| Momentum exchange (this run) | **MYSL 2002** (q-aware Bouzidi) |
+| Momentum exchange (baseline) | Ladd 1994 simplified (recomputed on the same state for comparison) |
+| n_steps | 5 000 (5 D/U) |
+| Wall-time | 6 698 s ≈ **1.9 hours** (slightly faster than §8.3.3's 2.2 h — system was less loaded) |
+
+**Result.**
+
+| | F_drag (lattice) | Cd | Δ vs CGW 1978 |
+|---|---|---|---|
+| §8.3.3 D = 40 / Ladd 1994 (recomputed on this run) | 1.536324 | 1.5282 | +40.20 % |
+| **§8.3.4 D = 40 / MYSL 2002** | **1.166368** | **1.1602** | **+6.44 %** |
+| Δ (MYSL − Ladd) | −0.369956 | −0.3680 | −33.76 pp (**bias reduction**) |
+| Clift-Grace-Weber 1978 reference | — | 1.090 | 0 (ref) |
+
+The Ladd column matches the §8.3.3 standalone bake (1.528) to within
+floating-point round-off, confirming the comparison is apples-to-
+apples — same flow, just different force post-processing.
+
+**What this closes.**
+
+- ✅ The auditor's audit item #8 second half (MYSL Bouzidi-aware
+  momentum exchange + D ≥ 40). Done, committed, gated.
+- ✅ The dominant residual bias diagnosed in §8.3.3 (simplified Ladd
+  formula assuming halfway BB at curved walls). MYSL drops Cd by
+  24 % on the same flow — exactly the "the momentum-exchange form
+  is doing the work" outcome the falsification predicted.
+- ✅ **Headline 3D bluff-body drag.** AeroLab's MYSL D = 40 sphere
+  result lands within **+6.44 %** of Clift-Grace-Weber 1978 — close
+  to percent-level, comparable to the 2D Resolved-preset cylinder
+  validation. 3D drag is no longer "preview-quality"; it is
+  validated against an experimental reference, with the gap
+  attributable to known residual sources (D = 40 grid resolution,
+  B = 25 % blockage, Bouzidi quadratic rather than cubic BB).
+
+**What remains** (now small, mostly known sources):
+
+- ~ +3 – 5 % from blockage (B = 25 %, Allen-Vincenti style
+  correction at this blockage gives a few percent reduction; a
+  D = 40 / B ≤ 10 % bake would land lower).
+- ~ +1 – 3 % from D = 40 voxelisation (Mei-Luo-Shyy 1999 actually
+  recommend D ≥ 60 for sub-percent claims).
+- ~ +1 % from Bouzidi quadratic BB versus higher-order interpolation.
+
+The remaining items are all standard refinements with diminishing
+returns. **A future D = 60 / B = 10 % / MYSL bake should land at
+< 2 %**, comparable to the 2D Resolved-preset cylinder.
+
+**Reproduce:**
+
+```bash
+# Bake the case (1.9 h on 4-core CPU). Outputs both Ladd and MYSL Cd
+# from the same converged flow.
+python scripts/validate_3d_sphere_cd_mysl_d40.py
+
+# Unit-level MYSL implementation parity (~ 25 s; runs a small 4 000-step
+# convergent sphere case).
+pytest tests/test_forces_3d_mysl.py -v
+
+# Headline test gates (instant; reads the committed JSON).
+pytest tests/test_validation_3d_sphere_cd_mysl_d40.py -v
+```
+
 ### 8.4 OpenFOAM cylinder Re=100 cross-check — V2 (refined run 2026-05-31)
 
 > **Status: measured and passes ±5 % gates.** OpenFOAM 11 (Ubuntu
@@ -1583,37 +1705,43 @@ re-bakes reproduce the same hash.
 
 In priority order — the items the gallery does not yet close:
 
-1. **MYSL 2002 Bouzidi-aware momentum exchange (second half of
-   audit item #8).** **Now the single highest-leverage 3D-validation
-   item.** The §8.3.3 D = 40 bake (2026-06-01) measured the
-   grid-resolution contribution at only ~ 7 percentage points of the
-   +51 % bias, falsifying the original "grid is a major component"
-   hypothesis. The remaining +40 % at D = 40 lives almost entirely in
-   the simplified Ladd 1994 momentum-exchange formula, which does not
-   weight wall links by their Bouzidi q-fraction. MYSL 2002 (Mei,
-   Yu, Shyy, Luo, J. Comp. Phys. 178) replaces the link weight with
-   a q-aware form. The implementation lives in `src/forces_3d.py`;
-   the D = 40 case is a ready apples-to-apples comparison point
-   waiting to be re-run with the upgrade. Effort: ~ 1 day of code +
-   2 h of bake time. Highest-impact item by absolute Cd reduction.
+1. **D = 60 (or larger) + B ≤ 10 % MYSL sphere bake.** §8.3.4 landed
+   the headline at +6.44 % vs CGW 1.090 — close to percent-level but
+   not yet there. The remaining error breaks down (per §8.3.4) into
+   roughly ~ 3 – 5 % blockage at B = 25 %, ~ 1 – 3 % D = 40
+   voxelisation (Mei-Luo-Shyy 1999 actually recommend D ≥ 60), and
+   ~ 1 % residual Bouzidi quadratic BB. A D = 60 / B = 10 % MYSL bake
+   would address all three at once. Compute scales as ~ 320 × cells
+   over §8.3.4 (~ 30 M cells, ~ 8 GB RAM), so probably 8 – 12 h on
+   a 4-core CPU. Pushes the 3D drag claim into the same percent-level
+   band as the 2D Resolved-preset cylinder.
 2. **Cumulant collision for Re ≥ 200.** The current TRT operator
-   sits on the stability boundary at Re=200; cumulant LBM (Geier
+   sits on the stability boundary at Re = 200; cumulant LBM (Geier
    et al. 2015) extends the safe Re band without forcing a 2–4×
    grid increase. Worth doing before claiming higher-Re 3D.
-3. **D = 40 sphere bake at low blockage (B ≤ 10 %).** §8.3.3 ran at
-   B = 25 % so it would be apples-to-apples with the D = 20 lowblock
-   baseline. A D = 40 / B = 10 % bake would cost ~ 4 × the cells
-   (~ 4 h) and would separate the residual ~ 7 % "lift component"
-   discretisation effect from the ~ 33 % momentum-exchange
-   contribution. Lower priority than MYSL.
+3. **3D Strouhal cross-check.** §8.5 still flags this gap. With
+   MYSL force evaluation working, a 3D cylinder bake at Re ≈ 100
+   for ~ 10 D/U (with a small enough cross-section to be affordable)
+   would let us extract a 3D Strouhal and compare against the 2D
+   cylinder Re = 100 number (§8.4 three-way table). Tests whether
+   the spanwise direction collapses cleanly to the 2D physics in
+   our solver.
 
 **Closed (do not ask):**
 
+- ~~MYSL 2002 Bouzidi-aware momentum exchange.~~ Ran 2026-06-01 in
+  1.9 h on a 4-core CPU; implementation in
+  `src/forces_3d.py:momentum_exchange_force_3d_mysl`, headline
+  result in §8.3.4. **Cd = 1.160, +6.44 % vs CGW 1.090.** Bias
+  reduction vs Ladd: 33.8 percentage points. The bulk of the +40 %
+  residual the §8.3.3 falsification identified is now closed; 3D
+  drag is no longer "preview-quality."
 - ~~D = 40 sphere bake (Ladd, first half of audit item #8).~~ Ran
   2026-06-01 in 2.2 h on a 4-core CPU; result in §8.3.3.
   Cd = 1.528, +40.2 % vs CGW 1.09. Grid-resolution contribution =
-  7 percentage points of the +51 % D=20 baseline. Falsifies the
-  grid-dominance hypothesis; MYSL is now top priority.
+  7 percentage points of the +51 % D=20 baseline. Falsified the
+  grid-dominance hypothesis; correctly identified MYSL momentum
+  exchange as the dominant residual.
 - ~~Refine the OpenFOAM cylinder wake mesh and re-run.~~ Ran 2026-05-31
   with a refined 31 200-cell graded O-grid + `linearUpwindV` to
   t = 1000 (500 D/U) on 4 MPI ranks (~5.6 h). Cd = 1.341 (+1.6 % vs
