@@ -99,6 +99,41 @@ CGW_CD_REF = 1.09
 CD_TOLERANCE_PCT = 80.0
 
 
+def _make_progress_callback(n_steps: int, t_start: float):
+    """Return a callback that prints step / elapsed / ETA / step-rate.
+
+    `run_channel_smoke_trt` fires this every 5 % of the total run
+    (n_steps // 20). We print one line per fire with line-flushed
+    stdout so `Tee-Object` / `Get-Content -Wait` sees progress live
+    on Windows. Without the flush, Python buffers stdout when stdout
+    is a pipe (which Tee-Object's pipe is), and the log file stays
+    empty until the bake finishes -- which defeats the point of
+    having a progress callback.
+    """
+    def cb(fraction: float, message: str) -> None:
+        elapsed = time.time() - t_start
+        # Avoid div-by-zero on the very first fire (fraction == 0).
+        if fraction <= 1e-9:
+            eta_str = "TBD"
+            rate_str = "TBD"
+        else:
+            total_est = elapsed / fraction
+            remaining = total_est - elapsed
+            eta_h, eta_rem = divmod(int(remaining), 3600)
+            eta_m, eta_s = divmod(eta_rem, 60)
+            eta_str = f"{eta_h:d}h {eta_m:02d}m {eta_s:02d}s"
+            steps_done = int(fraction * n_steps)
+            rate_str = f"{steps_done / elapsed:.1f} steps/s"
+        pct = 100.0 * fraction
+        print(
+            f"  [progress] {message}  -- "
+            f"{pct:5.1f} %  |  elapsed {elapsed/60:5.1f} min  |  "
+            f"ETA {eta_str}  |  {rate_str}",
+            flush=True,
+        )
+    return cb
+
+
 def main() -> dict:
     cfg = CONFIG
     Nx, Ny, Nz = cfg["Nx"], cfg["Ny"], cfg["Nz"]
@@ -138,6 +173,7 @@ def main() -> dict:
         outflow_scheme=cfg["outflow_scheme"],
         scheme=cfg["scheme"],
         return_populations=True,
+        progress_callback=_make_progress_callback(cfg["n_steps"], t0),
     )
     t_solve = time.time() - t0
 
