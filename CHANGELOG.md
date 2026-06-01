@@ -2,6 +2,61 @@
 
 All notable changes to AeroLab. Dates are absolute; versions follow [SemVer](https://semver.org/).
 
+## [1.7.1] — 2026-06-02 (Re=20 MYSL companion + AoA±45 wing presets + stale-banner UX)
+
+Follow-on to v1.7.0. Three things landed: the method-consistent Re = 20
+MYSL companion bake (audit Task 7 closed), eight new pre-baked wing
+scenes at AoA = ±45° so the gallery slider can show stalled / deep-
+separated flow, and a louder stale-display banner with an inline
+"Run with new settings" button (user reported missing the previous
+yellow warning).
+
+### Added — §8.3.5 Re = 20 + MYSL + D = 40 (method-consistent sphere companion)
+
+- **`scripts/validate_3d_sphere_cd_stokes_regime_mysl_d40.py`** — same
+  D = 40 grid / Bouzidi BB / TRT collision as §8.3.4, with ν scaled
+  so Re = 20.0 exact. Reports both Ladd and MYSL on the same
+  converged flow. Wall-time: 8 306 s ≈ 2.3 h on a 4-core CPU.
+- **`data/validation_3d_sphere_re20_mysl_d40.json`** — measured result.
+  Cd_LADD = 4.27 (+56.4 % vs CGW 2.728), Cd_MYSL = 4.02 (+47.4 %).
+  Bias reduction: only **9 percentage points**, vs 33.8 pp at Re = 100.
+- **`tests/test_validation_3d_sphere_cd_stokes_regime_mysl_d40.py`** —
+  7 gates including the headline-diagnostic check that MYSL closes
+  ≥ 5 but ≤ 20 pp (locks the "MYSL is partial at low Re" result).
+- **VALIDATION.md §8.3.5** — full subsection. Diagnoses τ = 0.74 as
+  the leading suspect for the +47 % residual (the LBM equilibrium
+  loses Galilean invariance at high τ); §8.3.4 sat at τ = 0.548 and
+  did not have this signature.
+- **VALIDATION.md §8.8** — priority list updated with the high-τ
+  residual as the new #1. Cumulant collision (#3) elevated as a
+  candidate fix for BOTH the high-Re ceiling (Re ≥ 200) AND the
+  low-Re high-τ residual (Re = 20).
+
+### Added — AoA ±45° wing presets (gallery stall visualization)
+
+- **`scripts/bake_3d_field.py`** — 8 new presets:
+  `naca0012_aoa{±45}_re{40,100}` and `naca4412_aoa{±45}_re{40,100}`.
+  Bumped Ny one notch above the ±30° presets so the projected vertical
+  extent of the wing fits with margin at deep-stall AoA.
+- **`data/baked/`** — 8 new .npz files. ~ 15 – 20 min total bake time.
+  Gallery slider already supports the ±45° band (slider range was
+  already [-45, +45]); the new bakes give it landing points to snap to.
+- Visual / qualitative addition. Thin airfoils stall around 12 – 15°,
+  so 45° is deep stall — the LBM kernel renders the massive separated
+  wake the user wanted to see. This is **not** an aerodynamic claim:
+  validated airfoil regime remains the NeuralFoil surrogate at
+  attached-flow AoA up to ~10°.
+
+### Fixed — stale-display banner (user feedback "flow not changing with speed")
+
+- **`app.py`** — the previous `st.warning()` for "your sidebar inputs
+  diverged from the displayed result" was being missed (yellow under
+  sidebar focus). Upgraded to a louder `st.error()` and added an
+  inline **"Run with new settings"** button that re-triggers the run
+  via the same `lbm_gallery_pending` mechanism the demo gallery
+  cards use. The "must click Run to refresh" design (reviewer item
+  #14, 2026-05-25) is preserved — just made more discoverable.
+
 ## [1.7.0] — 2026-06-01 (MYSL upgrade closes the bulk of the 3D Cd gap)
 
 Closes the second half of audit item #8 — and with it, the dominant

@@ -1507,6 +1507,91 @@ pytest tests/test_forces_3d_mysl.py -v
 pytest tests/test_validation_3d_sphere_cd_mysl_d40.py -v
 ```
 
+### 8.3.5 Re = 20 + MYSL + D = 40 — MYSL is **partial** at low Re (added 2026-06-01)
+
+> **Status: measured. Partial result — informative diagnostic.** Audit
+> Task 7 from the forensic re-audit. Source:
+> [`scripts/validate_3d_sphere_cd_stokes_regime_mysl_d40.py`](scripts/validate_3d_sphere_cd_stokes_regime_mysl_d40.py).
+> Data: [`data/validation_3d_sphere_re20_mysl_d40.json`](data/validation_3d_sphere_re20_mysl_d40.json).
+> Gated by
+> [`tests/test_validation_3d_sphere_cd_stokes_regime_mysl_d40.py`](tests/test_validation_3d_sphere_cd_stokes_regime_mysl_d40.py).
+
+**Why this run.** §8.3.4 (Re = 100 + MYSL + D = 40) landed at +6.44 %
+vs CGW — close to percent-level. §8.3.2 (Re = 20 + Ladd + D = 20)
+landed at +56.2 %. The two Re-points were not directly comparable
+because they used different methodologies; auditor Task 7 asked for
+a method-consistent re-run at Re = 20 + MYSL + D = 40 so the
+bias-vs-Re trend rests on apples-to-apples measurements.
+
+**Configuration.** Same as §8.3.4 except ν scaled to land at Re = 20:
+
+| | Value |
+|---|---|
+| Grid | 320 × 160 × 160 (= 8.2 M cells), identical to §8.3.4 |
+| Sphere | R = 20 (D = 40), B = 25 % |
+| u_in | 0.04 |
+| ν | 0.08 (5 × the Re = 100 value to land at Re = 20) |
+| τ | **0.74** (vs §8.3.4's 0.548) |
+| Re | 20.0 exact |
+| Collision | TRT (Λ = 3/16), Bouzidi q-field, Guo NEEM, regularised outlet |
+| Force | MYSL 2002 (and Ladd for comparison) |
+| n_steps | 5 000 (5 D/U) |
+| Wall-time | 8 306 s ≈ **2.3 hours** on a 4-core CPU |
+
+**Result.**
+
+| Re | Force formula | Cd | Δ vs CGW | MYSL ↓ Ladd |
+|---|---|---|---|---|
+| 100 (§8.3.4) | Ladd 1994 | 1.528 | +40.20 % | — |
+| 100 (§8.3.4) | **MYSL 2002** | **1.160** | **+6.44 %** | **−33.76 pp** |
+| 20 (§8.3.5, this run) | Ladd 1994 | 4.267 | +56.43 % | — |
+| 20 (§8.3.5, this run) | **MYSL 2002** | **4.022** | **+47.43 %** | **−9.00 pp** |
+
+**The headline diagnostic: MYSL reduction is much smaller at low Re.**
+At Re = 100, MYSL closed the bulk of the bias (34 pp out of 40). At
+Re = 20, it closes only ~ 9 pp out of 56. The residual +47 % at
+Re = 20 / MYSL is the largest remaining gap in the 3D-validation
+story.
+
+**What this tells us.**
+
+- **Momentum exchange is not the dominant residual bias at low Re.**
+  If it were, MYSL would have closed a similar fraction of the gap
+  as it did at Re = 100. The 9 pp / 34 pp ratio means something else
+  — a tau-dependent kernel effect or a slow-converging viscous
+  contribution — is doing the work at Re = 20.
+- **τ = 0.74 is the leading suspect.** LBM's standard equilibrium
+  develops Galilean-invariance violations and spurious viscous
+  cross-terms at high τ. The Re = 100 case sits at τ = 0.548 —
+  comfortably close to the τ = 0.5 incompressible limit. The Re = 20
+  case at τ = 0.74 is much further from that limit. Standard
+  recovery via either (a) the cumulant collision (Geier et al. 2015,
+  which is Galilean-invariant by construction) or (b) lowering τ via
+  smaller u_in at fixed ν / D would test this hypothesis.
+- **The MYSL upgrade remains the right call for the headline.**
+  At Re = 100 (the bluff-body regime AeroLab actually shows in the
+  3D gallery), MYSL got Cd into the +6 % band. At Re = 20 (a
+  stress-test of the LBM kernel near its low-Re comfort zone) MYSL
+  is part of the story but not all of it.
+
+**What this does NOT close.**
+
+- ❌ The "general 3D validation" claim. AeroLab's 3D drag is
+  validated at **one configuration** (Re = 100 sphere with MYSL +
+  D = 40, +6.44 %). The Re = 20 / MYSL companion is the second
+  data point and it shows the validation does NOT extend cleanly to
+  the high-τ band. Section 8.8's #1 priority (D = 60 / B = 10 % +
+  MYSL) is now joined by #2 — investigate the high-τ residual.
+
+**Reproduce:**
+
+```bash
+python scripts/validate_3d_sphere_cd_stokes_regime_mysl_d40.py
+# ~2.3 h on a 4-core CPU, writes
+# data/validation_3d_sphere_re20_mysl_d40.json
+pytest tests/test_validation_3d_sphere_cd_stokes_regime_mysl_d40.py -v
+```
+
 ### 8.4 OpenFOAM cylinder Re=100 cross-check — V2 (refined run 2026-05-31)
 
 > **Status: measured and passes ±5 % gates.** OpenFOAM 11 (Ubuntu
@@ -1652,9 +1737,16 @@ python validation/compare_aerolab_vs_openfoam.py
   cross-check at the Validation preset *is* shipped (§8.4 three-way
   table; AeroLab St = 0.179, OpenFOAM St = 0.160, Williamson
   St = 0.166 — both numerical methods bracket the reference).
-- **No NACA polar.** Both wings ship at AoA = 0° (attached flow)
-  and AoA = 10° (mild adverse-pressure-gradient, still attached at
-  Re=100). We don't claim CL or CD against XFoil / OpenFOAM.
+- **No NACA polar.** Wings ship at AoA ∈ {0°, ±5°, ±15°, ±30°, ±45°}
+  (the ±45° band added 2026-06-02 for qualitative stall visualization;
+  the rest cover attached → mild → fully-separated regimes). We do
+  NOT claim CL or CD on these wings against XFoil / OpenFOAM — the
+  validated airfoil regime is the **NeuralFoil surrogate** at
+  attached-flow AoA up to ~10°. The ±45° "stall" presets are visual
+  only; the LBM at Re = 40 – 100 renders the massive separated wake
+  honestly but the integrated drag at deep-stall is dominated by the
+  same Ladd-1994 / high-τ residual sources documented in §8.3.5,
+  not by airfoil physics.
 
 ### 8.6 Blockage and advective times
 
@@ -1705,7 +1797,18 @@ re-bakes reproduce the same hash.
 
 In priority order — the items the gallery does not yet close:
 
-1. **D = 60 (or larger) + B ≤ 10 % MYSL sphere bake.** §8.3.4 landed
+1. **High-τ residual at low Re (newly diagnosed by §8.3.5).** The
+   Re = 20 + MYSL + D = 40 bake landed at +47 % — much worse than
+   the Re = 100 + MYSL + D = 40 +6 %, even though the only changed
+   parameters are ν / U / τ. MYSL helped at low Re (9 pp reduction)
+   but not enough. The likely culprit is the LBM equilibrium /
+   collision losing accuracy at τ = 0.74 (vs τ = 0.548 at Re = 100).
+   Investigation paths: (a) cumulant collision (Geier et al. 2015) —
+   Galilean-invariant by construction, kills the τ-dependent
+   spurious terms; (b) drop u_in at fixed ν / D to lower τ at the
+   same Re; (c) compare against an OpenFOAM 3D Re = 20 sphere bake.
+   Highest-leverage **new** item.
+2. **D = 60 (or larger) + B ≤ 10 % MYSL sphere bake.** §8.3.4 landed
    the headline at +6.44 % vs CGW 1.090 — close to percent-level but
    not yet there. The remaining error breaks down (per §8.3.4) into
    roughly ~ 3 – 5 % blockage at B = 25 %, ~ 1 – 3 % D = 40
@@ -1713,13 +1816,15 @@ In priority order — the items the gallery does not yet close:
    ~ 1 % residual Bouzidi quadratic BB. A D = 60 / B = 10 % MYSL bake
    would address all three at once. Compute scales as ~ 320 × cells
    over §8.3.4 (~ 30 M cells, ~ 8 GB RAM), so probably 8 – 12 h on
-   a 4-core CPU. Pushes the 3D drag claim into the same percent-level
-   band as the 2D Resolved-preset cylinder.
-2. **Cumulant collision for Re ≥ 200.** The current TRT operator
-   sits on the stability boundary at Re = 200; cumulant LBM (Geier
-   et al. 2015) extends the safe Re band without forcing a 2–4×
-   grid increase. Worth doing before claiming higher-Re 3D.
-3. **3D Strouhal cross-check.** §8.5 still flags this gap. With
+   a 4-core CPU. Pushes the Re = 100 sphere into the percent-level
+   band but does **not** address the §8.3.5 low-Re residual.
+3. **Cumulant collision for Re ≥ 200 and Re ≤ 20.** The current TRT
+   operator sits on the stability boundary at Re = 200 and exhibits
+   τ-dependent accuracy loss at Re = 20 (§8.3.5). Cumulant LBM
+   (Geier et al. 2015) addresses both: it is stable for arbitrary τ
+   (extends the high-Re envelope) and Galilean-invariant (kills the
+   spurious low-Re terms). Worth doing before claiming general 3D.
+4. **3D Strouhal cross-check.** §8.5 still flags this gap. With
    MYSL force evaluation working, a 3D cylinder bake at Re ≈ 100
    for ~ 10 D/U (with a small enough cross-section to be affordable)
    would let us extract a 3D Strouhal and compare against the 2D
@@ -1729,13 +1834,17 @@ In priority order — the items the gallery does not yet close:
 
 **Closed (do not ask):**
 
+- ~~Method-consistent Re = 20 + MYSL + D = 40 bake.~~ Ran 2026-06-01
+  in 2.3 h on a 4-core CPU; result in §8.3.5. Cd = 4.02, +47 % vs
+  CGW; MYSL closed only 9 pp at low Re (vs 34 pp at Re = 100),
+  exposing a high-τ residual that becomes the new top investigation
+  item. Audit Task 7 closed.
 - ~~MYSL 2002 Bouzidi-aware momentum exchange.~~ Ran 2026-06-01 in
   1.9 h on a 4-core CPU; implementation in
   `src/forces_3d.py:momentum_exchange_force_3d_mysl`, headline
-  result in §8.3.4. **Cd = 1.160, +6.44 % vs CGW 1.090.** Bias
-  reduction vs Ladd: 33.8 percentage points. The bulk of the +40 %
-  residual the §8.3.3 falsification identified is now closed; 3D
-  drag is no longer "preview-quality."
+  result in §8.3.4. **Cd = 1.160, +6.44 % vs CGW 1.090** (at Re=100).
+  Bias reduction vs Ladd: 33.8 percentage points at Re=100,
+  only 9 pp at Re=20 (see §8.3.5).
 - ~~D = 40 sphere bake (Ladd, first half of audit item #8).~~ Ran
   2026-06-01 in 2.2 h on a 4-core CPU; result in §8.3.3.
   Cd = 1.528, +40.2 % vs CGW 1.09. Grid-resolution contribution =

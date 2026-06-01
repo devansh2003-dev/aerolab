@@ -1,0 +1,45 @@
+{
+  "Cd_ref_clift_grace_weber": 2.728,
+  "Cd_tolerance_pct": 30.0,
+  "Re_actual": 20.0,
+  "Re_target": 20,
+  "_provenance": {
+    "purpose": "Audit Task 7 (forensic re-audit 2026-06-01): bring the Re = 20 data point onto the same MYSL + D = 40 method as the Re = 100 headline (sec 8.3.4) so the two-point trend rests on apples-to-apples measurements.",
+    "script": "scripts/validate_3d_sphere_cd_stokes_regime_mysl_d40.py"
+  },
+  "advective_times": 5.0,
+  "blockage_pct": 25.0,
+  "delta_mysl_vs_ladd_pct": -5.753454699384458,
+  "grid": [
+    320,
+    160,
+    160
+  ],
+  "ladd": {
+    "Cd_error_pct": 56.43336486158233,
+    "Cd_raw": 4.267502193423966,
+    "F_drag_lattice": 4.2901611328125,
+    "F_lift_lattice": 4.57763671875e-05,
+    "F_side_lattice": -3.0517578125e-05,
+    "momentum_exchange": "Ladd 1994 simplified"
+  },
+  "mass_drift_rel": 0.0025699253433941445,
+  "mysl": {
+    "Cd_error_pct": 47.43304207954837,
+    "Cd_raw": 4.02197338793008,
+    "F_drag_lattice": 4.043328655505533,
+    "F_lift_lattice": 0.0002503756589362638,
+    "F_side_lattice": -2.6753668436185762e-06,
+    "momentum_exchange": "MYSL 2002 (Mei-Yu-Shyy-Luo, q-aware Bouzidi)"
+  },
+  "n_steps": 5000,
+  "nu": 0.08,
+  "outflow_scheme": "regularised",
+  "ref": "Clift-Grace-Weber 1978",
+  "scheme": "trt",
+  "solve_wall_time_s": 8305.710222244263,
+  "tau": 0.74,
+  "u_in": 0.04,
+  "u_peak_lattice": 0.046491436660289764,
+  "use_bouzidi": true
+}

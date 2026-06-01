@@ -52,6 +52,11 @@ data/validation/*_log*.txt
 # tests/test_validation_3d_sphere_cd_mysl_d40.py; regenerate via
 # scripts/validate_3d_sphere_cd_mysl_d40.py.
 !data/validation_3d_sphere_re100_d40_mysl.json
+# Re = 20 method-consistent MYSL + D = 40 sphere bake (audit Task 7 of
+# 2026-06-01 forensic re-audit, §8.3.5), read by
+# tests/test_validation_3d_sphere_cd_stokes_regime_mysl_d40.py;
+# regenerate via scripts/validate_3d_sphere_cd_stokes_regime_mysl_d40.py.
+!data/validation_3d_sphere_re20_mysl_d40.json
 # DO commit pre-baked 3D fields. Cloud has no GPU and runs the
 # 3D LBM kernel as a Numba serial loop -- the gallery's whole value
 # prop is consumer-mode replay of a pre-baked steady-state field, so

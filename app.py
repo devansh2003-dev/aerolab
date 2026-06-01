@@ -354,7 +354,7 @@ st.markdown(
     "<span style='font-size:1.85rem;font-weight:700;letter-spacing:-0.02em;"
     "color:#f5f5f5;line-height:1;'>AeroLab</span>"
     "<span style='font-size:0.72rem;color:#64748b;font-weight:500;"
-    "letter-spacing:0.05em;'>v1.7.0</span>"
+    "letter-spacing:0.05em;'>v1.7.1</span>"
     "</div>"
     "<div style='color:#94a3b8;font-size:0.95rem;line-height:1.35;'>"
     "Watch air move around any shape &mdash; in your browser."
@@ -3626,11 +3626,37 @@ if mode == "Real CFD (LBM)":
             shape_preset, int(reynolds_target), float(aoa_deg),
             res_display, _polygon_key, viz_mode,
         )
-        st.warning(
-            ":material/sync: **Showing your last run.** The sidebar inputs "
-            "have changed since this result was computed. Click **Run "
-            "simulation** to refresh, or change the sidebar back to match."
+        # Stale-display banner. Moved from st.warning() to a louder
+        # error()+inline-button combo because user feedback (2026-06-01)
+        # was "the flow is not changing when I change speed" -- the
+        # yellow warning was being missed under the sidebar focus.
+        st.error(
+            ":material/sync: **The displayed flow is OUT OF DATE.** "
+            "You've changed sidebar inputs since this run finished. "
+            "Click the **Run simulation** button (right below) — or use "
+            "the button on this banner — to compute the new flow.",
+            icon=":material/warning:",
         )
+        if st.button(
+            ":material/play_arrow: Run with new settings",
+            key="lbm_stale_rerun_btn",
+            width="stretch",
+            type="primary",
+            help=(
+                "Re-runs the simulation with the current sidebar values "
+                "(speed, AoA, shape, viz mode). Same as clicking Run "
+                "below; surfaced here because users reported missing "
+                "the stale banner."
+            ),
+        ):
+            # Drop the stash so the new run replaces the stale display,
+            # and use the same gallery-card "pending" mechanism the
+            # demo cards use to trigger an immediate display on the next
+            # rerun.
+            st.session_state.pop("lbm_last_displayed_inputs", None)
+            st.session_state.pop("lbm_last_displayed_config", None)
+            st.session_state["lbm_gallery_pending"] = True
+            st.rerun()
     try:
         sim_result = _cached_simulate_and_render(
             shape_preset, int(reynolds_target), float(aoa_deg), res_display,

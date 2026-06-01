@@ -714,6 +714,120 @@ PRESETS: dict[str, dict[str, Any]] = {
         "rho_outflow": 1.0,
         "outflow_scheme": "regularised",
     },
+    # === AoA = +/- 45 deg "stall" presets (added 2026-06-02) ===
+    # User request: "I want to see the wing stall at like 45 deg." Thin
+    # airfoils typically stall around 12 - 15 deg; 45 deg is deep stall,
+    # a separated free-shear-layer regime that LBM at Re=40-100 will
+    # render as a steady (Re=40) or weakly unsteady (Re=100) wake. The
+    # visual point is the massive wake separation behind the wing -- not
+    # a quantitative aerodynamic claim, since the validated airfoil
+    # regime is attached flow (NeuralFoil, AoA up to ~ 10 deg).
+    # Ny is bumped one notch above the 30 deg presets so the projected
+    # vertical extent of the wing fits with margin.
+    "naca0012_aoa45_re40": {
+        "body_type": "naca",
+        "Nx": 80, "Ny": 48, "Nz": 32,
+        "body_params": {
+            "x_le": 12.0, "chord_offset": 16.0, "chord": 20.0,
+            "m": 0.0, "p": 0.0, "thickness": 0.12,
+            "aoa_deg": 45.0,
+            "span_axis": "y",
+        },
+        "u_in": 0.04, "nu": 0.02, "n_steps": 800,
+        "scheme": "trt", "use_guo_neem": True, "use_bouzidi": True,
+        "rho_outflow": 1.0, "outflow_scheme": "regularised",
+    },
+    "naca0012_aoa-45_re40": {
+        "body_type": "naca",
+        "Nx": 80, "Ny": 48, "Nz": 32,
+        "body_params": {
+            "x_le": 12.0, "chord_offset": 16.0, "chord": 20.0,
+            "m": 0.0, "p": 0.0, "thickness": 0.12,
+            "aoa_deg": -45.0,
+            "span_axis": "y",
+        },
+        "u_in": 0.04, "nu": 0.02, "n_steps": 800,
+        "scheme": "trt", "use_guo_neem": True, "use_bouzidi": True,
+        "rho_outflow": 1.0, "outflow_scheme": "regularised",
+    },
+    "naca0012_aoa45_re100": {
+        "body_type": "naca",
+        "Nx": 96, "Ny": 56, "Nz": 32,
+        "body_params": {
+            "x_le": 14.0, "chord_offset": 16.0, "chord": 24.0,
+            "m": 0.0, "p": 0.0, "thickness": 0.12,
+            "aoa_deg": 45.0,
+            "span_axis": "y",
+        },
+        "u_in": 0.04, "nu": 0.0096, "n_steps": 800,
+        "scheme": "trt", "use_guo_neem": True, "use_bouzidi": True,
+        "rho_outflow": 1.0, "outflow_scheme": "regularised",
+    },
+    "naca0012_aoa-45_re100": {
+        "body_type": "naca",
+        "Nx": 96, "Ny": 56, "Nz": 32,
+        "body_params": {
+            "x_le": 14.0, "chord_offset": 16.0, "chord": 24.0,
+            "m": 0.0, "p": 0.0, "thickness": 0.12,
+            "aoa_deg": -45.0,
+            "span_axis": "y",
+        },
+        "u_in": 0.04, "nu": 0.0096, "n_steps": 800,
+        "scheme": "trt", "use_guo_neem": True, "use_bouzidi": True,
+        "rho_outflow": 1.0, "outflow_scheme": "regularised",
+    },
+    "naca4412_aoa45_re40": {
+        "body_type": "naca",
+        "Nx": 80, "Ny": 48, "Nz": 32,
+        "body_params": {
+            "x_le": 12.0, "chord_offset": 16.0, "chord": 20.0,
+            "m": 0.04, "p": 0.4, "thickness": 0.12,
+            "aoa_deg": 45.0,
+            "span_axis": "y",
+        },
+        "u_in": 0.04, "nu": 0.02, "n_steps": 800,
+        "scheme": "trt", "use_guo_neem": True, "use_bouzidi": True,
+        "rho_outflow": 1.0, "outflow_scheme": "regularised",
+    },
+    "naca4412_aoa-45_re40": {
+        "body_type": "naca",
+        "Nx": 80, "Ny": 48, "Nz": 32,
+        "body_params": {
+            "x_le": 12.0, "chord_offset": 16.0, "chord": 20.0,
+            "m": 0.04, "p": 0.4, "thickness": 0.12,
+            "aoa_deg": -45.0,
+            "span_axis": "y",
+        },
+        "u_in": 0.04, "nu": 0.02, "n_steps": 800,
+        "scheme": "trt", "use_guo_neem": True, "use_bouzidi": True,
+        "rho_outflow": 1.0, "outflow_scheme": "regularised",
+    },
+    "naca4412_aoa45_re100": {
+        "body_type": "naca",
+        "Nx": 96, "Ny": 56, "Nz": 32,
+        "body_params": {
+            "x_le": 14.0, "chord_offset": 16.0, "chord": 24.0,
+            "m": 0.04, "p": 0.4, "thickness": 0.12,
+            "aoa_deg": 45.0,
+            "span_axis": "y",
+        },
+        "u_in": 0.04, "nu": 0.0096, "n_steps": 800,
+        "scheme": "trt", "use_guo_neem": True, "use_bouzidi": True,
+        "rho_outflow": 1.0, "outflow_scheme": "regularised",
+    },
+    "naca4412_aoa-45_re100": {
+        "body_type": "naca",
+        "Nx": 96, "Ny": 56, "Nz": 32,
+        "body_params": {
+            "x_le": 14.0, "chord_offset": 16.0, "chord": 24.0,
+            "m": 0.04, "p": 0.4, "thickness": 0.12,
+            "aoa_deg": -45.0,
+            "span_axis": "y",
+        },
+        "u_in": 0.04, "nu": 0.0096, "n_steps": 800,
+        "scheme": "trt", "use_guo_neem": True, "use_bouzidi": True,
+        "rho_outflow": 1.0, "outflow_scheme": "regularised",
+    },
     # Cube with AoA rotation about the y axis. AoA=0 is the existing
     # ``cube_re{N}`` preset. AoA=45 reads as the classic 3D diamond
     # (corners pointing at the flow); 90 deg symmetry means the band
