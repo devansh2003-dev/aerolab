@@ -2358,6 +2358,23 @@ if mode == "Validation":
         "aerolab/blob/main/VALIDATION.md#84-openfoam-cylinder-re100-cross-check--v2-refined-run-2026-05-31)"
     )
 
+    # 3D sphere headline callout (v1.7.0, 2026-06-01). Single configuration
+    # surfaced honestly -- not a general 3D validation claim.
+    st.info(
+        ":material/sports_volleyball: **3D sphere Cd (v1.7.0, single "
+        "configuration): Re = 100 + MYSL 2002 + D = 40.** "
+        "AeroLab 3D D3Q19 TRT solver with Bouzidi-aware momentum exchange "
+        "(Mei-Yu-Shyy-Luo 2002): Cd = 1.160 vs Clift-Grace-Weber 1978 "
+        "Cd = 1.090 → **+6.44 %**. Same converged flow with the legacy "
+        "Ladd 1994 simplified force gives Cd = 1.528 / +40.2 %, a "
+        "**33.8 percentage-point** bias reduction from the q-aware "
+        "formula alone. *This is a single Re / body / grid result, not "
+        "a general 3D-drag validation* — the Re = 20 companion at the "
+        "old Ladd + D = 20 baseline still carries +56 %. "
+        "[See VALIDATION.md §8.3.4 →](https://github.com/devansh2003-dev/"
+        "aerolab/blob/main/VALIDATION.md#834-mysl-2002-momentum-exchange-at-d--40--closes-the-bulk-of-the-cd-gap-added-2026-06-01)"
+    )
+
     # The Resolved preset (D = 40, B = 10 %) is the headline data. We
     # lead with it so a first-time visitor sees the validated numbers
     # before scrolling into the cross-check tables.

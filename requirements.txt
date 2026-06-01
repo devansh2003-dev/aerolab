@@ -25,9 +25,12 @@ Pillow==12.2.0
 # imageio/tifffile/networkx/lazy-loader -- adds ~30 MB to the Cloud cold-start
 # but it's cached after the first deploy.
 scikit-image==0.26.0
-# streamlit-drawable-canvas: in-browser polygon drawing for the "draw your
-# own shape" custom-shape path.
-streamlit-drawable-canvas==0.9.3
+# (streamlit-drawable-canvas was previously pinned for the in-browser
+# polygon drawer. It is no longer imported anywhere -- the draw-your-own-
+# shape path uses components/polygon_drawer/ as a self-contained
+# component. Removed at v1.7.0 cleanup to drop ~ 5 MB from Cloud
+# cold-start. Do not re-add unless you are wiring up a new canvas
+# surface that actually imports it.)
 # Note: pillow-heif (HEIC) and pillow-avif-plugin (AVIF) were briefly
 # pinned here but kept failing Cloud's pip resolution step. Native
 # PIL formats (PNG / JPG / GIF / BMP / TIFF / WEBP / ICO / PPM / TGA)

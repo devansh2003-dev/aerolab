@@ -36,6 +36,14 @@ ROOT = Path(__file__).resolve().parent.parent
 PAYLOAD_PATH = ROOT / "data" / "validation_3d_sphere_re20_stokes_regime.json"
 
 CGW_CD_REF = 2.73
+# **Exploratory gate, not a validated tolerance.** The Re=20 case ships
+# at the OLD Ladd-1994 + D = 20 baseline (the same configuration that
+# the §8.3.4 MYSL upgrade superseded for Re=100). The +56 % bias this
+# CONFIG carries means the +/-60 % band below is a "the measurement
+# landed somewhere physically plausible and stayed on the documented
+# side of CGW" check, not a percent-level validation gate. A
+# method-consistent re-run at MYSL + D = 40 (queued as VALIDATION.md
+# §8.8 item #1) would tighten this to ~ +/-15 % once measured.
 CD_TOL_PCT = 60.0
 CD_FLOOR = 1.5  # below this, the Cd-vs-Re monotonicity is broken
 F_TRANSVERSE_TOL_FRAC = 0.05  # |F_lift|, |F_side| < 5 % of |F_drag|
