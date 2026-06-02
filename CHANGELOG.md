@@ -2,6 +2,45 @@
 
 All notable changes to AeroLab. Dates are absolute; versions follow [SemVer](https://semver.org/).
 
+## [1.7.3] — 2026-06-02 (±45° Re=200 wing clipping fix)
+
+User report: "at 45 deg, both airfoils go out of the box."
+
+Verified — the 4 ±45° Re=200 wings had `Nz = 40` and `chord_offset = 32`,
+but the rotated chord (vertical extent = chord × sin 45° + thickness ≈ 26 LU)
+plus the offset placed the wing's upper tip at `z ≥ Nz − 1` (top wall).
+Body z-bbox measured at `[21..39]` in `Nz=40` — confirmed top-wall clip.
+The other 14 ±45° wings (Re=20, Re=40, Re=100) fit cleanly (`z=[8..24]`
+in `Nz=32`).
+
+### Fixed — 4 ±45° Re=200 wing presets
+
+- **`scripts/bake_3d_field.py`** — for `naca{0012,4412}_aoa{±45}_re200`:
+  - `Nz`: 40 → **48** (~20 % more voxels, ~7 LU extra clearance per face).
+  - `chord_offset`: 32 → **24** (centers the chord in the Z domain so
+    +45° and −45° are mirror-symmetric in placement, not just in flow).
+  - `Nx`, `Ny`, `chord`, `nu`, `n_steps` unchanged. Inline comment in
+    PRESETS explaining the fix.
+- **`data/baked/naca{0012,4412}_aoa{±45}_re200.npz`** — 4 re-baked
+  artifacts on the corrected grid. Re-bake batch wall-time: TBD
+  (~2 h estimated on 4-core CPU).
+
+### App version
+
+- **`app.py`** — version chip `v1.7.2` → `v1.7.3`.
+
+### Why this wasn't caught in v1.7.2
+
+The v1.7.2 batch verified flow magnitude mirror-symmetry between
++AoA and −AoA pairs (3–6 % difference in `max|u|`) and treated the
+top-wall clip as a "cosmetic" limitation. It wasn't — the rendered
+wing in the gallery showed a visibly truncated chord, which the user
+called out. Re-baking on the corrected grid both fixes the cosmetic
+issue and lets the flow develop properly around the full chord (no
+artificial flow channeling between body and top wall).
+
+---
+
 ## [1.7.2] — 2026-06-02 (gallery wing convergence fix + Re=20 / Re=200 bake bands)
 
 Direct response to two user-reported gallery issues:
@@ -64,9 +103,8 @@ runs already had (6 M+ steps).
    AoA — the wing body bbox reaches `z = Nz - 1` (top wall). Flow
    magnitudes remain near mirror-symmetric (6 % difference between
    +45° and -45° max\|u\|) so the visualization is correct, but the
-   rendered wing tip looks truncated. Fixed by bumping Nz ≥ 64 in a
-   future bake refresh; deferred for this release because it would
-   re-trigger the ~3 h batch.
+   rendered wing tip looks truncated. **Fixed in v1.7.3** (Nz=40→48,
+   chord_offset=32→24).
 3. **u_peak diagnostic** in the .npz manifest is `max(ux)`, not
    `max|u|`. At high AoA `ux` collapses while overall speed stays
    healthy — do not interpret a small `u_peak` as a divergence

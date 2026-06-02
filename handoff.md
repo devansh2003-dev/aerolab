@@ -1,68 +1,44 @@
 # AeroLab handoff
 
-> **Read this file first** at the start of every work session. **Update it at the end** of every substantive turn. Last updated: 2026-06-02, post-v1.7.2 work (bakes landed, awaiting commit + push approval).
+> **Read this file first** at the start of every work session. **Update it at the end** of every substantive turn. Last updated: 2026-06-02, mid-v1.7.3 work (4 wings re-baking in background).
 
-Current tip of `main`: **`640d798`** (v1.7.1, 1 commit ahead of `origin/main`). v1.7.2 ready to commit (uncommitted in working tree).
+Current tip of `main`: **`a0d5900`** (v1.7.2, pushed to origin/main). v1.7.3 in-flight — staged code edits in working tree, awaiting bake completion before commit.
 
-App version chip: **v1.7.2** (bumped, ready to ship).
+App version chip: **v1.7.3** (bumped this turn, not yet committed).
 
 ---
 
-## 1. Landed in last edit (v1.7.2 — STAGED, NOT YET COMMITTED)
+## 1. Landed in last edit (in-flight, v1.7.3 — NOT YET COMMITTED)
 
-Responded to two user bugs in the 3D gallery:
-- "At 45° the wing doesn't stall."
-- "Wind looks the same at different airspeeds."
+User report: "at 45 deg, both airfoils go out of the box."
 
-### Diagnosis (in CHANGELOG.md [1.7.2])
+### Diagnosis
 
-1. **No stall at ±45°** — every gallery bake ran `n_steps = 800` ≈ 1.3 chord-transits. Pure startup transient. **Fixed**: re-baked all ±30°/±45° wings at 8 000 (Re=40) / 12 000 (Re=100) steps. B batch took 60 min.
-2. **Slider feels inert** — only two baked Re bands (40, 100). **Fixed**: added Re=20 (sphere, cylinder, wings) and Re=200 (wings only — bluff bodies diverged at high blockage + τ near boundary, deferred). A3 batch took 188 min.
+Programmatically inspected 14 ±45° wing presets' body z-bbox vs `Nz`:
+- 10 of 14 fit cleanly (body z-bbox `[8..24]` in `Nz=32`).
+- **4 ±45° Re=200 wings clip** the top wall (body z-bbox `[21..39]` in `Nz=40`).
 
-### Files changed (uncommitted)
+Root cause: v1.7.2 grew `chord` 24→32 for Re=200 wings but did **not** bump `Nz` proportionally. `chord_offset=32` placed the wing asymmetrically near the top, and the rotated chord's vertical extent (~26 LU) overshot the domain.
+
+### Fix (uncommitted)
 
 | File | Change |
 |---|---|
-| `scripts/bake_3d_field.py` | Bumped n_steps for 16 ±30°/±45° wings (B); added 22 new presets (A3: Re=20 sphere/cyl/wings + Re=200 wings); removed sphere_re200/cylinder_re200 from PRESETS with inline deferral note. |
-| `app.py` (slider) | Min 0.10 → 0.05 m/s. Help text refreshed for 4 Re bands (20/40/100/200). |
-| `app.py` (version chip) | v1.7.1 → v1.7.2. |
-| `.gitignore` | Whitelist `wing_rebake_logs/` + `a3_bake_logs/`. |
-| `CHANGELOG.md` | Full v1.7.2 entry: diagnosis + B fix + A3 scope + 3 honest known limitations. |
+| `scripts/bake_3d_field.py` | For 4 presets `naca{0012,4412}_aoa{±45}_re200`: `Nz` 40→48, `chord_offset` 32→24 (centers chord in Z). Inline comment explaining the fix. |
+| `app.py` (version chip) | `v1.7.2` → `v1.7.3`. |
+| `CHANGELOG.md` | New `[1.7.3]` section; amended v1.7.2 limitation #2 to mark "Fixed in v1.7.3". |
+| `data/baked/naca{0012,4412}_aoa{±45}_re200.npz` | Deleted old (clipped) artifacts. Re-bakes in flight. |
 | `handoff.md` | This file. |
 
-### Bake artifacts (uncommitted .npz files)
+### Background work in flight
 
-**B re-bake (overwrote existing):**
-- 16 × `data/baked/naca{0012,4412}_aoa{±30,±45}_re{40,100}.npz`
+- **v1.7.3 re-bake monitor** (`bl26ybpoq`, persistent): 4 wings sequentially. ~2 h ETA. First bake (`naca0012_aoa45_re200`) started 09:48.
 
-**A3 new files (whitelisted by existing `!data/baked/`):**
-- `data/baked/sphere_re20.npz`, `data/baked/cylinder_re20.npz` (2 bluff Re=20)
-- 10 × `data/baked/naca{0012,4412}_aoa{0,±30,±45}_re20.npz` (10 wings Re=20)
-- 10 × `data/baked/naca{0012,4412}_aoa{0,±30,±45}_re200.npz` (10 wings Re=200, including the pilot)
+### After bake lands
 
-Total: 38 new/updated .npz files.
-
-### Bake stability outcomes
-
-- ✅ B re-bake (16/16 in 60 min): all wings converged, healthy `mean|u| ≈ 0.027`.
-- ✅ Pilot Re=200 NACA0012 (803 s): stable with `u_peak = 0.054`.
-- ✅ A3 Re=20 bluff bodies + 10 Re=20 wings: all clean, ~95 s each.
-- ✅ A3 Re=200 wings (9 batch + 1 pilot = 10): all converged. Mirror-symmetric `max|u|` between +AoA and -AoA (verified inline via field load).
-- ❌ A3 sphere_re200 + cylinder_re200: diverged to NaN at 37 % blockage + τ=0.5144. Removed from PRESETS, documented as needing cumulant collision or Ny ≥ 128.
-
-### Known limitations (documented in CHANGELOG)
-
-1. Re=200 wings sit close to TRT stability boundary (τ=0.5192).
-2. Cosmetic wing-tip clipping at ±45°/Re=200 (Nz=40 too small for full projected chord). Flow magnitude correct; rendered wing looks truncated.
-3. `u_peak` in manifest is `max(ux)` not `max|u|` — false-alarm at high AoA (caused one false divergence flag this session).
-
-### Push status
-
-**Two commits unpushed** to origin/main:
-- `640d798` (v1.7.1) — already 1 commit ahead from last turn.
-- The forthcoming v1.7.2 commit (38 .npz + 5 code/docs files).
-
-Push command will be provided after the v1.7.2 commit lands locally. Per standing rule (`feedback_handoff_file.md`), I do not push myself — user runs the command.
+1. Verify body z-bbox now fits within `Nz=48` (inline `.npz` check).
+2. Stage commit: code/docs + 4 .npz + handoff.
+3. Provide push command to user (will not push self).
 
 ---
 
@@ -70,17 +46,18 @@ Push command will be provided after the v1.7.2 commit lands locally. Per standin
 
 ### Immediate
 
-- [ ] **User reviews v1.7.2 changes**, confirms commit + push.
-- [ ] **Push command provided**: `git push origin main`.
+- [ ] Wait for v1.7.3 monitor `bl26ybpoq` to emit `v173_ALL_DONE`.
+- [ ] Verify the 4 re-baked wings fit Z domain.
+- [ ] Commit v1.7.3.
+- [ ] Provide push command to user.
 
-### Follow-up improvements (low priority)
+### Deferred for next turn (low priority)
 
-- [ ] **Fix wing-tip clipping**: bump Nz to ≥ 64 for ±45° Re=200 wings + re-bake (4 presets, ~80 min). Cosmetic only.
-- [ ] **Lower-AoA wings at Re=20 / Re=200** (±5°, ±15°): 16 more bakes if user wants full coverage.
-- [ ] **Cube AoA variants at Re=20 / Re=200**: deferred.
-- [ ] **Bluff body Re=200 revival**: requires cumulant collision (VALIDATION.md §8.8 #3) or Ny ≥ 128 grid.
+- [ ] Lower-AoA wings (±5°, ±15°) at Re=20 and Re=200 if user wants full coverage.
+- [ ] Cube AoA variants at Re=20 / Re=200.
+- [ ] Bluff body Re=200 revival (requires cumulant collision or Ny ≥ 128).
 
-### High-leverage research (awaiting user direction, unchanged from prior turn)
+### High-leverage research (awaiting user direction, unchanged)
 
 - [ ] **3D accuracy push** — `3D_ACCURACY_PUSH_PLAN.md` Path A/B/C, still awaiting sign-off.
 
@@ -99,7 +76,7 @@ Push command will be provided after the v1.7.2 commit lands locally. Per standin
 ### Release / publishing
 
 - [ ] Create v1.7.0 GitHub Release.
-- [ ] Optional v1.7.1 / v1.7.2 tags + releases.
+- [ ] Optional v1.7.1 / v1.7.2 / v1.7.3 tags + releases.
 
 ### Strategic decision (open)
 
@@ -111,16 +88,16 @@ Push command will be provided after the v1.7.2 commit lands locally. Per standin
 
 ### Solver kernels (verified against literature, gated in CI)
 
-- `src/lbm.py` — D2Q9 MRT + LES + Zou-He + Bouzidi. 1423 lines.
+- `src/lbm.py` — D2Q9 MRT + LES + Zou-He + Bouzidi.
 - `src/forces.py` — 2D Ladd 1994 momentum exchange.
 - `src/references.py` — All literature values verified.
-- `src/lbm_3d_trt.py` — D3Q19 TRT, Λ=3/16. TGV gate passes at ±2%.
-- `src/forces_3d.py:momentum_exchange_force_3d_mysl` — MYSL 2002 q-aware. Closes 33.8 pp at Re=100 / D=40.
+- `src/lbm_3d_trt.py` — D3Q19 TRT, Λ=3/16. TGV gate at ±2%.
+- `src/forces_3d.py:momentum_exchange_force_3d_mysl` — MYSL 2002.
 - `src/lbm_3d_bouzidi.py` — Sphere q-field, Bouzidi quadratic BB.
-- `src/shapes.py` — Analytic cylinder, ellipse, square; NACA4 decode.
-- `src/custom_shape.py` — Multi-threshold Otsu/Triangle/Yen.
+- `src/shapes.py` — Analytic shape q-fields; NACA4 decode.
+- `src/custom_shape.py` — Multi-threshold thresholding.
 
-### Tests (47+ consistency gates, all green)
+### Tests (338 tests, all green as of v1.7.2 commit verify)
 
 - `tests/test_doc_validation_consistency.py`
 - `tests/test_openfoam_cross_check_consistency.py` (5 gates)
@@ -134,7 +111,7 @@ Push command will be provided after the v1.7.2 commit lands locally. Per standin
 
 ### OpenFOAM 11 cross-check infrastructure
 
-- Full case files + 200 010-line forceCoeffs.dat: Cd=1.341, St=0.160 (±5% gate).
+- Full case files + 200 010-line forceCoeffs.dat: Cd=1.341, St=0.160.
 
 ### VALIDATION.md headline numbers
 
@@ -142,14 +119,14 @@ Push command will be provided after the v1.7.2 commit lands locally. Per standin
 - §8.3 sphere Re=100 D=20 Ladd: Cd=1.57.
 - §8.3.4 D=40 MYSL **headline**: Cd=1.160 (+6.44%).
 - §8.3.5 Re=20 D=40 MYSL: Cd=4.02 (+47%).
-- §8.4 OpenFOAM cross-check.
 
 ### UI behavior
 
 - 3-tier Re banner; provenance badges; "Pre-baked snapshot" labels;
-  OpenFOAM + 3D sphere callouts in Validation tab;
-  Stash-on-sidebar-change (2D path, v1.7.1);
-  AoA slider snaps to nearest baked value (gallery, scans `data/baked/`).
+  OpenFOAM + 3D sphere callouts;
+  Stash-on-sidebar-change (2D path);
+  AoA slider snaps to nearest baked value;
+  Speed slider now spans 0.05–4.50 m/s, 4 snap-points for wings (Re=20/40/100/200).
 
 ### Documentation
 
@@ -163,4 +140,4 @@ Push command will be provided after the v1.7.2 commit lands locally. Per standin
 
 ## Workflow rule
 
-This file is read at turn start and updated at turn end automatically — see `feedback_handoff_file.md` in memory. If a request would touch a "Perfected" item, raise it before doing it.
+This file is read at turn start and updated at turn end automatically — see `feedback_handoff_file.md` in memory.

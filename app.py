@@ -354,7 +354,7 @@ st.markdown(
     "<span style='font-size:1.85rem;font-weight:700;letter-spacing:-0.02em;"
     "color:#f5f5f5;line-height:1;'>AeroLab</span>"
     "<span style='font-size:0.72rem;color:#64748b;font-weight:500;"
-    "letter-spacing:0.05em;'>v1.7.2</span>"
+    "letter-spacing:0.05em;'>v1.7.3</span>"
     "</div>"
     "<div style='color:#94a3b8;font-size:0.95rem;line-height:1.35;'>"
     "Watch air move around any shape &mdash; in your browser."

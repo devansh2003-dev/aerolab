@@ -1202,11 +1202,15 @@ PRESETS: dict[str, dict[str, Any]] = {
         "scheme": "trt", "use_guo_neem": True, "use_bouzidi": True,
         "rho_outflow": 1.0, "outflow_scheme": "regularised",
     },
+    # v1.7.3: Nz bumped 40 -> 48 and chord_offset 32 -> 24 so the
+    # rotated chord (vertical extent ~26 LU at AoA=45) sits centered
+    # with ~11 LU wake clearance on each Z face. v1.7.2 setting
+    # clipped at the top wall (body z-bbox reached Nz-1).
     "naca0012_aoa45_re200": {
         "body_type": "naca",
-        "Nx": 128, "Ny": 96, "Nz": 40,
+        "Nx": 128, "Ny": 96, "Nz": 48,
         "body_params": {
-            "x_le": 20.0, "chord_offset": 32.0, "chord": 32.0,
+            "x_le": 20.0, "chord_offset": 24.0, "chord": 32.0,
             "m": 0.0, "p": 0.0, "thickness": 0.12,
             "aoa_deg": 45.0,
             "span_axis": "y",
@@ -1217,9 +1221,9 @@ PRESETS: dict[str, dict[str, Any]] = {
     },
     "naca0012_aoa-45_re200": {
         "body_type": "naca",
-        "Nx": 128, "Ny": 96, "Nz": 40,
+        "Nx": 128, "Ny": 96, "Nz": 48,
         "body_params": {
-            "x_le": 20.0, "chord_offset": 32.0, "chord": 32.0,
+            "x_le": 20.0, "chord_offset": 24.0, "chord": 32.0,
             "m": 0.0, "p": 0.0, "thickness": 0.12,
             "aoa_deg": -45.0,
             "span_axis": "y",
@@ -1270,9 +1274,9 @@ PRESETS: dict[str, dict[str, Any]] = {
     },
     "naca4412_aoa45_re200": {
         "body_type": "naca",
-        "Nx": 128, "Ny": 96, "Nz": 40,
+        "Nx": 128, "Ny": 96, "Nz": 48,
         "body_params": {
-            "x_le": 20.0, "chord_offset": 32.0, "chord": 32.0,
+            "x_le": 20.0, "chord_offset": 24.0, "chord": 32.0,
             "m": 0.04, "p": 0.4, "thickness": 0.12,
             "aoa_deg": 45.0,
             "span_axis": "y",
@@ -1283,9 +1287,9 @@ PRESETS: dict[str, dict[str, Any]] = {
     },
     "naca4412_aoa-45_re200": {
         "body_type": "naca",
-        "Nx": 128, "Ny": 96, "Nz": 40,
+        "Nx": 128, "Ny": 96, "Nz": 48,
         "body_params": {
-            "x_le": 20.0, "chord_offset": 32.0, "chord": 32.0,
+            "x_le": 20.0, "chord_offset": 24.0, "chord": 32.0,
             "m": 0.04, "p": 0.4, "thickness": 0.12,
             "aoa_deg": -45.0,
             "span_axis": "y",
