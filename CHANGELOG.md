@@ -26,13 +26,22 @@ all edits are in `app.py`, the page config, and internal-docs layout.
   a Streamlit warning and (in some versions) lets the `value=` win over
   the on_click write. Pattern is now consistent across all three widgets.
 
-### Fixed — Camera persistence across slider changes
+### Fixed — Camera persistence across slider / viz-mode changes
 
-- **`app.py`** — added a stable `key="gallery_3d_plotly"` to the
-  `st.plotly_chart` call so Streamlit doesn't re-mount the Plotly
-  component on every rerun. Combined with the existing layout-level
-  `uirevision` token, the user's camera orbit now survives AoA-slider
-  drags, viz-mode toggles, and shape-switches.
+Two-step fix; the second step was validator-reported (2026-06-04) after
+the first step shipped:
+
+1. **`app.py`** — added a stable `key="gallery_3d_plotly"` to the
+   `st.plotly_chart` call so Streamlit doesn't re-mount the Plotly
+   component on every rerun.
+2. **`app.py`** — `camera=` is now only included in the layout dict
+   when the shape changed since the last render (tracked via
+   `session_state["_3d_last_shape_for_camera"]`). On viz-mode toggle,
+   AoA-drag, speed-drag, or overlay-toggle the shape is unchanged, so
+   `camera=` is omitted and Plotly keeps the user's last-known camera.
+   `uirevision` alone was *not* enough: even with an unchanged token,
+   the explicit `camera=dict(...)` block was overriding the user's
+   manual orbit on viz-mode toggle.
 
 ### Changed — Default camera framing for sphere and cylinder
 
@@ -70,6 +79,15 @@ all edits are in `app.py`, the page config, and internal-docs layout.
 - **`app.py`** — `st.set_page_config(page_title="AeroLab — Browser-Based CFD",
   page_icon="🌀", ...)`. Better SEO / social-sharing preview, and the
   cyclone favicon makes the tab identifiable in a crowded browser window.
+
+### Fixed — Gallery card 5 velocity matches its blurb
+
+- **`app.py`** — *"Almost stopped (creep)"* card velocity 0.5 → 0.12 m/s.
+  The blurb reads *"Re ≈ 40. Streamlines glide around the sphere
+  almost reversibly — the Stokes-flow limit you'd see with honey or
+  syrup"*, but 0.5 m/s gave Re ≈ 167 which snapped to the Re=100
+  baked band — visibly *transitional*, not Stokes. 0.12 m/s gives
+  Re ≈ 40 which snaps to the Re=40 baked band, matching the blurb.
 
 ### Changed — Internal docs moved to `docs/internal/`
 

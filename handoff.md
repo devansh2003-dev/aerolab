@@ -1,11 +1,12 @@
 # AeroLab handoff
 
-> **Read this file first** at the start of every work session. **Update it at the end** of every substantive turn. Last updated: 2026-06-04, end of v1.7.4 pre-launch fix sprint (awaiting user manual card test before commit).
+> **Read this file first** at the start of every work session. **Update it at the end** of every substantive turn. Last updated: 2026-06-04, v1.7.4 sprint + validator follow-up committed locally, awaiting push.
 
-Current tip of `main`: **`a0d5900`** (v1.7.2, pushed to origin/main).
-v1.7.3 was committed and pushed in a prior turn — that's why the working
-tree starts the v1.7.4 sprint cleanly. v1.7.4 in-flight: code + docs +
-file moves all staged in working tree, NOT YET COMMITTED.
+Current tip of `main` (local): **two commits ahead of `origin/main`**:
+- `99773d0` v1.7.4: pre-launch UX fix sprint
+- `<new>` v1.7.4 follow-up: camera persistence + card 5 velocity fix
+
+Origin's tip is `c712ffe` (v1.7.3).
 
 App version chip: **v1.7.4** (bumped this turn, not yet committed).
 
@@ -41,51 +42,51 @@ edit is in `app.py`, page config, internal-docs layout.
 | `docs/internal/3D_ACCURACY_PUSH_PLAN.md` | TASK 8: `git mv` from root. |
 | `docs/internal/future-ideas/cfd_convergence_predictor.md` | TASK 8: `git mv` from `future-ideas/`. `future-ideas/` deleted. |
 
-### Validator-reported open question (pre-commit gate)
+### Validator confirmation + follow-up fix (2026-06-04)
 
-External validator confirmed the 3D card crash IS fixed. They flagged a
-possible "silent no-op" (sidebar unchanged after click) but admitted
-their evidence was inconclusive — their automated rapid-clicking wedged
-the dev server before any rerun could complete cleanly. See
-`feedback_external_reviewer_false_corruption.md` in memory.
+Validator manually re-tested on v1.7.4 localhost build. Results:
 
-Defensive code review verified:
-- All 3 widget keys (`gallery_shape_select`, `gallery_velocity`,
-  `gallery_viz_mode`) match between callback writes and widget defs.
-- All 6 card shape labels match `_BUILTIN_SHAPES_3D` exactly.
-- The slider + radio had `value=` / `index=` alongside `key=` (a known
-  Streamlit warning pattern); aligned to the selectbox's `setdefault`
-  pattern as a defensive fix even though the bug isn't confirmed.
+- ✅ All 6 preset cards load their scenes correctly (no crash, no no-op).
+  The defensive slider/radio cleanup landed before testing — can't
+  isolate whether the cleanup was load-bearing or whether the
+  on_click pattern alone would have worked. Either way the cards now
+  function as designed.
+- ✅ Tab title + 🌀 favicon.
+- ✅ Sphere/cylinder pulled-back framing.
+- ✅ Flow-speed snap caption (`Re ≈ 1500 snapped to baked Re = 100
+  (20, 40, 100 available).`).
+- ✅ 2D regression check passes.
+- ❌ **Camera persistence on viz toggle / AoA drag** — camera reset
+  to default. `uirevision` alone was not enough; the explicit
+  `camera=dict(...)` block in `fig.update_layout` was overriding the
+  user orbit even with an unchanged uirevision token.
+- ⚠️ **Card 5 mismatch** — *"Almost stopped (creep)"* set velocity
+  0.5 m/s which gave Re ≈ 167 → snapped to Re=100 baked band.
+  Blurb says *"Re ≈ 40 ... Stokes-flow limit"*. Mismatch.
 
-**User is testing the cards manually.** Hold the commit until they
-confirm the cards actually load their scenes (vs the validator's
-inconclusive "silent no-op" claim).
+### Follow-up fix landed in this turn
 
-### After user confirms (or denies) the card behavior
+1. **`app.py` (~line 1992)** — `camera=` is conditionally included in
+   the scene dict only when shape changed since last render. Tracked
+   via `session_state["_3d_last_shape_for_camera"]`. Other reruns
+   (viz toggle, AoA, speed, overlays) omit `camera=`, letting Plotly
+   keep the user's orbit.
+2. **`app.py` (~line 2128)** — card 5 velocity 0.5 → 0.12 m/s so
+   `Re ≈ 40` matches the "creeping / Stokes flow" blurb.
+3. `CHANGELOG.md` v1.7.4 entries amended to document both follow-ups.
 
-If cards work → commit + provide push command for v1.7.4.
-If cards genuinely no-op → diagnose the specific failing card and
-fix before commit.
+### Push command (after final manual re-verify of camera + card 5)
 
-### Push command (ready when user gives go)
+Pushes both v1.7.4 commits (sprint + follow-up) in one go:
 
 ```powershell
-cd "C:\Users\USER\Desktop\Study & Work\Personal Projects\AeroLab"; git add -A; git commit -m @'
-v1.7.4: pre-launch UX fix sprint
+cd "C:\Users\USER\Desktop\Study & Work\Personal Projects\AeroLab"; git push origin main
+```
 
-- Fix 3D preset card crash (on_click callback pattern)
-- Align slider + radio with selectbox setdefault pattern (defensive)
-- Plotly key for camera persistence across reruns
-- Shape-dependent camera framing for sphere + cylinder
-- Flow-speed snap caption mirrors AoA snap style
-- Loading spinner during streamline trace
-- Page title "AeroLab — Browser-Based CFD" + cyclone favicon
-- Move 3D_*.md + future-ideas/ to docs/internal/
-- New LAUNCH_CHECKLIST.md with UptimeRobot setup
-- v1.7.4 release notes block
+Optional: tag and push v1.7.4:
 
-Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
-'@; git push origin main
+```powershell
+cd "C:\Users\USER\Desktop\Study & Work\Personal Projects\AeroLab"; git tag -a v1.7.4 -m "v1.7.4: pre-launch UX fix sprint"; git push origin main; git push origin v1.7.4
 ```
 
 ---
