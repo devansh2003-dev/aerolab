@@ -2,6 +2,105 @@
 
 All notable changes to AeroLab. Dates are absolute; versions follow [SemVer](https://semver.org/).
 
+## [1.7.4] — 2026-06-04 (pre-launch UX fix sprint)
+
+Pre-launch polish before flipping the public share switch. Mix of validator-
+reported fixes and proactive UX cleanup. No solver or accuracy changes —
+all edits are in `app.py`, the page config, and internal-docs layout.
+
+### Fixed — 3D preset card crash (validator-reported, was launch-blocking)
+
+- **`app.py`** — gallery card `Show me` buttons crashed instantly with
+  `StreamlitAPIException` because their inline `if st.button(...):` handler
+  wrote to widget keys (`gallery_shape_select`, `gallery_velocity`,
+  `gallery_viz_mode`) AFTER the sidebar widgets had already instantiated
+  this same script run.
+  - Refactored to `st.button(..., on_click=_apply_3d_gallery_card, args=(...))`.
+    The callback runs at the start of the *next* rerun, before any widget
+    is created, so writing the keys is legal.
+  - Adds a `:material/play_arrow: Loading: <title>` toast on click for
+    immediate feedback that the click registered.
+- **`app.py`** (defensive) — aligned the flow-speed slider and color
+  radio with the selectbox's `setdefault` + `key=` pattern. Both
+  previously passed `value=` / `index=` *alongside* `key=`, which trips
+  a Streamlit warning and (in some versions) lets the `value=` win over
+  the on_click write. Pattern is now consistent across all three widgets.
+
+### Fixed — Camera persistence across slider changes
+
+- **`app.py`** — added a stable `key="gallery_3d_plotly"` to the
+  `st.plotly_chart` call so Streamlit doesn't re-mount the Plotly
+  component on every rerun. Combined with the existing layout-level
+  `uirevision` token, the user's camera orbit now survives AoA-slider
+  drags, viz-mode toggles, and shape-switches.
+
+### Changed — Default camera framing for sphere and cylinder
+
+- **`app.py`** — shape-dependent `eye` / `lookat` for the 3D scene.
+  Sphere and cylinder bodies sit at the chamber center (no AoA offset),
+  so the old wing-centric framing landed the camera near the outflow
+  boundary, hiding the wake. Bumped eye further back (`1.50, 0.95, 0.55`
+  vs `0.82, 0.62, 0.48` for wings) and added a +0.25 look-at offset
+  so the wake is visible from first render. Wing framing unchanged.
+
+### Added — Flow-speed snap caption (validator-reported inconsistency)
+
+- **`app.py`** — when the nominal Re (computed from the m/s slider)
+  differs from the snapped baked Re, the caption now reads
+  `Re ≈ 17 snapped to baked Re = 20 (20, 40, 100 available).`
+  Mirrors the existing AoA caption style (`+15° snapped to baked
+  AoA = +30°`) so the two sliders feel like a matched pair. Previous
+  wording (`Snapped to the nearest pre-baked snapshot at Re = 20`)
+  hid the nominal Re — users couldn't see *what* they asked for vs
+  *what* got rendered without reading the prominent readout above.
+
+### Added — Loading spinner during streamline trace
+
+- **`app.py`** — wrapped `_trace_streamlines(...)` in `st.spinner` so
+  the rotating loading icon appears during the longest single Python
+  step (~2-4 s on fresh shapes). Eye-catchier than the progress bar
+  ticking from 50→90 % alone.
+- **`app.py`** — delayed the progress-bar `.empty()` call until *after*
+  `st.plotly_chart` returns, so the bar holds at "Rendering in your
+  browser…" while the WebGL composition starts (instead of vanishing
+  and leaving a blank spot for 1-3 s).
+
+### Changed — Page title and favicon
+
+- **`app.py`** — `st.set_page_config(page_title="AeroLab — Browser-Based CFD",
+  page_icon="🌀", ...)`. Better SEO / social-sharing preview, and the
+  cyclone favicon makes the tab identifiable in a crowded browser window.
+
+### Changed — Internal docs moved to `docs/internal/`
+
+- Repo root no longer hosts research/planning markdown. Moved (via
+  `git mv` to preserve rename history):
+  - `3D_RESEARCH_PLAN.md` → `docs/internal/3D_RESEARCH_PLAN.md`
+  - `3D_PHASE0_DECISIONS.md` → `docs/internal/3D_PHASE0_DECISIONS.md`
+  - `3D_PHASE0_FINDINGS.md` → `docs/internal/3D_PHASE0_FINDINGS.md`
+  - `3D_ACCURACY_PUSH_PLAN.md` → `docs/internal/3D_ACCURACY_PUSH_PLAN.md`
+  - `future-ideas/cfd_convergence_predictor.md` →
+    `docs/internal/future-ideas/cfd_convergence_predictor.md`
+- **`handoff.md`** — updated the `3D_ACCURACY_PUSH_PLAN.md` reference to
+  the new path.
+- Python docstring cross-references (in `src/lbm_3d_*.py`, `scripts/`)
+  intentionally left as bare filenames — they're informational pointers,
+  still grep-able, and updating them all would be churn for no functional
+  gain.
+
+### Added — `LAUNCH_CHECKLIST.md`
+
+- New top-level checklist covering D-1 / D-0 pre-launch verification:
+  code-quality gates, UX smoke test (2D + 3D), Streamlit Cloud deploy
+  checks, external monitoring setup (UptimeRobot, free tier), tag +
+  announce, and a rollback plan.
+
+### App version
+
+- **`app.py`** — version chip `v1.7.3` → `v1.7.4`.
+
+---
+
 ## [1.7.3] — 2026-06-02 (±45° Re=200 wing clipping fix)
 
 User report: "at 45 deg, both airfoils go out of the box."

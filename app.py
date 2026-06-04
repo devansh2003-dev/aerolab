@@ -75,7 +75,8 @@ from src.references import (
 
 # --- Page config (must be the first Streamlit call) ---
 st.set_page_config(
-    page_title="AeroLab",
+    page_title="AeroLab — Browser-Based CFD",
+    page_icon="🌀",
     layout="wide",
     # Force the sidebar open on first load. With "auto" Streamlit collapses
     # it on narrow viewports / after manual close, and the collapse chevron
@@ -354,7 +355,7 @@ st.markdown(
     "<span style='font-size:1.85rem;font-weight:700;letter-spacing:-0.02em;"
     "color:#f5f5f5;line-height:1;'>AeroLab</span>"
     "<span style='font-size:0.72rem;color:#64748b;font-weight:500;"
-    "letter-spacing:0.05em;'>v1.7.3</span>"
+    "letter-spacing:0.05em;'>v1.7.4</span>"
     "</div>"
     "<div style='color:#94a3b8;font-size:0.95rem;line-height:1.35;'>"
     "Watch air move around any shape &mdash; in your browser."
@@ -1230,13 +1231,20 @@ if view == "3D gallery (preview)":
         # readout matches what users saw in the 2D playground. Slider
         # extends down to 0.10 m/s so Re=40 (the lower baked band) is
         # reachable cleanly; default 0.30 m/s lands exactly at Re=100.
+        # Match the selectbox pattern above: setdefault + clamp guard so
+        # the widget reads session_state via ``key`` only. Streamlit warns
+        # when BOTH ``value=`` AND ``key=`` are passed; dropping the
+        # ``value=`` argument lets on_click writes to
+        # ``session_state["gallery_velocity"]`` reliably drive the slider
+        # on the next rerun (the curated-gallery cards depend on this).
         _v_default = 0.30
-        _v_state = st.session_state.get("gallery_velocity", _v_default)
-        _v_state = float(max(0.05, min(4.50, _v_state)))
+        st.session_state.setdefault("gallery_velocity", _v_default)
+        _v_now = float(st.session_state["gallery_velocity"])
+        if not (0.05 <= _v_now <= 4.50):
+            st.session_state["gallery_velocity"] = _v_default
         velocity_mps_3d = st.slider(
             "Flow speed (m/s)",
             min_value=0.05, max_value=4.50,
-            value=_v_state,
             step=0.05,
             label_visibility="collapsed",
             key="gallery_velocity",
@@ -1272,25 +1280,29 @@ if view == "3D gallery (preview)":
         )
         if int(round(_re_nominal)) != re_actual:
             st.caption(
-                ":gray[*Snapped to the nearest pre-baked snapshot at "
-                f"**Re = {re_actual}** "
+                f":gray[*Re ≈ {int(round(_re_nominal))} snapped to baked "
+                f"Re = {re_actual} "
                 f"({', '.join(str(r) for r in shape_re_options)} "
                 "available).*]"
             )
         else:
             st.caption(
-                ":gray[*Showing pre-baked snapshot at "
-                f"**Re = {re_actual}**.*]"
+                f":gray[*Showing pre-baked Re = {re_actual}.*]"
             )
 
         st.markdown("")
         st.markdown(
             ":material/palette: **What to color the air with**"
         )
+        # Same setdefault + key-only pattern as the slider above so the
+        # gallery cards' on_click writes drive this widget reliably.
+        _viz_options_3d = ["Velocity", "Vorticity", "Pressure"]
+        st.session_state.setdefault("gallery_viz_mode", _viz_options_3d[0])
+        if st.session_state["gallery_viz_mode"] not in _viz_options_3d:
+            st.session_state["gallery_viz_mode"] = _viz_options_3d[0]
         viz_mode_3d = st.radio(
             "Color",
-            ["Velocity", "Vorticity", "Pressure"],
-            index=0,
+            _viz_options_3d,
             label_visibility="collapsed",
             key="gallery_viz_mode",
             help=(
@@ -1477,11 +1489,12 @@ if view == "3D gallery (preview)":
             text=f"Tracing streamlines ({int(frac * 100)}%)...",
         )
 
-    flat_x, flat_y, flat_z, flat_speed = _trace_streamlines(
-        field.ux, field.uy, field.uz, field.body,
-        seeds_x, seeds_y, seeds_z,
-        progress_callback=_trace_prog,
-    )
+    with st.spinner(":material/refresh: Tracing streamlines through the flow..."):
+        flat_x, flat_y, flat_z, flat_speed = _trace_streamlines(
+            field.ux, field.uy, field.uz, field.body,
+            seeds_x, seeds_y, seeds_z,
+            progress_callback=_trace_prog,
+        )
 
     _gallery_prog.progress(88, text="Sampling colour field...")
     # Pick the scalar field that paints the streamlines. Velocity is
@@ -1959,14 +1972,33 @@ if view == "3D gallery (preview)":
     _cny = (_bcy - _ymid) * 2.0 / _max_span
     _cnz = (_bcz - _zmid) * 2.0 / _max_span
 
+    # Camera framing varies by body geometry. Wings + cubes already
+    # frame well because the body sits in the upstream third of the
+    # grid; eye at +0.82 lands mid-channel with wake visible. Compact
+    # bluff bodies (sphere, cylinder) sit at the grid centre, so the
+    # same offset puts the camera right at the outflow with the body
+    # filling the foreground -- the wake gets cropped. For those we
+    # pull the eye further out streamwise AND shift the look-at point
+    # downstream so the body sits in the left third and the wake
+    # fills the frame.
+    _body_type = str(field.meta.get("body_type", ""))
+    if _body_type in ("sphere", "cylinder"):
+        _eye_dx, _eye_dy, _eye_dz = 1.50, 0.95, 0.55
+        _lookat_dx = 0.25
+    else:
+        _eye_dx, _eye_dy, _eye_dz = 0.82, 0.62, 0.48
+        _lookat_dx = 0.0
+
     fig = go.Figure(data=scene_traces, frames=_frames)
     fig.update_layout(
-        # uirevision is the key to "rotate works during animate":
-        # whenever a relayout (e.g. caused by an animation frame
-        # redraw) happens, Plotly inspects this token and preserves
-        # all view-state (camera angle, zoom, panning) bound to the
-        # same token. A constant value here means the user's orbit
-        # survives every frame in the animation loop.
+        # uirevision preserves view-state (camera, zoom, pan) across
+        # BOTH animation-frame redraws AND Streamlit reruns triggered
+        # by sidebar widget changes (viz mode, shape, AoA). The token
+        # is intentionally constant -- switching shape keeps the user's
+        # manual orbit instead of snapping back to the default eye
+        # position. Combined with the stable ``key=`` on st.plotly_chart
+        # below, this is the full Streamlit + Plotly contract for
+        # persistent 3D view-state.
         uirevision="3d_gallery_lock",
         scene=dict(
             uirevision="3d_gallery_camera",
@@ -1978,13 +2010,21 @@ if view == "3D gallery (preview)":
             zaxis=dict(visible=False, range=[-2.0, Nz + 2.0]),
             aspectmode="data",
             bgcolor="#0a0a0a",
-            # Camera: look-at translated to the body centre, eye pulled
-            # in close so the body fills ~70-75% of the visible scene.
+            # Camera: shape-dependent eye/look-at (see the _eye_d* /
+            # _lookat_dx block above). Wings + cubes use the original
+            # close framing (~70-75 % body fill); sphere + cylinder
+            # get pulled back so the wake is visible.
             camera=dict(
                 eye=dict(
-                    x=_cnx + 0.82, y=_cny + 0.62, z=_cnz + 0.48,
+                    x=_cnx + _eye_dx,
+                    y=_cny + _eye_dy,
+                    z=_cnz + _eye_dz,
                 ),
-                center=dict(x=_cnx, y=_cny, z=_cnz),
+                center=dict(
+                    x=_cnx + _lookat_dx,
+                    y=_cny,
+                    z=_cnz,
+                ),
             ),
         ),
         height=640,
@@ -2043,10 +2083,19 @@ if view == "3D gallery (preview)":
         showlegend=False,
     )
     _gallery_prog.progress(
-        100, text="Ready -- rendering in your browser."
+        100, text=":material/refresh: Rendering in your browser..."
+    )
+    st.plotly_chart(
+        fig,
+        width="stretch",
+        # Stable key keeps Streamlit from re-mounting the Plotly
+        # component across reruns. Combined with the constant
+        # layout/scene uirevision above, this lets the user's camera
+        # orbit survive viz-mode toggles, AoA slider drags, and
+        # shape-switches in the gallery dropdown.
+        key="gallery_3d_plotly",
     )
     _gallery_prog.empty()
-    st.plotly_chart(fig, width="stretch")
 
     # --- Curated 3D demo gallery ----------------------------------------
     # Mirrors the 2D "Try one of these" cards. Each entry sets the
@@ -2101,13 +2150,18 @@ if view == "3D gallery (preview)":
         ),
     ]
 
-    def _apply_3d_gallery_card(card):
-        _shape_lbl, _vel, _vmode, _t, _d, _b = card
+    def _apply_3d_gallery_card(_shape_lbl, _vel, _vmode, _title):
+        # Runs in on_click context (start of next rerun), BEFORE the
+        # sidebar widgets instantiate -- so writing their keys is legal
+        # here. The inline ``if st.button(...): _apply_...; st.rerun()``
+        # pattern this replaced crashed with StreamlitAPIException
+        # because the writes landed AFTER the selectbox / slider / radio
+        # had already been instantiated this same script run.
         st.session_state["gallery_shape_select"] = _shape_lbl
         st.session_state["gallery_velocity"] = float(_vel)
         st.session_state["gallery_viz_mode"] = _vmode
         st.toast(
-            f":material/play_arrow: Loading: {_t}",
+            f":material/play_arrow: Loading: {_title}",
             icon=":material/play_arrow:",
         )
 
@@ -2125,14 +2179,17 @@ if view == "3D gallery (preview)":
             with st.container(border=True):
                 st.markdown(f"**{_card3d[3]}**")
                 st.caption(_card3d[4])
-                if st.button(
+                st.button(
                     _card3d[5],
                     key=f"gallery_card_3d_{_i}",
                     width="stretch",
                     type="primary",
-                ):
-                    _apply_3d_gallery_card(_card3d)
-                    st.rerun()
+                    on_click=_apply_3d_gallery_card,
+                    args=(
+                        _card3d[0], _card3d[1],
+                        _card3d[2], _card3d[3],
+                    ),
+                )
 
     st.stop()
 

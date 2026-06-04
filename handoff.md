@@ -1,44 +1,92 @@
 # AeroLab handoff
 
-> **Read this file first** at the start of every work session. **Update it at the end** of every substantive turn. Last updated: 2026-06-02, mid-v1.7.3 work (4 wings re-baking in background).
+> **Read this file first** at the start of every work session. **Update it at the end** of every substantive turn. Last updated: 2026-06-04, end of v1.7.4 pre-launch fix sprint (awaiting user manual card test before commit).
 
-Current tip of `main`: **`a0d5900`** (v1.7.2, pushed to origin/main). v1.7.3 in-flight — staged code edits in working tree, awaiting bake completion before commit.
+Current tip of `main`: **`a0d5900`** (v1.7.2, pushed to origin/main).
+v1.7.3 was committed and pushed in a prior turn — that's why the working
+tree starts the v1.7.4 sprint cleanly. v1.7.4 in-flight: code + docs +
+file moves all staged in working tree, NOT YET COMMITTED.
 
-App version chip: **v1.7.3** (bumped this turn, not yet committed).
+App version chip: **v1.7.4** (bumped this turn, not yet committed).
 
 ---
 
-## 1. Landed in last edit (in-flight, v1.7.3 — NOT YET COMMITTED)
+## 1. Landed in last edit (in-flight, v1.7.4 — NOT YET COMMITTED)
 
-User report: "at 45 deg, both airfoils go out of the box."
+User's 10-task pre-launch fix sprint. All 10 tasks complete + one
+defensive cleanup from validator hypothesis. No solver changes — every
+edit is in `app.py`, page config, internal-docs layout.
 
-### Diagnosis
-
-Programmatically inspected 14 ±45° wing presets' body z-bbox vs `Nz`:
-- 10 of 14 fit cleanly (body z-bbox `[8..24]` in `Nz=32`).
-- **4 ±45° Re=200 wings clip** the top wall (body z-bbox `[21..39]` in `Nz=40`).
-
-Root cause: v1.7.2 grew `chord` 24→32 for Re=200 wings but did **not** bump `Nz` proportionally. `chord_offset=32` placed the wing asymmetrically near the top, and the rotated chord's vertical extent (~26 LU) overshot the domain.
-
-### Fix (uncommitted)
+### Changes (uncommitted)
 
 | File | Change |
 |---|---|
-| `scripts/bake_3d_field.py` | For 4 presets `naca{0012,4412}_aoa{±45}_re200`: `Nz` 40→48, `chord_offset` 32→24 (centers chord in Z). Inline comment explaining the fix. |
-| `app.py` (version chip) | `v1.7.2` → `v1.7.3`. |
-| `CHANGELOG.md` | New `[1.7.3]` section; amended v1.7.2 limitation #2 to mark "Fixed in v1.7.3". |
-| `data/baked/naca{0012,4412}_aoa{±45}_re200.npz` | Deleted old (clipped) artifacts. Re-bakes in flight. |
+| `app.py` (line 77-86) | TASK 7: `page_title="AeroLab — Browser-Based CFD"`, `page_icon="🌀"`. |
+| `app.py` (line 358) | Version chip `v1.7.3` → `v1.7.4`. |
+| `app.py` (line 1234-1257) | DEFENSIVE: flow-speed slider now uses `setdefault` + `key=` only (drops `value=_v_state`), aligning with selectbox pattern. Validator hypothesis for "silent no-op" on card clicks. |
+| `app.py` (line 1273-1284) | TASK 5: snap caption mirrors AoA style — `Re ≈ 17 snapped to baked Re = 20`. |
+| `app.py` (line 1290-1304) | DEFENSIVE: viz_mode radio now uses `setdefault` + `key=` only (drops `index=0`). Same fix as slider. |
+| `app.py` (line 1479-1484) | TASK 6: `_trace_streamlines` wrapped in `st.spinner(":material/refresh: Tracing streamlines...")`. |
+| `app.py` (~line 1995) | TASK 4: shape-dependent camera eye/lookat — sphere & cylinder pulled back (`1.50, 0.95, 0.55` vs `0.82, 0.62, 0.48` for wings) so wake visible from first render. |
+| `app.py` (line 2071-2086) | TASK 6: progress bar `.empty()` deferred until AFTER `st.plotly_chart` (was: before). Bar holds at "Rendering in your browser…" while WebGL paints. |
+| `app.py` (line 2075-2084) | TASK 3: `st.plotly_chart(..., key="gallery_3d_plotly")` for camera persistence across reruns. |
+| `app.py` (line 2141-2180) | TASK 1: gallery cards use `on_click=_apply_3d_gallery_card` callback (was inline `if st.button(...):` which crashed with `StreamlitAPIException`). |
+| `CHANGELOG.md` | New `[1.7.4]` section above v1.7.3. |
 | `handoff.md` | This file. |
+| `LAUNCH_CHECKLIST.md` (NEW) | TASK 9+10: pre-launch verification + UptimeRobot setup. |
+| `RELEASE_NOTES_v1.7.4.md` (NEW) | TASK 2: GitHub release form markdown block. |
+| `docs/internal/3D_RESEARCH_PLAN.md` | TASK 8: `git mv` from root. |
+| `docs/internal/3D_PHASE0_DECISIONS.md` | TASK 8: `git mv` from root. |
+| `docs/internal/3D_PHASE0_FINDINGS.md` | TASK 8: `git mv` from root. |
+| `docs/internal/3D_ACCURACY_PUSH_PLAN.md` | TASK 8: `git mv` from root. |
+| `docs/internal/future-ideas/cfd_convergence_predictor.md` | TASK 8: `git mv` from `future-ideas/`. `future-ideas/` deleted. |
 
-### Background work in flight
+### Validator-reported open question (pre-commit gate)
 
-- **v1.7.3 re-bake monitor** (`bl26ybpoq`, persistent): 4 wings sequentially. ~2 h ETA. First bake (`naca0012_aoa45_re200`) started 09:48.
+External validator confirmed the 3D card crash IS fixed. They flagged a
+possible "silent no-op" (sidebar unchanged after click) but admitted
+their evidence was inconclusive — their automated rapid-clicking wedged
+the dev server before any rerun could complete cleanly. See
+`feedback_external_reviewer_false_corruption.md` in memory.
 
-### After bake lands
+Defensive code review verified:
+- All 3 widget keys (`gallery_shape_select`, `gallery_velocity`,
+  `gallery_viz_mode`) match between callback writes and widget defs.
+- All 6 card shape labels match `_BUILTIN_SHAPES_3D` exactly.
+- The slider + radio had `value=` / `index=` alongside `key=` (a known
+  Streamlit warning pattern); aligned to the selectbox's `setdefault`
+  pattern as a defensive fix even though the bug isn't confirmed.
 
-1. Verify body z-bbox now fits within `Nz=48` (inline `.npz` check).
-2. Stage commit: code/docs + 4 .npz + handoff.
-3. Provide push command to user (will not push self).
+**User is testing the cards manually.** Hold the commit until they
+confirm the cards actually load their scenes (vs the validator's
+inconclusive "silent no-op" claim).
+
+### After user confirms (or denies) the card behavior
+
+If cards work → commit + provide push command for v1.7.4.
+If cards genuinely no-op → diagnose the specific failing card and
+fix before commit.
+
+### Push command (ready when user gives go)
+
+```powershell
+cd "C:\Users\USER\Desktop\Study & Work\Personal Projects\AeroLab"; git add -A; git commit -m @'
+v1.7.4: pre-launch UX fix sprint
+
+- Fix 3D preset card crash (on_click callback pattern)
+- Align slider + radio with selectbox setdefault pattern (defensive)
+- Plotly key for camera persistence across reruns
+- Shape-dependent camera framing for sphere + cylinder
+- Flow-speed snap caption mirrors AoA snap style
+- Loading spinner during streamline trace
+- Page title "AeroLab — Browser-Based CFD" + cyclone favicon
+- Move 3D_*.md + future-ideas/ to docs/internal/
+- New LAUNCH_CHECKLIST.md with UptimeRobot setup
+- v1.7.4 release notes block
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+'@; git push origin main
+```
 
 ---
 
@@ -46,10 +94,18 @@ Root cause: v1.7.2 grew `chord` 24→32 for Re=200 wings but did **not** bump `N
 
 ### Immediate
 
-- [ ] Wait for v1.7.3 monitor `bl26ybpoq` to emit `v173_ALL_DONE`.
-- [ ] Verify the 4 re-baked wings fit Z domain.
-- [ ] Commit v1.7.3.
-- [ ] Provide push command to user.
+- [ ] User manually verifies 3D card clicks load scenes (NOT no-ops).
+- [ ] Commit + push v1.7.4.
+- [ ] Tag `v1.7.4` + draft GitHub release with `RELEASE_NOTES_v1.7.4.md` content.
+- [ ] Run through `LAUNCH_CHECKLIST.md` D-1 / D-0 items.
+- [ ] Set up UptimeRobot per LAUNCH_CHECKLIST §D-0.
+
+### Stashed (resume after launch)
+
+- [ ] **`v1.8.0` upload-your-own-shape**. Paused 2026-06-04 mid-implementation
+  per user direction. Stash: `git stash list | grep v1.8.0`. Includes
+  STL bytes parser, polygon-to-extruded-mask voxelizer, upload runtime
+  with Cloud-safe baking config, test coverage. ~70 % complete.
 
 ### Deferred for next turn (low priority)
 
@@ -59,7 +115,7 @@ Root cause: v1.7.2 grew `chord` 24→32 for Re=200 wings but did **not** bump `N
 
 ### High-leverage research (awaiting user direction, unchanged)
 
-- [ ] **3D accuracy push** — `3D_ACCURACY_PUSH_PLAN.md` Path A/B/C, still awaiting sign-off.
+- [ ] **3D accuracy push** — `docs/internal/3D_ACCURACY_PUSH_PLAN.md` Path A/B/C, still awaiting sign-off.
 
 ### Pre-planned bakes (`VALIDATION.md §8.8`)
 
@@ -72,11 +128,6 @@ Root cause: v1.7.2 grew `chord` 24→32 for Re=200 wings but did **not** bump `N
 - [ ] Task 10: Split app.py monolith.
 - [ ] Task 11: numpy 2 × numba pin compatibility check.
 - [ ] Task 12: Cloud keep-warm ping.
-
-### Release / publishing
-
-- [ ] Create v1.7.0 GitHub Release.
-- [ ] Optional v1.7.1 / v1.7.2 / v1.7.3 tags + releases.
 
 ### Strategic decision (open)
 
@@ -97,7 +148,7 @@ Root cause: v1.7.2 grew `chord` 24→32 for Re=200 wings but did **not** bump `N
 - `src/shapes.py` — Analytic shape q-fields; NACA4 decode.
 - `src/custom_shape.py` — Multi-threshold thresholding.
 
-### Tests (338 tests, all green as of v1.7.2 commit verify)
+### Tests (393 tests, all green as of v1.7.3 commit verify)
 
 - `tests/test_doc_validation_consistency.py`
 - `tests/test_openfoam_cross_check_consistency.py` (5 gates)
@@ -126,11 +177,16 @@ Root cause: v1.7.2 grew `chord` 24→32 for Re=200 wings but did **not** bump `N
   OpenFOAM + 3D sphere callouts;
   Stash-on-sidebar-change (2D path);
   AoA slider snaps to nearest baked value;
-  Speed slider now spans 0.05–4.50 m/s, 4 snap-points for wings (Re=20/40/100/200).
+  Speed slider spans 0.05–4.50 m/s, 4 snap-points for wings (Re=20/40/100/200).
+- v1.7.4 added: Plotly camera persistence via stable `key=`,
+  shape-dependent default camera framing, parallel Re snap caption,
+  loading spinner during trace, custom page title + favicon.
 
 ### Documentation
 
 - README.md, CHANGELOG.md, VALIDATION.md (14 citations).
+- LAUNCH_CHECKLIST.md (new v1.7.4).
+- `docs/internal/` houses 3D research/planning markdown.
 
 ### Code hygiene
 
