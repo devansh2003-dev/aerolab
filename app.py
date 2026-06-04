@@ -2091,11 +2091,14 @@ if view == "3D gallery (preview)":
     st.plotly_chart(
         fig,
         width="stretch",
-        # Stable key keeps Streamlit from re-mounting the Plotly
-        # component across reruns. Combined with the constant
-        # layout/scene uirevision above, this lets the user's camera
-        # orbit survive viz-mode toggles, AoA slider drags, and
-        # shape-switches in the gallery dropdown.
+        # Stable key + uirevision preserve the camera through Plotly's
+        # animation loop (Animate / Pause). Control-change reruns
+        # (viz mode, AoA, speed) still rebuild the figure with an
+        # explicit ``scene.camera=dict(eye=...)`` which overrides
+        # uirevision, so the orbit resets to the (good, shape-specific)
+        # default -- known limitation, see LAUNCH_CHECKLIST. A proper
+        # fix would omit ``scene.camera`` on no-shape-change reruns
+        # or capture relayout events via streamlit-plotly-events.
         key="gallery_3d_plotly",
     )
     _gallery_prog.empty()

@@ -30,8 +30,9 @@ shape switches, and slider drags.
   of just announcing the snapped value. Matches the AoA caption style.
 - **Loading spinner during streamline trace.** A rotating icon during the
   2–4 s trace step makes the load feel responsive instead of frozen. The
-  progress bar also holds at *"Rendering in your browser…"* while the WebGL
-  scene paints (it used to vanish, leaving a blank spot).
+  trace progress now flows continuously into a brief *"Rendering in your
+  browser…"* indicator with no blank gap before the chart appears (it used
+  to vanish, leaving a blank spot).
 - **Browser tab title and favicon.** Tab now reads
   *"AeroLab — Browser-Based CFD"* with a 🌀 favicon, easier to find in a
   crowded browser window.

@@ -29,8 +29,8 @@ edit is in `app.py`, page config, internal-docs layout.
 | `app.py` (line 1290-1304) | DEFENSIVE: viz_mode radio now uses `setdefault` + `key=` only (drops `index=0`). Same fix as slider. |
 | `app.py` (line 1479-1484) | TASK 6: `_trace_streamlines` wrapped in `st.spinner(":material/refresh: Tracing streamlines...")`. |
 | `app.py` (~line 1995) | TASK 4: shape-dependent camera eye/lookat — sphere & cylinder pulled back (`1.50, 0.95, 0.55` vs `0.82, 0.62, 0.48` for wings) so wake visible from first render. |
-| `app.py` (line 2071-2086) | TASK 6: progress bar `.empty()` deferred until AFTER `st.plotly_chart` (was: before). Bar holds at "Rendering in your browser…" while WebGL paints. |
-| `app.py` (line 2075-2084) | TASK 3: `st.plotly_chart(..., key="gallery_3d_plotly")` for camera persistence across reruns. |
+| `app.py` (line 2071-2086) | TASK 6: progress bar `.empty()` deferred until AFTER `st.plotly_chart` (was: before). Closes the blank gap between trace progress and chart paint; the "Rendering in your browser…" indicator itself is sub-second. |
+| `app.py` (line 2075-2084) | TASK 3: `st.plotly_chart(..., key="gallery_3d_plotly")`. Preserves camera through Plotly's animation loop. Does NOT preserve camera across control-change reruns -- known limitation, see below. |
 | `app.py` (line 2141-2180) | TASK 1: gallery cards use `on_click=_apply_3d_gallery_card` callback (was inline `if st.button(...):` which crashed with `StreamlitAPIException`). |
 | `CHANGELOG.md` | New `[1.7.4]` section above v1.7.3. |
 | `handoff.md` | This file. |

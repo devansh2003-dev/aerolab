@@ -33,7 +33,7 @@ Run `streamlit run app.py` and click through:
 - [ ] Drag AoA slider → caption reads `+15° snapped to baked AoA = +30°`
 - [ ] Set flow-speed to 0.05 m/s → caption reads `Re ≈ 17 snapped to baked Re = 20`
 - [ ] Switch shapes → spinner appears during streamline trace
-- [ ] Progress bar holds at "Rendering in your browser…" while WebGL paints
+- [ ] Trace progress flows into a brief "Rendering in your browser…" indicator with no blank gap before the chart appears (the indicator itself is sub-second — the win is no gap, not a long hold)
 - [ ] Orbit camera → drag AoA slider → camera survives the rerun
 - [ ] Click each of the **6 gallery cards** → toast appears, sidebar updates,
       title bar updates, scene re-renders to the advertised shape/Re/colour

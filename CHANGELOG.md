@@ -75,9 +75,12 @@ all edits are in `app.py`, the page config, and internal-docs layout.
   step (~2-4 s on fresh shapes). Eye-catchier than the progress bar
   ticking from 50→90 % alone.
 - **`app.py`** — delayed the progress-bar `.empty()` call until *after*
-  `st.plotly_chart` returns, so the bar holds at "Rendering in your
-  browser…" while the WebGL composition starts (instead of vanishing
-  and leaving a blank spot for 1-3 s).
+  `st.plotly_chart` returns, so the trace progress flows continuously
+  into a brief "Rendering in your browser…" indicator without a blank
+  gap between them. The hold itself is sub-second and timing-dependent
+  (the `.empty()` still runs server-side at end of script before the
+  client-side WebGL paint completes) — the win is the *no blank gap*,
+  not a guaranteed multi-second hold.
 
 ### Changed — Page title and favicon
 
