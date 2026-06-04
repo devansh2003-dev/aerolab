@@ -225,7 +225,7 @@ def main() -> int:
         },
         "strouhal_extraction": st_info,
         "cd_tail_window": {
-            "n_skip_frames": n_skip_frames,
+            "n_skip_frames": n_skip,
             "n_tail_frames": int(len(cd_tail)),
             "cd_mean": cd_mean_tail,
             "cd_std": cd_std_tail,
