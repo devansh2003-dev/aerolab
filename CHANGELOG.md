@@ -26,22 +26,27 @@ all edits are in `app.py`, the page config, and internal-docs layout.
   a Streamlit warning and (in some versions) lets the `value=` win over
   the on_click write. Pattern is now consistent across all three widgets.
 
-### Fixed — Camera persistence across slider / viz-mode changes
+### Partially fixed — Camera persistence (known limitation)
 
-Two-step fix; the second step was validator-reported (2026-06-04) after
-the first step shipped:
-
-1. **`app.py`** — added a stable `key="gallery_3d_plotly"` to the
-   `st.plotly_chart` call so Streamlit doesn't re-mount the Plotly
-   component on every rerun.
-2. **`app.py`** — `camera=` is now only included in the layout dict
-   when the shape changed since the last render (tracked via
-   `session_state["_3d_last_shape_for_camera"]`). On viz-mode toggle,
-   AoA-drag, speed-drag, or overlay-toggle the shape is unchanged, so
-   `camera=` is omitted and Plotly keeps the user's last-known camera.
-   `uirevision` alone was *not* enough: even with an unchanged token,
-   the explicit `camera=dict(...)` block was overriding the user's
-   manual orbit on viz-mode toggle.
+- **`app.py`** — added a stable `key="gallery_3d_plotly"` to the
+  `st.plotly_chart` call. This preserves the chart's WIDGET state
+  (animation playing/paused, redraw cadence) across reruns.
+- **`app.py`** — kept `uirevision` tokens on the layout and scene.
+  This preserves the user's camera orbit WITHIN the animation loop
+  (Plotly.animate frames don't reset the camera).
+- **Known limitation, validator-confirmed 2026-06-04:** the user's
+  camera orbit does NOT persist across Streamlit-rerun-triggering
+  widget changes (viz-mode toggle, AoA / speed slider drag,
+  overlay toggles). On each rerun, `st.plotly_chart` re-mounts the
+  Plotly instance and the browser-side camera state is lost.
+  Properly fixing this would need `streamlit-plotly-events` (third-
+  party dep) or a custom Streamlit component to capture
+  `plotly_relayout` events into `session_state` — deferred to a
+  later release.
+- **Mitigation:** the v1.7.4 default-framing fix (sphere + cylinder
+  pulled back so the wake is visible) means every rerun lands on a
+  good view, not a bad one. The reset is a minor annoyance, not a
+  broken experience.
 
 ### Changed — Default camera framing for sphere and cylinder
 

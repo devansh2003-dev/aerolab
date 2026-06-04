@@ -1990,56 +1990,46 @@ if view == "3D gallery (preview)":
         _lookat_dx = 0.0
 
     fig = go.Figure(data=scene_traces, frames=_frames)
-    # Camera persistence: pass ``camera=`` ONLY when the shape changed
-    # since the last render. On viz-mode toggle / AoA drag / speed drag
-    # the shape is unchanged -- omitting camera= from the layout lets
-    # Plotly keep the user's last-known camera position (which is the
-    # whole point of orbit-and-drag persistence). uirevision alone was
-    # not enough: even with an unchanged uirevision token, the explicit
-    # camera= block in fig.update_layout was overriding the user's
-    # manual orbit on viz-mode toggle (validator-confirmed 2026-06-04).
-    _camera_reset_key = "_3d_last_shape_for_camera"
-    _shape_changed_for_camera = (
-        st.session_state.get(_camera_reset_key) != chosen_shape
-    )
-    st.session_state[_camera_reset_key] = chosen_shape
-    _scene_kwargs = dict(
-        uirevision="3d_gallery_camera",
-        # Hide axis ticks/labels entirely -- the wireframe box
-        # already provides the chamber outline, and the axis lines
-        # were competing visually with the streamlines / body.
-        xaxis=dict(visible=False, range=[-2.0, Nx + 2.0]),
-        yaxis=dict(visible=False, range=[-2.0, Ny + 2.0]),
-        zaxis=dict(visible=False, range=[-2.0, Nz + 2.0]),
-        aspectmode="data",
-        bgcolor="#0a0a0a",
-    )
-    if _shape_changed_for_camera:
-        # Shape-dependent eye/look-at (see the _eye_d* / _lookat_dx
-        # block above). Wings + cubes use the original close framing
-        # (~70-75 % body fill); sphere + cylinder get pulled back so
-        # the wake is visible.
-        _scene_kwargs["camera"] = dict(
-            eye=dict(
-                x=_cnx + _eye_dx,
-                y=_cny + _eye_dy,
-                z=_cnz + _eye_dz,
-            ),
-            center=dict(
-                x=_cnx + _lookat_dx,
-                y=_cny,
-                z=_cnz,
-            ),
-        )
     fig.update_layout(
-        # uirevision preserves view-state (camera, zoom, pan) across
-        # BOTH animation-frame redraws AND Streamlit reruns triggered
-        # by sidebar widget changes (viz mode, shape, AoA). Combined
-        # with the stable ``key=`` on st.plotly_chart below AND the
-        # shape-conditional camera= above, this is the full Streamlit
-        # + Plotly contract for persistent 3D view-state.
+        # uirevision preserves view-state (camera, zoom, pan) WITHIN
+        # the animation loop (Plotly.animate frames). Across Streamlit
+        # reruns it does NOT help: st.plotly_chart re-mounts the Plotly
+        # instance on widget changes (viz mode, AoA, speed) and the
+        # browser-side UI state is lost. Properly persisting camera
+        # across reruns would need streamlit-plotly-events or a custom
+        # component to capture plotly_relayout events into session_state
+        # -- deferred to a later release. The shape-specific default
+        # framing below means each rerun lands on a good view (sphere +
+        # cylinder pulled back so the wake is visible), so the reset is
+        # a minor annoyance, not a broken experience.
         uirevision="3d_gallery_lock",
-        scene=_scene_kwargs,
+        scene=dict(
+            uirevision="3d_gallery_camera",
+            # Hide axis ticks/labels entirely -- the wireframe box
+            # already provides the chamber outline, and the axis lines
+            # were competing visually with the streamlines / body.
+            xaxis=dict(visible=False, range=[-2.0, Nx + 2.0]),
+            yaxis=dict(visible=False, range=[-2.0, Ny + 2.0]),
+            zaxis=dict(visible=False, range=[-2.0, Nz + 2.0]),
+            aspectmode="data",
+            bgcolor="#0a0a0a",
+            # Shape-dependent eye/look-at (see the _eye_d* / _lookat_dx
+            # block above). Wings + cubes use the original close framing
+            # (~70-75 % body fill); sphere + cylinder get pulled back
+            # so the wake is visible from first render.
+            camera=dict(
+                eye=dict(
+                    x=_cnx + _eye_dx,
+                    y=_cny + _eye_dy,
+                    z=_cnz + _eye_dz,
+                ),
+                center=dict(
+                    x=_cnx + _lookat_dx,
+                    y=_cny,
+                    z=_cnz,
+                ),
+            ),
+        ),
         height=640,
         margin=dict(l=0, r=0, t=10, b=10),
         paper_bgcolor="#0a0a0a",

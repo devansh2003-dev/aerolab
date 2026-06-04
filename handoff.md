@@ -64,16 +64,27 @@ Validator manually re-tested on v1.7.4 localhost build. Results:
   0.5 m/s which gave Re ≈ 167 → snapped to Re=100 baked band.
   Blurb says *"Re ≈ 40 ... Stokes-flow limit"*. Mismatch.
 
-### Follow-up fix landed in this turn
+### Follow-up landed in this turn
 
-1. **`app.py` (~line 1992)** — `camera=` is conditionally included in
-   the scene dict only when shape changed since last render. Tracked
-   via `session_state["_3d_last_shape_for_camera"]`. Other reruns
-   (viz toggle, AoA, speed, overlays) omit `camera=`, letting Plotly
-   keep the user's orbit.
-2. **`app.py` (~line 2128)** — card 5 velocity 0.5 → 0.12 m/s so
-   `Re ≈ 40` matches the "creeping / Stokes flow" blurb.
-3. `CHANGELOG.md` v1.7.4 entries amended to document both follow-ups.
+1. **`app.py` (~line 2128)** — card 5 velocity 0.5 → 0.12 m/s so
+   `Re ≈ 40` matches the "creeping / Stokes flow" blurb. **WORKS**
+   (validator re-confirmed: title now `SPHERE_RE40`, snap caption
+   reads "Showing pre-baked Re = 40.").
+2. **`app.py` (~line 1992)** — attempted camera-persistence fix
+   (conditional `camera=` based on shape change) did **NOT** work.
+   Validator re-tested and confirmed camera still resets on viz
+   toggle / AoA / speed drag. Root cause: `st.plotly_chart` re-mounts
+   the Plotly instance on each Streamlit rerun, losing browser-side
+   camera state. `uirevision` only preserves state within Plotly's
+   animation loop, not across re-mounts.
+3. **De-scoped:** reverted the conditional `camera=` change (it didn't
+   help — added complexity without behavior change). Kept stable
+   `key=` and `uirevision` (still help for animation loop). Documented
+   the cross-rerun reset as a known limitation in CHANGELOG.md and
+   RELEASE_NOTES_v1.7.4.md. Proper fix would need `streamlit-plotly-
+   events` or a custom Streamlit component; deferred to a later
+   release. Mitigation: the v1.7.4 default-framing fix means every
+   rerun lands on a *good* view, not a bad one.
 
 ### Push command (after final manual re-verify of camera + card 5)
 

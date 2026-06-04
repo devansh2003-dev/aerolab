@@ -14,8 +14,11 @@ shape switches, and slider drags.
 - **3D preset cards no longer crash.** Clicking *Show me* on any of the six
   curated scenes used to throw `StreamlitAPIException`; now it just loads the
   scene with a confirmation toast.
-- **Camera survives slider drags.** Orbit the 3D view, then change AoA or
-  flow speed — the camera no longer snaps back to the default eye position.
+- **Camera holds during animation playback.** The orbit you set is preserved
+  through Plotly's animation frame loop (it used to reset every animation
+  cycle). *Cross-rerun camera persistence — i.e. holding your orbit when
+  you change viz mode or drag a slider — needs a custom component, deferred
+  to a later release.*
 
 ## 💅 Polish
 
