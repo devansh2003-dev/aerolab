@@ -2,6 +2,134 @@
 
 All notable changes to AeroLab. Dates are absolute; versions follow [SemVer](https://semver.org/).
 
+## [Unreleased] — external audit #3 follow-up (2026-06-11)
+
+Response to a senior external code/UX audit (commit `2ac6fb2`). 25 audit
+items closed across critical / important / polish tiers. No solver or
+accuracy changes; this batch is about reliability under Cloud load,
+input-validation hygiene, test coverage of an untested kernel branch,
+and consumer-facing UX consistency.
+
+### Critical — reliability fixes (B-tier)
+
+- **B-1 share-trap.** The Share button silently reverted the user's next
+  interaction. Decode block now arms `lbm_share_applied` unconditionally
+  on first reach, so a fresh session that clicks Share later doesn't see
+  the decode re-apply its own URL output on the next rerun.
+- **B-2 3D pipeline starvation.** Every sidebar toggle in 3D mode used
+  to re-execute `.npz` load + `np.gradient` volumes + RK2 streamline
+  trace + `marching_cubes` — multi-minute stalls per rerun, and pure-
+  Python GIL contention that starved other sessions. Four cached
+  wrappers keyed on `(scene_name [, viz_mode | n_seeds | q_level_pct])`
+  collapse subsequent reruns to sub-second. A mode-switch toast covers
+  the C-20 silent transition.
+- **B-3 cards silently dropped.** 3D cards 4-6 sometimes failed to apply
+  under server-side congestion (no crash, no toast, nothing changed).
+  Primary fix: B-2 caching closes the multi-minute window. Defensive:
+  callback now stamps `_3d_card_pending_verify`; if the next rerun's
+  shape selectbox doesn't match, a warning toast tells the user to retry.
+- **B-4 truncated image crash.** Mobile uploads with truncated bodies
+  parsed their PNG header fine but blew up later in `exif_transpose` /
+  `convert("L")` with a raw `OSError`. Force `pil_img.load()` inside the
+  existing try block; broadened the caller's except to `(ValueError,
+  OSError)`.
+
+### Important — input-validation + state-management hygiene (C-tier)
+
+- **C-1** Bumped `pyproject.toml` 0.5.0 → 1.7.4.
+- **C-2** `velocity_mps` now stashed and restored alongside Re/AoA/viz so
+  the stale-display metric strip and Share URL stop mixing live + stashed
+  values.
+- **C-3** Mode radio (Fast / CFD / Validation) now carries `key="sim_mode"`
+  + `setdefault` — the same pattern `solver_view` documents as required.
+- **C-4** 9 widgets converted from `value=`/`index=` + `key=` to
+  setdefault-then-key-only.
+- **C-5** Stale "OUT OF DATE" banner used to fire spuriously after
+  2D↔3D or CFD↔Fast hops because Streamlit drops keyed widget state on
+  the round-trip. Now tracks `_lbm_branch_id` at each branch entry and
+  clears the stash on branch change.
+- **C-6** Pin-snapshot side-by-side used to silently re-solve (~3 min on
+  Cloud) when cache evicted the snapshot's solve. Pin now stashes the
+  full `sim_result` + viz_mode; spinner-wrapped fallback to the cache
+  only when viz_mode differs.
+- **C-7** Corrupt/partial baked `.npz` → friendly handler at call site +
+  required-key cross-validation in `baked_fields.py` before array reads.
+- **C-8** Fast-mode NeuralFoil calls (`analyze_airfoil`, `sweep_polar`)
+  now per-airfoil try/except — warn + skip the failing airfoil rather
+  than dump a traceback.
+- **C-9** README + workflow comments updated to reflect ground truth
+  (~410 tests across 29 files, ~10 min on CI; was 320+/22 files/~70s in
+  README, 199 tests / ~30s in workflow header).
+- **C-10** 2D Bouzidi JIT block had **zero** test coverage despite the
+  docstring claiming otherwise; added differential tests against
+  no-bouzidi (q=0.7) and across branches (q=0.3 vs q=0.7).
+- **C-11** Replaced 3 rubber-stamp tests:
+  - PRESSURE_AVG_FRAMES regression: now decodes the GIF and compares
+    wake-region variance against a monkey-patched no-avg run.
+  - Sphere Cd "in band" verdicts: recompute from `Cd_raw` against
+    pinned reference (was asserting `result["Cd_in_band"]` — circular).
+  - `n_frames=None` fallback test: now actually drives the fallback
+    (was passing `n_frames=1` and asserting the echo).
+- **C-12** White-on-transparent PNGs (standard Figma/Photoshop logo
+  exports) now drive extraction from the alpha channel. 16-bit grayscale
+  rescales min-max to uint8 instead of clipping to white.
+- **C-13** `voxelize_triangles` now refuses to silently clip the body to
+  a 3-cell sliver when scaled extents exceed the grid. ASCII STL parser
+  raises `ValueError` on empty vertex lists (was silently returning a
+  `(0,3,3)` array).
+- **C-14** Drawn polygons run an O(N²) self-intersection check (rejects
+  bowties). `polygon_to_lbm_mask` emits `warnings.warn()` when it drops
+  disconnected components.
+- **C-16** `solve_lbm` validates Re > 0, allow-listed `shape_preset`,
+  and `res_key` at the boundary. Strouhal noise gate: St=NaN when the
+  FFT peak is below ~4× the median spectrum so steady flows don't
+  report a confident-looking St derived from noise.
+- **C-18** 2D shape preview cached by `(shape, res, aoa, polygon_hash)`
+  so velocity-slider drags no longer re-fire the matplotlib render.
+- **C-19** README 3D Re cap (bluff bodies Re ∈ {20,40,100}; wings
+  additionally Re=200) + scene count (~76 across 5 shapes, not "10").
+- **C-20** Subsumed by B-2 toast at the top of the 3D branch.
+- **C-15** (GIF palette quantisation) and **C-17** (float16 snapshots)
+  deferred per Tier 1 triage — perf cost needs measuring; the float16
+  precedent doesn't transfer cleanly to 2D mid-sim arithmetic.
+
+### Polish — UX consistency + dev hygiene (D-tier, 6 of 16)
+
+- **D-1** Share URL now reads `st.context.url` so localhost / forks
+  produce working share links.
+- **D-3** "Reset to defaults" preserves `lbm_solver_warmed_up`; flag is
+  also set at call site so cross-session cache hits also mark warm.
+- **D-5** Deduplicated three local `import hashlib` into one module
+  import.
+- **D-7** 3D card velocities tuned to baked Re (0.30 m/s for Re=100,
+  0.60 m/s for Re=200 wings) so the sidebar nominal-Re caption no
+  longer reads "Re ≈ 1500" next to a card claiming Re ≈ 100. Also
+  fixed: "preview · live" chip → "3D gallery · live" (matches comment);
+  duplicate switch-to-CFD caption removed; per-run Validated badges
+  qualified with "this preset".
+- **D-15** `handoff.md`, `LAUNCH_CHECKLIST.md`, `RELEASE_NOTES_v1.7.4.md`
+  moved to `docs/internal/` so the public repo root only shows
+  consumer-relevant files.
+- **D-16** Validation tab skip-and-warn for malformed JSON rows (was
+  raising on absent `shape`/`re` keys).
+
+### Tests + lint
+
+- 401 tests pass in the fast suite (skipping the 8-min validation
+  benchmark).
+- Ruff: all checks pass.
+
+### Known sub-items deferred to a future pass
+
+Audit items D-8 (`n_frames=0` cryptic IndexError), D-9 (`canonical_
+param_hash` TypeError on `np.float64`), D-10 (1-line defensive asserts
+in 3D smoke / Q-criterion modules), and D-12 (Clear button doesn't clear
+committed polygon preview) bundle real small bugs alongside larger
+comment-drift cleanups. The bundles were dismissed wholesale in this
+pass; per-sub-item revisit is queued.
+
+---
+
 ## [1.7.4] — 2026-06-04 (pre-launch UX fix sprint)
 
 Pre-launch polish before flipping the public share switch. Mix of validator-

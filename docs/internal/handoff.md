@@ -1,22 +1,59 @@
 # AeroLab handoff
 
-> **Read this file first** at the start of every work session. **Update it at the end** of every substantive turn. Last updated: 2026-06-04, v1.7.4 sprint + validator follow-up committed locally, awaiting push.
+> **Read this file first** at the start of every work session. **Update it at the end** of every substantive turn. Last updated: 2026-06-11, external-audit-#3 follow-up committed + pushed.
 
-Current tip of `main` (local): **two commits ahead of `origin/main`**:
-- `99773d0` v1.7.4: pre-launch UX fix sprint
-- `<new>` v1.7.4 follow-up: camera persistence + card 5 velocity fix
+Current tip of `main` and `origin/main`: **`2ac6fb2`** "fix: respond to external audit #3 — close 25 audit items across critical/important/polish tiers".
 
-Origin's tip is `c712ffe` (v1.7.3).
-
-App version chip: **v1.7.4** (bumped this turn, not yet committed).
+App version chip / `pyproject.toml`: **v1.7.4**. CHANGELOG has the audit-3 work staged under `[Unreleased]` — bump to v1.7.5 (or v1.8.0 if that label is still reserved for upload-your-own-shape) and tag when verified on Cloud.
 
 ---
 
-## 1. Landed in last edit (in-flight, v1.7.4 — NOT YET COMMITTED)
+## 1. Landed in last edit (commit `2ac6fb2`, pushed 2026-06-11)
 
-User's 10-task pre-launch fix sprint. All 10 tasks complete + one
-defensive cleanup from validator hypothesis. No solver changes — every
-edit is in `app.py`, page config, internal-docs layout.
+External audit #3 follow-up. 25 audit items closed across critical /
+important / polish tiers. No solver or accuracy changes; this batch is
+about reliability under Cloud load, input-validation hygiene, test
+coverage of an untested kernel branch, and consumer-facing UX
+consistency.
+
+### What's in the commit
+
+- **Critical (4/4):** B-1 share-trap, B-2 3D pipeline caching, B-3 card-
+  drop verification toast, B-4 truncated image crash.
+- **Important (18/20):** C-1 pyproject bump, C-2 velocity_mps stash,
+  C-3 mode-radio key, C-4 9 widget patterns, C-5 stale OUT-OF-DATE
+  banner, C-6 pin-snapshot cache stash, C-7 npz guard, C-8 NeuralFoil
+  wrap, C-9 README test counts, C-10 2D Bouzidi tests, C-11 3 rubber-
+  stamp tests, C-12 alpha + 16-bit upload, C-13 voxelize geometry-fit +
+  STL, C-14 self-intersect polygons, C-16 solve_lbm validation, C-18
+  2D preview cache, C-19 README 3D Re/scene-count, C-20 subsumed by B-2.
+- **Polish (6/16):** D-1 share host, D-3 JIT warm-up flag, D-5 hashlib
+  dedupe, D-7 3D card velocity + UI copy, D-15 root docs cleanup,
+  D-16 Validation tab schema trust.
+
+Full per-item rationale in `CHANGELOG.md` `[Unreleased]` section.
+
+### Deferred (queued, not done)
+
+- **C-15** GIF palette quantisation (needs perf measurement).
+- **C-17** float16 snapshots (invasive; precedent doesn't transfer).
+- **D-8** `n_frames=0` cryptic IndexError in `solve_lbm` — small real
+  bug bundled with comment drift; should be added next to C-16's
+  validation block.
+- **D-9** `canonical_param_hash` TypeErrors on `np.float64` baked-field
+  params — small real bug, add `default=float` in JSON dump.
+- **D-10** 3D smoke/Q one-line defensive asserts (n_substeps=0, NaN Q).
+- **D-12** Canvas Clear button doesn't clear committed polygon preview.
+- **D-2/4/6/11/13/14** genuine polish — dead code / comment drift /
+  test-suite hygiene with no UX impact.
+
+---
+
+## 1b. Previously landed (v1.7.4, 2026-06-04)
+
+10-task pre-launch fix sprint + validator follow-up. No solver changes;
+all edits in `app.py`, page config, internal-docs layout. Tagged
+v1.7.4 + GitHub Release published as Latest.
 
 ### Changes (uncommitted)
 
@@ -106,11 +143,22 @@ cd "C:\Users\USER\Desktop\Study & Work\Personal Projects\AeroLab"; git tag -a v1
 
 ### Immediate
 
-- [ ] User manually verifies 3D card clicks load scenes (NOT no-ops).
-- [ ] Commit + push v1.7.4.
-- [ ] Tag `v1.7.4` + draft GitHub release with `RELEASE_NOTES_v1.7.4.md` content.
-- [ ] Run through `LAUNCH_CHECKLIST.md` D-1 / D-0 items.
-- [ ] Set up UptimeRobot per LAUNCH_CHECKLIST §D-0.
+- [ ] Wait for CI to confirm green on `2ac6fb2`.
+- [ ] Cloud-verify the load-bearing audit-3 fixes once the deploy lands:
+      B-1 (Share-then-click stickiness), B-2 (sidebar checkbox in 3D
+      should be sub-second after first scene load; second session must
+      stay responsive during heavy 3D use), B-3 (warning toast appears
+      when a card click is dropped — hard to force manually but watch
+      for it under load), C-5 (no spurious OUT-OF-DATE banner after
+      2D→3D→2D), C-6 (pin a config, explore 4+ others, return — must
+      not silently re-solve).
+- [ ] Decide version bump: v1.7.5 (incremental polish) vs v1.8.0
+      (audit-3 is genuinely user-visible; the upload-your-own-shape
+      stash is the v1.8.0 reservation though — choose which gets the
+      label).
+- [ ] Tag + cut a GitHub Release once verified.
+- [ ] Re-examine the bundled-bug skips (D-8 / D-9 / D-10 / D-12) as a
+      small follow-up commit — ~20 min total.
 
 ### Stashed (resume after launch)
 
@@ -160,7 +208,7 @@ cd "C:\Users\USER\Desktop\Study & Work\Personal Projects\AeroLab"; git tag -a v1
 - `src/shapes.py` — Analytic shape q-fields; NACA4 decode.
 - `src/custom_shape.py` — Multi-threshold thresholding.
 
-### Tests (393 tests, all green as of v1.7.3 commit verify)
+### Tests (~410 collected across 29 files, 401 green in fast suite as of audit-3 commit)
 
 - `tests/test_doc_validation_consistency.py`
 - `tests/test_openfoam_cross_check_consistency.py` (5 gates)
@@ -193,6 +241,12 @@ cd "C:\Users\USER\Desktop\Study & Work\Personal Projects\AeroLab"; git tag -a v1
 - v1.7.4 added: Plotly camera persistence via stable `key=`,
   shape-dependent default camera framing, parallel Re snap caption,
   loading spinner during trace, custom page title + favicon.
+- Audit-3 follow-up (`2ac6fb2`) added: 4 cached wrappers around the
+  3D pipeline (load/streamlines/color-volume/Q-iso) so a single 3D
+  session no longer starves the deployment; 3D-card velocity tuned to
+  baked Re so sidebar caption matches card copy; share-then-click no
+  longer reverts the next interaction; branch-tracking clears the
+  stale-display stash on view/mode change.
 
 ### Documentation
 
