@@ -1379,8 +1379,10 @@ if view == "3D gallery (preview)":
         st.markdown(":material/speed: **Flow speed** &nbsp; :gray[(m/s)]")
         # Velocity (m/s) -> Re using the 2D L_REAL convention so the
         # readout matches what users saw in the 2D playground. Slider
-        # extends down to 0.10 m/s so Re=40 (the lower baked band) is
-        # reachable cleanly; default 0.30 m/s lands exactly at Re=100.
+        # extends down to 0.05 m/s (Re ~ 17) so the user can explore
+        # below the Re=20 baked band; default 0.30 m/s lands exactly at
+        # Re=100. D-2: comment previously claimed "0.10" but min was
+        # actually 0.05 -- fixed the comment to match the code.
         # Match the selectbox pattern above: setdefault + clamp guard so
         # the widget reads session_state via ``key`` only. Streamlit warns
         # when BOTH ``value=`` AND ``key=`` are passed; dropping the
@@ -2252,7 +2254,10 @@ if view == "3D gallery (preview)":
             "Show me",
         ),
         (
-            "Sphere (round)", 0.12, "Velocity",
+            # D-2: 0.10 m/s (was 0.12) lands on the 3D slider's 0.05
+            # grid step; the 3D snap-to-baked logic still picks Re=40
+            # since the closest baked band to Re~33 is 40.
+            "Sphere (round)", 0.10, "Velocity",
             "Almost stopped (creep)",
             "Re ≈ 40. Streamlines glide around the sphere almost "
             "reversibly -- the Stokes-flow limit you'd see with "
@@ -3218,7 +3223,7 @@ if mode == "Real CFD (LBM)":
         # shape pick with a higher ceiling) into the new range so the
         # slider doesn't raise "value out of range".
         _prev_v = st.session_state.get("lbm_velocity_slider", _default_velocity)
-        _clamped_v = float(np.clip(_prev_v, 0.15, _v_max))
+        _clamped_v = float(np.clip(_prev_v, 0.10, _v_max))
         st.session_state["lbm_velocity_slider"] = _clamped_v
         # If we just silently lowered the user's chosen speed (e.g.
         # they rotated the square past 5 deg and the cap dropped from
@@ -3234,7 +3239,10 @@ if mode == "Real CFD (LBM)":
             )
         velocity_mps = st.slider(
             "Flow speed (m/s)",
-            min_value=0.15, max_value=_v_max, step=0.1,
+            # D-2: min_value=0.10 (was 0.15) so 0.10+n*0.1 grid covers
+            # 0.60 / 1.50 / 1.80 -- the gallery-card velocities used to
+            # land between ticks and nudge-snap to 0.65 / 1.55 / 1.85.
+            min_value=0.10, max_value=_v_max, step=0.1,
             label_visibility="collapsed",
             help=(
                 f"How fast the wind blows past the object.\n\n"

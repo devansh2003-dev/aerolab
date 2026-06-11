@@ -142,7 +142,12 @@ def _binarize_multi_threshold(
     img_area = float(w * h)
     for name, fn in methods:
         try:
-            t = float(fn(fg_signal))
+            # D-11: silence skimage's "all-zero bin" RuntimeWarnings so
+            # they don't leak into Cloud logs (or pytest -W). The
+            # try/except below already handles the cases where these
+            # warnings indicate a genuinely-degenerate histogram.
+            with np.errstate(divide="ignore", invalid="ignore"):
+                t = float(fn(fg_signal))
         except (ValueError, RuntimeError):
             # threshold_yen can fail on near-uniform histograms; skip
             # the method silently and let the other candidates compete.
@@ -452,16 +457,23 @@ def extract_silhouette_from_image(png_bytes: bytes) -> SilhouetteResult:
     # Area check uses ORIGINAL image dims (pre-padding) so the gates
     # have stable, user-facing meaning -- the padding is purely an
     # internal trick to give shapes room to breathe at the edges.
+    # D-11: largest.sum() counts pixels in the PADDED array; if the
+    # morphological close has fattened a thin subject, the raw ratio
+    # can exceed 1.0 and the user-facing message used to read
+    # "fills 141.6% of the image". Clamp the displayed value to <=100%
+    # but keep the raw ratio for the threshold checks so the upper
+    # gate still catches "subject = whole frame" pathologies.
     area_frac = float(largest.sum()) / float(w * h)
+    _display_frac = min(area_frac, 1.0)
     if area_frac < MIN_AREA_FRAC:
         raise ValueError(
-            f"Detected shape fills only {100 * area_frac:.1f}% of the image -- "
+            f"Detected shape fills only {100 * _display_frac:.1f}% of the image -- "
             "too small to simulate. Try a cleaner image where the shape "
             "is the main subject."
         )
     if area_frac > MAX_AREA_FRAC:
         raise ValueError(
-            f"Detected shape fills {100 * area_frac:.1f}% of the image -- "
+            f"Detected shape fills {100 * _display_frac:.1f}% of the image -- "
             "we couldn't find a clean background to separate it from. Try "
             "an image where the subject doesn't fill the entire frame."
         )
@@ -837,6 +849,18 @@ def polygon_to_lbm_mask(
     helper, then rasterizes via PIL ImageDraw onto a bool mask. Returns
     an (Nx, Ny) bool array, True inside the polygon.
     """
+    # D-11: target_extent_cells < ~2 produces a sub-cell-scale rasterisation
+    # that PIL's polygon fill silently rounds to a few-cell blob unrelated
+    # to the polygon shape. Surface a clear ValueError so callers can pick
+    # a larger body or switch resolution rather than simulate a 4-cell
+    # noise pattern.
+    if target_extent_cells < 2.0:
+        raise ValueError(
+            f"target_extent_cells = {target_extent_cells:.2f} is sub-cell-"
+            f"scale -- the rasteriser can't resolve a polygon below ~2 "
+            f"cells. Increase target_extent_cells or use the Detailed "
+            f"resolution preset."
+        )
     final = _transform_polygon_to_lattice(
         polygon_xy, cx, cy, target_extent_cells, aoa_deg,
     )
