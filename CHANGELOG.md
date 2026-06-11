@@ -2,13 +2,14 @@
 
 All notable changes to AeroLab. Dates are absolute; versions follow [SemVer](https://semver.org/).
 
-## [Unreleased] — external audit #3 follow-up (2026-06-11)
+## [1.7.5] — 2026-06-11 (external audit #3 follow-up)
 
-Response to a senior external code/UX audit (commit `2ac6fb2`). 25 audit
-items closed across critical / important / polish tiers. No solver or
-accuracy changes; this batch is about reliability under Cloud load,
-input-validation hygiene, test coverage of an untested kernel branch,
-and consumer-facing UX consistency.
+Response to a senior external code/UX audit. **35 audit items** closed
+across critical / important / polish tiers (25 in the initial batch
+`2ac6fb2`, 6 bundled-bug recoveries in `ff8f0f3`, 9 follow-up sub-items
+in `9afe45b`). No solver or accuracy changes; this release is about
+reliability under Cloud load, input-validation hygiene, test coverage
+of an untested kernel branch, and consumer-facing UX consistency.
 
 ### Critical — reliability fixes (B-tier)
 
@@ -119,14 +120,53 @@ and consumer-facing UX consistency.
   benchmark).
 - Ruff: all checks pass.
 
-### Known sub-items deferred to a future pass
+### Bundled-bug recoveries (`ff8f0f3`)
 
-Audit items D-8 (`n_frames=0` cryptic IndexError), D-9 (`canonical_
-param_hash` TypeError on `np.float64`), D-10 (1-line defensive asserts
-in 3D smoke / Q-criterion modules), and D-12 (Clear button doesn't clear
-committed polygon preview) bundle real small bugs alongside larger
-comment-drift cleanups. The bundles were dismissed wholesale in this
-pass; per-sub-item revisit is queued.
+The first pass dismissed several D-items wholesale because each bundled
+a real small bug with 5-8 comment-drift cleanups. Re-examined and
+landed the real-bug sub-items separately:
+
+- **D-8** `n_frames <= 0` → `ValueError` in `solve_lbm` (was cryptic
+  `IndexError` on `snapshots[-1]`).
+- **D-9** `canonical_param_hash` now passes `default=float` to
+  `json.dumps` so `np.float64` baked-field params hash instead of
+  raising `TypeError`.
+- **D-10a** `n_substeps <= 0` → `ValueError` in
+  `update_smoke_particles_3d` (was `ZeroDivisionError`).
+- **D-10b** `body_mask.shape != ux.shape` mismatch → `ValueError`
+  (was deep `IndexError`).
+- **D-10c** Q-isosurface returns `None` on non-finite Q (was opaque
+  `marching_cubes` error).
+- **D-12** Polygon drawer Clear/Undo now drops the previously-
+  committed polygon when the canvas reports `closed=False` with empty
+  vertices — preview no longer renders the stale shape over a blank
+  canvas.
+
+### Follow-up sub-items (`9afe45b`)
+
+- **D-2** 2D slider `min_value` 0.15 → 0.10 so card velocities (0.60 /
+  1.50 / 1.80 m/s) land on grid instead of nudge-snapping to .x5. 3D
+  creep-sphere card 0.12 → 0.10 to land on the 3D 0.05 step. Stale
+  "down to 0.10" comment corrected.
+- **D-11a** Detected-area display clamped to ≤100% (was reading
+  "141.6% of the image" when post-padding morphological close
+  fattened a thin subject).
+- **D-11b** `polygon_to_lbm_mask` raises `ValueError` on
+  `target_extent_cells < 2.0` instead of silently returning a 4-cell
+  blob.
+- **D-11c** skimage `RuntimeWarnings` silenced via `np.errstate` so
+  they don't leak into Cloud logs.
+
+### Genuinely skipped (comment / dead-code / test-hygiene only)
+
+- **D-4** Dead writes/lookups.
+- **D-6** Stale Plotly animation comments.
+- **D-8/9/10/11/12** remaining sub-items beyond the real-bug recoveries
+  above — pure docstring drift, naming nits, efficiency tweaks for
+  warning-only code paths.
+- **D-13** Dead `canvas_image_to_polygon` legacy code path.
+- **D-14** Test-suite hygiene (sys.path → conftest, dead variables,
+  duplicate gallery-card config).
 
 ---
 
