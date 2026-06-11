@@ -136,6 +136,13 @@ def extract_q_isosurface(
     """
     from skimage.measure import marching_cubes
 
+    # D-10: a NaN-contaminated Q field (rare but possible after a
+    # divergent solve or a bake with NaN holes) used to dump an opaque
+    # marching_cubes internal error. Bail to None so the caller treats
+    # it the same as "no isosurface" and the chart just omits the shell.
+    if not np.all(np.isfinite(Q)):
+        return None
+
     q_min = float(Q.min())
     q_max = float(Q.max())
     if level >= q_max or level <= q_min:

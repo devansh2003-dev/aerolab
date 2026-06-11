@@ -505,6 +505,15 @@ def solve_lbm(shape_preset, reynolds_target, aoa_deg, res_key,
             f"res_key {res_key!r} not in RESOLUTION_PRESETS "
             f"{tuple(RESOLUTION_PRESETS.keys())!r}."
         )
+    # D-8: n_frames=0 used to produce an empty snapshots list and the
+    # render path then died with a cryptic IndexError on snapshots[-1].
+    # An explicit ValueError at the boundary is the audit-recommended
+    # complement to the C-16 input validations above.
+    if n_frames is not None and int(n_frames) <= 0:
+        raise ValueError(
+            f"n_frames must be a positive integer (or None to use the "
+            f"preset default), got {n_frames!r}."
+        )
 
     res_cfg = RESOLUTION_PRESETS[res_key]
     LBM_NX = res_cfg["Nx"]

@@ -3038,6 +3038,24 @@ if mode == "Real CFD (LBM)":
                     _is_closed = bool(_drawer_result.get("closed", False))
                     _cw = int(_drawer_result.get("width", 400))
                     _ch = int(_drawer_result.get("height", 200))
+                    # D-12: detect a Clear / Undo event AFTER a committed
+                    # polygon was already saved -- the canvas reports
+                    # `closed=False` and empty vertices, but the previous
+                    # polygon stayed in session_state, so the preview
+                    # rendered the old shape over a blank canvas. Drop
+                    # the committed polygon + the last-signature so the
+                    # next close-gesture commits cleanly.
+                    if (
+                        not _is_closed
+                        and len(_verts) == 0
+                        and st.session_state.get("lbm_drawer_last_sig") is not None
+                        and st.session_state.get("lbm_custom_polygon") is not None
+                        and st.session_state.get("lbm_custom_label") == "Your drawing"
+                    ):
+                        st.session_state.pop("lbm_custom_polygon", None)
+                        st.session_state.pop("lbm_custom_label", None)
+                        st.session_state.pop("lbm_drawer_last_sig", None)
+                        st.session_state["lbm_custom_flipped"] = False
                     # Detect a fresh closure event: only commit once per
                     # close so re-clicking doesn't re-spawn flips / labels.
                     _drawing_sig = (

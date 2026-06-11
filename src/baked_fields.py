@@ -84,7 +84,14 @@ def canonical_param_hash(params: dict[str, Any]) -> str:
     Keys whose value is a float should be passed in their original
     float form; ``json.dumps`` will serialise them deterministically.
     """
-    blob = json.dumps(params, sort_keys=True, separators=(",", ":"))
+    # D-9: numpy scalars (np.float64, np.int64) are not directly JSON-
+    # serialisable -- a baked field built with `cy = grid.shape[1] / 2`
+    # (np.float64) used to raise TypeError here. `default=float` casts
+    # any unknown numpy scalar to plain Python float. Integers also
+    # round-trip cleanly through float for hashing.
+    blob = json.dumps(
+        params, sort_keys=True, separators=(",", ":"), default=float,
+    )
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 

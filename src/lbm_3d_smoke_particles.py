@@ -237,6 +237,15 @@ def step_smoke(
     if len(px) == 0:
         return px, py, pz, age
 
+    # D-10: n_substeps=0 would crash inside dt/float(n_substeps) with
+    # ZeroDivisionError -- the test would otherwise have caught it but
+    # production never passes 0 today. One-line guard so a future caller
+    # gets a clear ValueError.
+    if int(n_substeps) <= 0:
+        raise ValueError(
+            f"n_substeps must be >= 1, got {n_substeps!r}."
+        )
+
     # 2. Advect via n_substeps RK4 steps
     dt_sub = dt / float(n_substeps)
     for _ in range(int(n_substeps)):
@@ -250,6 +259,16 @@ def step_smoke(
     in_y = (py >= 1.0) & (py < Ny - 1.5)
     in_z = (pz >= 1.0) & (pz < Nz - 1.5)
     if body_mask is not None:
+        # D-10: body_mask shape mismatch with ux used to dump a deep
+        # IndexError from body_mask[xi, yi, zi] when xi exceeded the
+        # mask's bounds. Cheaper to fail at the boundary with the actual
+        # mismatch info than chase it from the index error.
+        if body_mask.shape != ux.shape:
+            raise ValueError(
+                f"body_mask.shape {body_mask.shape} != ux.shape "
+                f"{ux.shape}; pass a body_mask sized to the velocity "
+                f"field."
+            )
         xi = np.clip(np.round(px).astype(np.int32), 0, Nx - 1)
         yi = np.clip(np.round(py).astype(np.int32), 0, Ny - 1)
         zi = np.clip(np.round(pz).astype(np.int32), 0, Nz - 1)
