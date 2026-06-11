@@ -8,7 +8,7 @@
 
 [project]
 name            = "aerolab"
-version         = "0.5.0"
+version         = "1.7.4"
 description     = "Browser-based aerodynamics playground: D2Q9 Lattice Boltzmann CFD + NeuralFoil instant polars, deployed on Streamlit."
 readme          = "README.md"
 license         = { file = "LICENSE" }

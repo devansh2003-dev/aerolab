@@ -39,9 +39,10 @@ Nooruddin & Turk 2003. The algorithm assumes the input mesh is a
 closed manifold; the morphological close in the high-level wrapper
 is a safety net for slightly-non-manifold STLs (single missing
 triangle, T-junctions). Pathological meshes (large holes,
-self-intersections) will produce visibly wrong masks -- we surface
-that to the caller via a connected-components sanity check rather
-than silently rendering broken geometry.
+self-intersections) produce visibly wrong masks; voxel_mask_for_lbm
+guards the two pathological extremes (empty mask, whole-domain mask)
+with friendly ValueErrors and refuses to silently clip the body when
+the scaled bounding-box exceeds the grid.
 """
 from __future__ import annotations
 
@@ -117,6 +118,18 @@ def _read_stl_ascii(text: str) -> np.ndarray:
         if len(parts) < 4:
             raise ValueError(f"Malformed ASCII STL vertex line: {raw!r}")
         verts.append((float(parts[1]), float(parts[2]), float(parts[3])))
+    # C-13 (b): a truncated binary STL that happens to decode as ASCII
+    # (random bytes that don't include "vertex" lines) falls through to
+    # here with verts == []. Without this check we'd silently return a
+    # (0, 3, 3) array; downstream voxelisation then produces an empty
+    # mask whose error message ("mesh fell outside the grid") sends the
+    # caller chasing the wrong root cause.
+    if len(verts) == 0:
+        raise ValueError(
+            "ASCII STL contained no `vertex` lines -- possibly a "
+            "truncated binary STL, an empty file, or a malformed text "
+            "STL."
+        )
     if len(verts) % 3 != 0:
         raise ValueError(
             f"ASCII STL has {len(verts)} vertices, not divisible by 3 -- "
@@ -385,6 +398,28 @@ def voxel_mask_for_lbm(
     # centred so the body sits in the middle of (y, z) by default.
     scaled_extents = extents * scale
     pad_x, pad_y, pad_z = padding_cells
+    # C-13 (a): refuse to silently clip the body to a sliver. If the
+    # scaled bounding box exceeds the available grid on any axis the
+    # voxelisation runs anyway and the user gets a 3-cell cross-section
+    # of their mesh with no warning -- they'd simulate that cross-section
+    # believing it's their whole body. Surface a clear ValueError so the
+    # caller can pick a smaller body_extent_cells or larger grid.
+    if scaled_extents[0] + pad_x > Nx:
+        raise ValueError(
+            f"Scaled body extends {scaled_extents[0]:.1f} cells along x "
+            f"plus {pad_x} cells inflow padding -- exceeds Nx={Nx}. "
+            f"Reduce body_extent_cells or increase Nx."
+        )
+    if scaled_extents[1] > Ny:
+        raise ValueError(
+            f"Scaled body extends {scaled_extents[1]:.1f} cells along y "
+            f"-- exceeds Ny={Ny}. Reduce body_extent_cells."
+        )
+    if scaled_extents[2] > Nz:
+        raise ValueError(
+            f"Scaled body extends {scaled_extents[2]:.1f} cells along z "
+            f"-- exceeds Nz={Nz}. Reduce body_extent_cells."
+        )
     # Centre of mass of the body, in lattice coords, after placement.
     target_corner = np.array([
         pad_x,

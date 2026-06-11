@@ -266,6 +266,12 @@ def extract_silhouette_from_image(png_bytes: bytes) -> SilhouetteResult:
 
     try:
         pil_img = Image.open(io.BytesIO(png_bytes))
+        # Force full pixel decode now. Image.open is lazy, so a truncated
+        # body (common from mobile uploads / interrupted downloads) parses
+        # the header fine and raises OSError("image file is truncated")
+        # later inside exif_transpose / convert("L") -- where it would
+        # bypass this handler and leak a raw traceback to the UI.
+        pil_img.load()
     except Exception as e:
         raise ValueError(
             "Couldn't decode the image. Make sure it's a recognised "
@@ -302,11 +308,44 @@ def extract_silhouette_from_image(png_bytes: bytes) -> SilhouetteResult:
         or (pil_img.mode == "P" and "transparency" in pil_img.info)
     ):
         rgba = pil_img.convert("RGBA")
-        white_bg = Image.new("RGB", rgba.size, (255, 255, 255))
-        white_bg.paste(rgba, mask=rgba.split()[-1])
-        img = white_bg.convert("L")
+        # C-12 (a): white-on-transparent silhouettes (the standard Figma /
+        # Photoshop logo export pattern) used to composite onto white,
+        # then convert("L") read a uniform white image and the extractor
+        # rejected it with "no contrast" -- even though the silhouette is
+        # perfectly recoverable from the alpha channel itself. Detect the
+        # case (RGB has very low variance AND alpha has meaningful
+        # variance) and drive extraction directly from the alpha mask.
+        _arr = np.asarray(rgba, dtype=np.uint8)
+        _rgb_std = float(_arr[:, :, :3].std())
+        _alpha_std = float(_arr[:, :, 3].std())
+        if _rgb_std < 2.0 and _alpha_std > 5.0:
+            # Use alpha as the contrast source: opaque pixels become
+            # foreground (dark), transparent pixels background (light).
+            # Invert because the extractor's downstream binarisation
+            # treats DARK as foreground.
+            img = Image.fromarray(255 - _arr[:, :, 3], mode="L")
+            warnings.append(
+                "Subject is uniform colour on transparent background -- "
+                "using the alpha channel directly."
+            )
+        else:
+            white_bg = Image.new("RGB", rgba.size, (255, 255, 255))
+            white_bg.paste(rgba, mask=rgba.split()[-1])
+            img = white_bg.convert("L")
+    elif pil_img.mode in ("I", "I;16", "I;16B", "I;16L", "I;16N"):
+        # C-12 (b): 16-bit grayscale (medical / scientific scans, some
+        # silhouette exports) saturates convert("L") -- values >255 clip
+        # to 255 and the foreground vanishes. Rescale min-max to uint8
+        # via numpy so the contrast survives the downconversion.
+        _arr16 = np.asarray(pil_img)
+        _lo, _hi = float(_arr16.min()), float(_arr16.max())
+        if _hi > _lo:
+            _arr8 = ((_arr16 - _lo) / (_hi - _lo) * 255.0).astype(np.uint8)
+        else:
+            _arr8 = np.zeros(_arr16.shape, dtype=np.uint8)
+        img = Image.fromarray(_arr8, mode="L")
     else:
-        # Catch-all for L / RGB / CMYK / YCbCr / 1-bit / 16-bit-grayscale /
+        # Catch-all for L / RGB / CMYK / YCbCr / 1-bit /
         # palette without transparency / etc. PIL.Image.convert("L") handles
         # the full set -- ITU-R 601-2 luma transform for colour, direct
         # bit-depth conversion for grayscale variants.
@@ -603,6 +642,37 @@ def vertices_to_polygon(
             "more before closing."
         )
 
+    # C-14: reject self-intersecting (bowtie-style) outlines. PIL's
+    # even-odd polygon fill turns a bowtie into two disjoint lobes; at
+    # coarse LBM resolution polygon_to_lbm_mask's silent largest-
+    # component filter then drops one lobe -- the user gets a shape
+    # different from what they drew with no warning. O(N^2) segment-
+    # segment intersection: cheap for the typical N <= 50 vertex count
+    # from the drawer.
+    n_verts = len(poly)
+    for _i in range(n_verts):
+        _a, _b = poly[_i], poly[(_i + 1) % n_verts]
+        for _j in range(_i + 2, n_verts):
+            # Skip the segment that shares an endpoint with i (when j
+            # wraps back to i-1 along the polygon).
+            if _i == 0 and _j == n_verts - 1:
+                continue
+            _c, _d = poly[_j], poly[(_j + 1) % n_verts]
+            # Cross products of (b-a) x (c-a), (b-a) x (d-a), (d-c) x
+            # (a-c), (d-c) x (b-c). Strict-sign disagreement on both
+            # pairs => proper intersection.
+            _d1 = (_b[0] - _a[0]) * (_c[1] - _a[1]) - (_b[1] - _a[1]) * (_c[0] - _a[0])
+            _d2 = (_b[0] - _a[0]) * (_d[1] - _a[1]) - (_b[1] - _a[1]) * (_d[0] - _a[0])
+            _d3 = (_d[0] - _c[0]) * (_a[1] - _c[1]) - (_d[1] - _c[1]) * (_a[0] - _c[0])
+            _d4 = (_d[0] - _c[0]) * (_b[1] - _c[1]) - (_d[1] - _c[1]) * (_b[0] - _c[0])
+            if (_d1 * _d2 < 0) and (_d3 * _d4 < 0):
+                raise ValueError(
+                    "The drawn outline crosses itself (a 'bowtie' or "
+                    "knot pattern). Reorder the vertices so the polygon "
+                    "edges do not intersect, or use the Upload tab for "
+                    "complex shapes."
+                )
+
     return SilhouetteResult(
         polygon_xy=poly,
         image_w=int(canvas_w),
@@ -792,6 +862,21 @@ def polygon_to_lbm_mask(
     if n_labels > 1:
         sizes = np.bincount(labels.ravel())
         sizes[0] = 0
+        # C-14 (b): warn when we silently drop components. The upload
+        # path's extract_silhouette_from_image surfaces a SilhouetteResult
+        # warning for the same case; the polygon path used to drop a lobe
+        # in silence (e.g. a bowtie-rasterised mask, a drawn polygon with
+        # a coarse-LBM-grid disconnected thin neck). Python warnings let
+        # the caller surface or capture.
+        import warnings as _warnings
+        _kept_pct = 100.0 * int(sizes.max()) / int(sizes.sum())
+        _warnings.warn(
+            f"polygon rasterised to {n_labels} disconnected components; "
+            f"keeping the largest ({_kept_pct:.0f}% of the rasterised "
+            f"pixels) and dropping the rest. If this surprises you, "
+            f"check the polygon for thin necks or self-intersections.",
+            stacklevel=2,
+        )
         mask = labels == int(np.argmax(sizes))
     elif n_labels == 0:
         raise ValueError(

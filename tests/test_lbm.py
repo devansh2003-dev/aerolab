@@ -645,3 +645,107 @@ def test_fastmath_divergence_guard_propagates_nan():
         "The divergence guard in src/lbm_render.py would not fire on real "
         "divergence either -- either widen the guard or drop fastmath."
     )
+
+
+# ============================================================================
+# C-10: 2D Bouzidi JIT-block coverage. The JIT-vs-NumPy equivalence tests
+# above all disable Bouzidi (no_bouzidi_q_field, all q=-1), so the entire
+# Bouzidi branch in src/lbm.py is untested -- a corruption of the formula
+# leaves the suite green. These two tests exercise BOTH branches of the
+# block (q<0.5 linear-back-interp and q>=0.5 self-interp) with non-trivial
+# q values, asserting the output diverges from the no-Bouzidi reference
+# and from each other. They don't pin a closed-form identity (the code's
+# "no Bouzidi" path is fullway-BB-equivalent, not halfway-BB; q=0.5 does
+# NOT reduce to it) -- the assertions are differential, which is enough
+# to catch a corruption of the formula because deleting the block would
+# fail both tests.
+# ============================================================================
+
+
+def _uniform_bouzidi_q_field(Nx: int, Ny: int, mask, q_value: float) -> np.ndarray:
+    """Construct a q-field that assigns q_value to every wall link of
+    `mask` and -1 (no-Bouzidi) elsewhere."""
+    from src.lbm import LATTICE_VELOCITIES
+    q_field = np.full((Nx, Ny, 9), -1.0, dtype=np.float64)
+    for i in range(1, 9):  # skip rest (i=0)
+        cx, cy = LATTICE_VELOCITIES[i]
+        x_idx = np.arange(Nx)[:, None]
+        y_idx = np.arange(Ny)[None, :]
+        nx = (x_idx + int(cx)) % Nx
+        ny = (y_idx + int(cy)) % Ny
+        # Wall link: fluid cell whose neighbour at +c is solid.
+        link = (~mask) & mask[nx, ny]
+        q_field[..., i][link] = q_value
+    return q_field
+
+
+def _step_bouzidi_oracle(Nx, Ny, mask, q_field, U, tau, seed=1234):
+    """Helper: run one MRT step with the given q-field. Returns f_new."""
+    rho0 = np.ones((Nx, Ny))
+    u0 = np.zeros((2, Nx, Ny))
+    u0[0] = U
+    rng = np.random.default_rng(seed=seed)
+    u0[1] = rng.normal(0, 1e-3, size=(Nx, Ny))
+    f_init = equilibrium(rho0, u0)
+    f_inflow = equilibrium(1.0, np.array([U, 0.0]))
+    f_new, _, _ = step_njit_mrt_with_force(
+        f_init.copy(), tau, mask, q_field, f_inflow, True, True,
+    )
+    return f_new
+
+
+def test_bouzidi_q07_block_executes_and_differs_from_no_bouzidi():
+    """At q=0.7 the Bouzidi block's q>=0.5 self-interp branch fires and
+    overrides f_new at wall links with a weighted blend of f_i and f_opp
+    at the fluid cell. The no-Bouzidi path leaves the streamed-from-solid
+    value in place. These are arithmetically different at any q != 0.5
+    (and at q=0.5 in this codebase, since 'no Bouzidi' here is fullway-
+    BB-shaped, not halfway-BB). If this test passes the q>=0.5 block
+    executes; if it fails the Bouzidi formula is dead code OR has been
+    corrupted to a no-op."""
+    from src.shapes import cylinder_mask, no_bouzidi_q_field
+
+    Nx, Ny = 60, 40
+    tau = 0.6
+    U = 0.05
+    mask = cylinder_mask(Nx, Ny, cx=20, cy=20, radius=4)
+    q_07 = _uniform_bouzidi_q_field(Nx, Ny, mask, q_value=0.7)
+    q_no = no_bouzidi_q_field(Nx, Ny)
+
+    f_bouz = _step_bouzidi_oracle(Nx, Ny, mask, q_07, U, tau)
+    f_ref = _step_bouzidi_oracle(Nx, Ny, mask, q_no, U, tau)
+
+    max_diff = float(np.max(np.abs(f_bouz - f_ref)))
+    assert max_diff > 1e-6, (
+        f"Bouzidi at q=0.7 produced result identical to no-Bouzidi "
+        f"(max diff {max_diff:g}). The q>=0.5 branch of the Bouzidi "
+        f"block is not executing -- the whole branch could be deleted "
+        f"and the suite would still pass."
+    )
+
+
+def test_bouzidi_q03_block_executes_and_differs_from_q07():
+    """At q=0.3 the Bouzidi block's q<0.5 linear-back-interp branch fires
+    (uses f_after_bb at the back-neighbour x-c_i). At q=0.7 the q>=0.5
+    self-interp branch fires (different formula). The results must differ
+    from each other -- if they don't, EITHER the q<0.5 branch is dead OR
+    the q-value is being silently overridden somewhere along the way."""
+    from src.shapes import cylinder_mask
+
+    Nx, Ny = 60, 40
+    tau = 0.6
+    U = 0.05
+    mask = cylinder_mask(Nx, Ny, cx=20, cy=20, radius=4)
+    q_03 = _uniform_bouzidi_q_field(Nx, Ny, mask, q_value=0.3)
+    q_07 = _uniform_bouzidi_q_field(Nx, Ny, mask, q_value=0.7)
+
+    f_03 = _step_bouzidi_oracle(Nx, Ny, mask, q_03, U, tau)
+    f_07 = _step_bouzidi_oracle(Nx, Ny, mask, q_07, U, tau)
+
+    max_diff = float(np.max(np.abs(f_03 - f_07)))
+    assert max_diff > 1e-6, (
+        f"Bouzidi at q=0.3 and q=0.7 produced identical results "
+        f"(max diff {max_diff:g}). The two branches of the Bouzidi "
+        f"block (q<0.5 linear-back-interp vs q>=0.5 self-interp) are "
+        f"not both reachable or one ignores q entirely."
+    )

@@ -30,6 +30,13 @@ CD_PHYSICAL_MIN = 0.4
 CD_PHYSICAL_MAX = 3.0
 EXPECTED_BLOCKAGE_PCT = 25.0  # Sanity check on the grid that was run
 
+# C-11: hard-coded reference for independent recomputation (see sibling
+# test_validation_3d_sphere_cd.py for full rationale -- the previous
+# test_drag_in_clift_grace_weber_band asserted result["Cd_in_band"]
+# which the JSON's own script already wrote, making the gate circular).
+CGW_CD_REF = 1.09
+CD_TOLERANCE_BAND = 0.7  # absolute Cd units, matches data file
+
 
 @pytest.fixture(scope="module")
 def result() -> dict:
@@ -43,13 +50,16 @@ def result() -> dict:
 
 
 def test_drag_in_clift_grace_weber_band(result):
-    cd = result["Cd_raw"]
-    ref = result["Cd_ref_clift_grace_weber"]
-    band = result["Cd_tolerance_band"]
-    assert result["Cd_in_band"], (
+    """C-11: recompute the verdict from Cd_raw against test-side constants
+    instead of asserting result["Cd_in_band"] (circular)."""
+    cd = float(result["Cd_raw"])
+    assert abs(result["Cd_ref_clift_grace_weber"] - CGW_CD_REF) < 1e-9
+    assert abs(result["Cd_tolerance_band"] - CD_TOLERANCE_BAND) < 1e-9
+    err_abs = abs(cd - CGW_CD_REF)
+    assert err_abs <= CD_TOLERANCE_BAND, (
         f"sphere Re=100 (low-blockage) Cd = {cd:.3f} is outside the "
-        f"{band:.2f} band around Clift-Grace-Weber {ref:.3f} "
-        f"(error {result['Cd_error_pct']:+.1f} %). "
+        f"+/-{CD_TOLERANCE_BAND:.2f} band around Clift-Grace-Weber "
+        f"{CGW_CD_REF:.3f} (|Cd - ref| = {err_abs:.3f}). "
         "Re-run validate_3d_sphere_cd_lowblock.py."
     )
 

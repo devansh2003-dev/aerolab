@@ -198,6 +198,19 @@ def load_baked_field(path: str | Path) -> BakedField:
                 f"migrate the file."
             )
 
+        # Cross-check every required array key BEFORE the load so a
+        # truncated / partially-written bake raises a friendly ValueError
+        # instead of a KeyError leaking from inside the np.load block.
+        _required = ("rho", "ux", "uy", "uz", "body")
+        _present = set(data.files)
+        _missing = [k for k in _required if k not in _present]
+        if _missing:
+            raise ValueError(
+                f"{path} is missing required arrays {_missing!r}. The "
+                f"file may be truncated or written by an older tool; "
+                f"expected keys are {list(_required)!r}."
+            )
+
         rho = np.asarray(data["rho"]).astype(np.float32, copy=False)
         ux = np.asarray(data["ux"]).astype(np.float32, copy=False)
         uy = np.asarray(data["uy"]).astype(np.float32, copy=False)

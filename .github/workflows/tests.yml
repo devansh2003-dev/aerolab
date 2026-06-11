@@ -1,14 +1,16 @@
 name: tests
 
-# Runs ruff lint + pytest on every push to main and every PR. The fast
-# suite (199 tests as of 2026-05-24, covering solver physics, shapes,
-# polygon geometry, custom-shape extraction, forces, render, airfoil
-# input validation, doc-drift gate, and visual regression) takes ~30 s warm
-# cache, ~90 s cold (numba JIT compile dominates the cold-cache delta).
-# The validation-benchmark suite runs separately (~8 min) — full
-# Williamson + Okajima sweep at n_frames=300, above the documented FFT
-# noise floor. One visual-regression test renders a 51-frame canonical-
-# cylinder pipeline as a fingerprint check (~10 s of the warm total).
+# Runs ruff lint + pytest on every push to main and every PR. The full
+# suite (~410 tests across 29 files as of 2026-06-10, covering solver
+# physics, shapes, polygon geometry, custom-shape extraction, forces,
+# render, airfoil input validation, doc-drift gate, visual regression,
+# and validation benchmarks) takes ~10 min total on CI:
+#   - dep install + setup: ~5 min cold pip cache, ~30 s warm
+#   - ruff lint: ~3 s
+#   - pytest -q: ~10 min (dominated by ~15 min of simulation tests that
+#     re-run the LBM solver per parametrize; the audit C-9 sub-rec (b)
+#     to add @pytest.mark.slow markers + a module-scoped fixture cache
+#     is the path to a sub-2-minute fast suite, deferred).
 #
 # We pin to Python 3.11 because numba 0.65.1 (pinned in requirements.txt)
 # doesn't yet wheel for 3.12+ on every platform; bump together when we

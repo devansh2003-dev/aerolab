@@ -480,6 +480,32 @@ def solve_lbm(shape_preset, reynolds_target, aoa_deg, res_key,
     """
     progress = progress_callback or _noop_progress
 
+    # C-16: validate inputs at the boundary so a bad call fails fast with
+    # a friendly ValueError instead of a deep ZeroDivisionError /
+    # IndexError half-way through the kernel. (a) Re must be > 0 -- the
+    # tau formula divides by it. (b) shape_preset is an explicit
+    # allow-list match: a future caller passing "Triangle" used to fall
+    # through to the NACA branch and die inside shape_preset.split()[1].
+    # (c) res_key is validated against the same allow-list we use in the
+    # UI's VIZ_MODES (~line 838).
+    _ALLOWED_SHAPES = (
+        "Cylinder", "Square", "Ellipse", "NACA 0012", "NACA 4412", "Custom",
+    )
+    if reynolds_target is None or float(reynolds_target) <= 0.0:
+        raise ValueError(
+            f"reynolds_target must be > 0, got {reynolds_target!r}."
+        )
+    if shape_preset not in _ALLOWED_SHAPES:
+        raise ValueError(
+            f"shape_preset {shape_preset!r} not in allow-list "
+            f"{_ALLOWED_SHAPES!r}."
+        )
+    if res_key not in RESOLUTION_PRESETS:
+        raise ValueError(
+            f"res_key {res_key!r} not in RESOLUTION_PRESETS "
+            f"{tuple(RESOLUTION_PRESETS.keys())!r}."
+        )
+
     res_cfg = RESOLUTION_PRESETS[res_key]
     LBM_NX = res_cfg["Nx"]
     LBM_NY = res_cfg["Ny"]
@@ -730,9 +756,23 @@ def solve_lbm(shape_preset, reynolds_target, aoa_deg, res_key,
         # Skip DC bin (index 0); pick the loudest non-DC frequency.
         peak_idx = int(np.argmax(fft_mag[1:])) + 1
         peak_freq = float(freqs_per_step[peak_idx])
-        strouhal = peak_freq * char_length / U_INFLOW
-        strouhal_bin_width = (1.0 / record_len) * char_length / U_INFLOW
-        strouhal_n_cycles = peak_freq * record_len
+        # C-16: gate the Strouhal report against noise. In steady (sub-
+        # shedding) flow there's no shedding mode, so argmax over the FFT
+        # returns a spurious peak (the loudest bin of random noise).
+        # When the peak's magnitude is below ~4x the median spectrum it
+        # is statistically indistinguishable from background; surface NaN
+        # instead of a confident-looking-but-wrong St number.
+        _fft_nondc = fft_mag[1:]
+        _median = float(np.median(_fft_nondc)) if len(_fft_nondc) else 0.0
+        _peak = float(fft_mag[peak_idx])
+        if _median > 0.0 and _peak < 4.0 * _median:
+            strouhal = float("nan")
+            strouhal_bin_width = float("nan")
+            strouhal_n_cycles = float("nan")
+        else:
+            strouhal = peak_freq * char_length / U_INFLOW
+            strouhal_bin_width = (1.0 / record_len) * char_length / U_INFLOW
+            strouhal_n_cycles = peak_freq * record_len
     else:
         strouhal = float("nan")
         strouhal_bin_width = float("nan")

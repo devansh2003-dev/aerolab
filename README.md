@@ -81,7 +81,7 @@ streamlit run app.py
 ```
 
 ```powershell
-pytest -q                                # 320+ unit tests across 22 files (+11 validation-benchmark gates), ~70 s warm
+pytest -q                                # ~410 tests across 29 files (incl. validation-benchmark gates), ~10 min on CI
 python scripts/dev_validate_cfd.py       # 4 physics gates + 3 diagnostics, ~90 s
 ```
 
@@ -105,13 +105,13 @@ python scripts/dev_validate_cfd.py       # 4 physics gates + 3 diagnostics, ~90 
 
 Phase 1 (solver core, W1–4) shipped Day 5, expanded Days 6–14 with originally-Phase-2/3 work (MRT in 2D, TRT in 3D, Bouzidi, Zou-He, Ladd 1994 momentum exchange in 2D; MYSL 2002 q-aware momentum exchange landed in 3D at v1.7.0). Phase 2 (W5 image upload, W6 multi-viz, W7 side-by-side compare, W8 gallery, plus a Phase-2.5 click-to-draw canvas) all shipped. Phase 3 closed: NeuralFoil ✅, validation against Williamson 1996 + Okajima 1982 ✅, plain-English UX overhaul ✅, **3D gallery (pre-baked preview) ✅**, **OpenFOAM 11 cylinder Re=100 cross-check ✅** (Cd within +1.6 %, St within −3.6 % of Williamson — both inside the reviewer's ±5 % gate; see [VALIDATION.md §8.4](VALIDATION.md)).
 
-The **3D gallery** is a pre-baked field replay (Cloud-safe). The D3Q19 TRT kernel runs offline (one-off bake per scene, ~20 s on a laptop); the deployed app loads the saved .npz and renders interactive streamlines + body. 10 scenes ship: sphere, cylinder, cube, NACA 0012, NACA 4412 — each at Re ∈ {40, 100}; NACA wings additionally at AoA ∈ {0°, 10°}. Real-time 3D solving stays local-only (D3Q19 populations are too big for the 1-vCPU Cloud worker). See [VALIDATION.md §8](VALIDATION.md) for what 3D is and isn't validated against.
+The **3D gallery** is a pre-baked field replay (Cloud-safe). The D3Q19 TRT kernel runs offline (one-off bake per scene, ~20 s on a laptop); the deployed app loads the saved .npz and renders interactive streamlines + body. ~76 scenes ship across 5 shapes: sphere, cylinder, cube (bluff bodies at Re ∈ {20, 40, 100}); NACA 0012 and NACA 4412 (also Re=200) with AoA variants in {±5°, ±15°, ±30°, ±45°}; cube also rotated through the same AoA set. Real-time 3D solving stays local-only (D3Q19 populations are too big for the 1-vCPU Cloud worker). See [VALIDATION.md §8](VALIDATION.md) for what 3D is and isn't validated against.
 
 | Phase | Weeks | Deliverable | Status |
 |------:|------:|------|------|
 | 1 — Solver core | 1–4 | LBM works, validated, deployed with 5+ shapes | ✅ Day 5; expanded to D14 |
 | 2 — Shape freedom | 5–8 | **Image upload + silhouette extraction**, multi-viz, side-by-side, GIF export, gallery | **Upload ✅**, sample silhouettes ✅, **click-to-draw canvas ✅**, side-by-side ✅, GIF ✅, gallery ✅, multi-viz (vorticity / velocity / pressure) ✅. |
-| 3 — Polish + 3D | 9–12 | NeuralFoil, 3D gallery, OpenFOAM cross-validation, launch | NeuralFoil ✅, Cloud deploy ✅, **3D gallery (D3Q19 TRT, 10 pre-baked scenes) ✅**, **OpenFOAM 11 cylinder Re=100 cross-check ✅** (Cd +1.6 %, St −3.6 % vs Williamson) |
+| 3 — Polish + 3D | 9–12 | NeuralFoil, 3D gallery, OpenFOAM cross-validation, launch | NeuralFoil ✅, Cloud deploy ✅, **3D gallery (D3Q19 TRT, ~76 pre-baked scenes across 5 shapes) ✅**, **OpenFOAM 11 cylinder Re=100 cross-check ✅** (Cd +1.6 %, St −3.6 % vs Williamson) |
 
 ## Solver diagnostics
 
@@ -150,7 +150,7 @@ Shares the *collision-rule family* (MRT + Smagorinsky LES in 2D, TRT in 3D) with
 - Wall-function turbulence → we resolve the boundary layer directly (only feasible at low Re)
 - Cumulant collision, multi-block, automatic time-stepping, Fluent cross-validation (OpenFOAM 11 cross-validation *is* done — see Validation section above)
 - Bouzidi q-field for arbitrary uploaded polygons (built-ins have it; custom uploads use halfway BB)
-- **Live 3D solve on Cloud.** The 3D D3Q19 TRT kernel runs offline (~20 s per scene on a laptop); the hosted app replays the saved velocity field. 3D Re tops out at 100 in the shipped bakes (Re=200 BGK/TRT diverged at our grid resolution — tau ≈ 0.512). **One validated 3D drag configuration as of v1.7.0** — the sphere Re = 100 case with MYSL 2002 momentum exchange + D = 40 lands at Cd = 1.160 / **+6.44 %** above Clift-Grace-Weber 1978. This is a single-configuration result, not a general 3D validation; the Re = 20 companion still uses the old Ladd + D = 20 baseline and remains at +56 %. The residual ~ 6 % at Re = 100 breaks down into known refinement sources (residual blockage at B = 25 %, D = 40 voxelisation versus Mei-Luo-Shyy 1999's D ≥ 60, Bouzidi quadratic BB); a future D = 60 / B = 10 % bake should push under 2 % (see [VALIDATION.md §8.3.4](VALIDATION.md)).
+- **Live 3D solve on Cloud.** The 3D D3Q19 TRT kernel runs offline (~20 s per scene on a laptop); the hosted app replays the saved velocity field. Bluff-body bakes (sphere / cylinder / cube) top out at Re = 100; the NACA wings additionally bake at Re = 200 because the streamlined profile keeps the TRT path stable past the bluff cap. **One validated 3D drag configuration as of v1.7.0** — the sphere Re = 100 case with MYSL 2002 momentum exchange + D = 40 lands at Cd = 1.160 / **+6.44 %** above Clift-Grace-Weber 1978. This is a single-configuration result, not a general 3D validation; the Re = 20 companion still uses the old Ladd + D = 20 baseline and remains at +56 %. The residual ~ 6 % at Re = 100 breaks down into known refinement sources (residual blockage at B = 25 %, D = 40 voxelisation versus Mei-Luo-Shyy 1999's D ≥ 60, Bouzidi quadratic BB); a future D = 60 / B = 10 % bake should push under 2 % (see [VALIDATION.md §8.3.4](VALIDATION.md)).
 
 Every choice on the production hot path is textbook-correct for built-in shapes. The *envelope* (Re, dimensionality, scope) is firmly academic-tutorial.
 
@@ -186,7 +186,7 @@ aerolab/
 │   ├── naca0012_aoa_polar.py       # 8-angle airfoil polar
 │   ├── dev_validate_cfd.py         # 4 physics gates + 3 diagnostics
 │   └── dev_grid_convergence.py     # Std vs Detailed + Richardson extrapolation
-└── tests/                          # 320+ unit tests across 22 files + 11 validation-benchmark gates
+└── tests/                          # ~410 tests across 29 files (incl. validation-benchmark gates)
 ```
 
 ## License

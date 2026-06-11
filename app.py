@@ -39,6 +39,7 @@ The browser opens automatically at http://localhost:8501.
 # matching Cloud's later assignment. Cloud is detected by the mount
 # point Streamlit Cloud uses, which does not exist locally on any
 # OS.
+import hashlib
 import os
 import sys
 
@@ -333,12 +334,15 @@ st.markdown(
 # advertises 3D when the user is in 2D, then converts to a confirm
 # pill ("3D gallery · live") once they're already there -- so the
 # chip stops pointing at a sidebar item the user has just acted on.
+# D-7: the in-3D variant previously rendered "preview · live" which
+# disagreed with the leading comment's "3D gallery · live"; the comment
+# is the correct intent. Both states now read consistently.
 _active_view_for_chip = st.session_state.get(
     "solver_view", "2D playground (validated)"
 )
 _in_3d_view = _active_view_for_chip == "3D gallery (preview)"
 _chip_inner_text = (
-    "preview &middot; live"
+    "3D gallery &middot; live"
     if _in_3d_view else "preview, in sidebar &rarr;"
 )
 _chip_color = "#34d399" if _in_3d_view else "#94a3b8"
@@ -423,13 +427,16 @@ with st.sidebar:
     # the selection to silently reset to index=0 on every rerun.
     # Reviewer 2026-05-26 confirmed clicking "3D (local, in development)"
     # did not switch the view -- an explicit key fixes the binding.
+    # C-4: setdefault-then-key pattern (avoids the value/index= + key=
+    # warning Streamlit emits, and lets share-links / callbacks drive
+    # `solver_view` before the radio renders).
+    st.session_state.setdefault("solver_view", "2D playground (validated)")
     view = st.radio(
         "Solver dimensionality",
         [
             "2D playground (validated)",
             "3D gallery (preview)",
         ],
-        index=0,
         label_visibility="collapsed",
         key="solver_view",
         help=(
@@ -445,6 +452,13 @@ with st.sidebar:
         ),
     )
     st.divider()
+
+# Reset the 3D mode-switch toast flag whenever we're NOT in the 3D
+# branch. Combined with the toast block at the top of the 3D branch
+# this makes every 2D->3D transition fire one "Loading 3D scene..."
+# toast (C-20), while reruns inside 3D stay silent.
+if view != "3D gallery (preview)":
+    st.session_state["_3d_branch_toasted"] = False
 
 
 # ---------------------------------------------------------------------------
@@ -688,6 +702,89 @@ def _trace_streamlines(
     )
 
 
+# ---- 3D pipeline caches (B-2) --------------------------------------------
+# Every sidebar toggle / scene click reruns the whole script. Without these
+# wrappers .npz dequant + np.gradient volumes + RK2 streamline integration
+# + marching_cubes all re-execute -- on the 1-vCPU Cloud container that's
+# multi-second stalls per rerun AND pure-Python GIL contention that
+# starves other browser sessions.
+#
+# Cache keys are derived solely from scene_name (+ viz_mode / q_level_pct
+# where they actually change the result). The full ndarray inputs are
+# passed as leading-underscore params so st.cache_data skips hashing them
+# -- safe because they are uniquely determined by the cache key.
+
+@st.cache_resource(show_spinner=False)
+def _load_baked_field_cached(path: str):
+    """Memoise the on-disk .npz load + dequantise. Returned BakedField
+    holds immutable numpy arrays; cache_resource (not cache_data) avoids
+    a 50 MB-per-access deep copy."""
+    from src.baked_fields import load_baked_field
+    return load_baked_field(path)
+
+
+@st.cache_data(show_spinner=False, max_entries=20)
+def _trace_streamlines_cached(
+    scene_name: str,
+    n_seeds: int,
+    _ux, _uy, _uz, _body, _sx, _sy, _sz,
+):
+    return _trace_streamlines(_ux, _uy, _uz, _body, _sx, _sy, _sz)
+
+
+@st.cache_data(show_spinner=False, max_entries=24)
+def _color_field_volume_cached(scene_name: str, viz_mode: str, _field):
+    """Compute the per-cell scalar volume used to paint streamlines, plus
+    its colorbar range. Vorticity's 6x np.gradient is the dominant cost;
+    Pressure does one gauge subtraction; Velocity just |u|."""
+    if viz_mode == "Vorticity":
+        _dudy = np.gradient(_field.ux, axis=1)
+        _dudz = np.gradient(_field.ux, axis=2)
+        _dvdx = np.gradient(_field.uy, axis=0)
+        _dvdz = np.gradient(_field.uy, axis=2)
+        _dwdx = np.gradient(_field.uz, axis=0)
+        _dwdy = np.gradient(_field.uz, axis=1)
+        _ox = (_dwdy - _dvdz).astype(np.float32)
+        _oy = (_dudz - _dwdx).astype(np.float32)
+        _oz = (_dvdx - _dudy).astype(np.float32)
+        vol = np.sqrt(_ox * _ox + _oy * _oy + _oz * _oz)
+        _src = vol[~_field.body] if (~_field.body).any() else vol
+        cmax = max(float(np.percentile(_src, 99.5)), 1e-6)
+        return vol, 0.0, cmax, "|ω|", "Viridis"
+    elif viz_mode == "Pressure":
+        _rho = _field.rho.astype(np.float32)
+        _rho_fluid = _rho[~_field.body] if (~_field.body).any() else _rho
+        _rho_ref = float(np.median(_rho_fluid))
+        vol = ((1.0 / 3.0) * (_rho - _rho_ref)).astype(np.float32)
+        _pfl = vol[~_field.body] if (~_field.body).any() else vol
+        _abs = max(
+            abs(float(np.percentile(_pfl, 1.0))),
+            abs(float(np.percentile(_pfl, 99.0))),
+            1e-9,
+        )
+        return vol, -_abs, _abs, "p", "RdBu_r"
+    else:  # Velocity
+        vol = np.sqrt(
+            _field.ux ** 2 + _field.uy ** 2 + _field.uz ** 2
+        ).astype(np.float32)
+        # Velocity range is set by the caller (depends on u_in_meta);
+        # signal that here with sentinel None values.
+        return vol, None, None, "speed", "Plasma"
+
+
+@st.cache_data(show_spinner=False, max_entries=20)
+def _q_isosurface_cached(scene_name: str, q_level_pct: int, _field):
+    """Compute Q-criterion field + isosurface; returns (verts, faces) or
+    None if Q-max is zero or marching_cubes finds no surface."""
+    from src.lbm_3d_qcriterion import compute_q_field, extract_q_isosurface
+    Q = compute_q_field(_field.ux, _field.uy, _field.uz, body=_field.body)
+    q_max_f = float(Q.max())
+    if q_max_f <= 0.0:
+        return None
+    level = (q_level_pct / 100.0) * q_max_f
+    return extract_q_isosurface(Q, level=level)
+
+
 def _closed_cylinder_mesh(cx, cy, R, z0, z1, n_theta=48):
     """Build a watertight cylinder (curved side + two end caps) as an
     explicit triangle mesh. Returns (verts_x, verts_y, verts_z, i, j, k)
@@ -832,6 +929,29 @@ def _closed_box_mesh(cx, cy, cz, hx, hy, hz):
     return vx, vy, vz, tris[:, 0], tris[:, 1], tris[:, 2]
 
 
+@st.cache_data(show_spinner=False, max_entries=64)
+def _render_shape_preview_cached(
+    shape_preset: str,
+    res_display: str,
+    aoa_deg: float,
+    polygon_key,
+    _custom_polygon,
+):
+    """C-18 cache wrapper for src.lbm_render.render_shape_preview. Cache
+    key is (shape, resolution, aoa, polygon_hash) -- velocity drags don't
+    re-render because velocity isn't part of the key. The polygon array
+    is passed as a leading-underscore param so it bypasses hashing; the
+    polygon_key string (a 12-char sha1 prefix computed by the caller) is
+    the load-bearing identifier."""
+    from src.lbm_render import RESOLUTION_PRESETS, render_shape_preview
+    return render_shape_preview(
+        shape_preset,
+        RESOLUTION_PRESETS[res_display],
+        aoa_deg,
+        custom_polygon=_custom_polygon,
+    )
+
+
 @st.cache_data(show_spinner=False)
 def _shape_preview_png_3d(
     shape_key: str, aoa_deg: int, w_px: int = 260, h_px: int = 130,
@@ -935,7 +1055,19 @@ def _shape_preview_png_3d(
 if view == "3D gallery (preview)":
     from pathlib import Path
 
-    from src.baked_fields import list_baked_fields, load_baked_field
+    from src.baked_fields import list_baked_fields
+
+    # C-20: tab-switch from 2D to 3D leaves the 2D paint on screen until
+    # the first 3D widget renders below. A toast appears instantly in
+    # the top-right so the user knows the switch registered. The flag
+    # is reset at the top of the script when view != 3D (see above the
+    # branch start), so every fresh 2D->3D transition toasts once and
+    # reruns within 3D stay silent.
+    if not st.session_state.get("_3d_branch_toasted", False):
+        st.toast(":material/3d_rotation: Loading 3D scene...")
+        st.session_state["_3d_branch_toasted"] = True
+    # C-5 branch tracking: see comment at top of Real CFD branch.
+    st.session_state["_lbm_branch_id"] = "3d"
 
     baked_dir = Path("data/baked")
     available = list_baked_fields(baked_dir)
@@ -1083,6 +1215,20 @@ if view == "3D gallery (preview)":
                 "upload is queued for a future release."
             ),
         )
+        # B-3: post-callback verification. If a card click set
+        # `_3d_card_pending_verify` but the selectbox isn't showing that
+        # label on the next rerun, the click was silently dropped (the
+        # audit observed this under server-side congestion). Surface a
+        # warning toast so the user knows to retry instead of staring at
+        # an unchanged scene.
+        _pending = st.session_state.pop("_3d_card_pending_verify", None)
+        if _pending is not None and shape_display_3d != _pending:
+            st.toast(
+                f":material/warning: The card you clicked ({_pending}) "
+                f"didn't apply. Try again, or pick the shape from the "
+                f"dropdown.",
+                icon=":material/warning:",
+            )
         chosen_shape = _shape_label_to_key[shape_display_3d]
 
         # --- Custom shape: Upload / Draw / Sample tabs (stubbed) ----
@@ -1177,14 +1323,18 @@ if view == "3D gallery (preview)":
                 "&nbsp; :gray[(deg)]"
             )
             _aoa_state_key = f"gallery_aoa_{chosen_shape}"
-            _aoa_state = st.session_state.get(
-                _aoa_state_key, 0
+            # C-4: clamp must be WRITTEN BACK to session_state before the
+            # slider instantiates -- otherwise an out-of-range session
+            # value (from a stale share-link or older session) hits the
+            # slider's [-45, +45] bound check and raises before render.
+            # Then drop value= and let the slider read from session_state.
+            _aoa_state = int(
+                max(-45, min(45, int(st.session_state.get(_aoa_state_key, 0))))
             )
-            _aoa_state = int(max(-45, min(45, int(_aoa_state))))
+            st.session_state[_aoa_state_key] = _aoa_state
             _aoa_nominal = st.slider(
                 "Angle of attack (deg)",
                 min_value=-45, max_value=45,
-                value=_aoa_state,
                 step=1,
                 key=_aoa_state_key,
                 label_visibility="collapsed",
@@ -1329,9 +1479,13 @@ if view == "3D gallery (preview)":
 
         st.divider()
         st.markdown("### :material/air: &nbsp; Streamlines")
+        # C-4: setdefault-then-key-only for the 3D sidebar widgets so
+        # share-link / callback writes to these session_state keys win
+        # over a stale value=. Same pattern as gallery_velocity above.
+        st.session_state.setdefault("n_seeds_gallery", 42)
         n_seeds = st.slider(
             "Density",
-            min_value=12, max_value=96, value=42,
+            min_value=12, max_value=96,
             key="n_seeds_gallery",
             disabled=(shape_for_loader is None),
             help=(
@@ -1340,14 +1494,16 @@ if view == "3D gallery (preview)":
                 "smooth in-browser."
             ),
         )
+        st.session_state.setdefault("line_width_gallery", 3)
         line_width = st.slider(
             "Thickness",
-            min_value=1, max_value=8, value=3,
+            min_value=1, max_value=8,
             key="line_width_gallery",
             disabled=(shape_for_loader is None),
         )
+        st.session_state.setdefault("gallery_animate", True)
         animate_flow = st.checkbox(
-            "Animate flow", value=True, key="gallery_animate",
+            "Animate flow", key="gallery_animate",
             disabled=(shape_for_loader is None),
             help=(
                 "Bright streaks travel along each streamline, "
@@ -1358,18 +1514,21 @@ if view == "3D gallery (preview)":
 
         st.divider()
         st.markdown("### :material/visibility: &nbsp; Overlays")
+        st.session_state.setdefault("show_body_gallery", True)
         show_sphere = st.checkbox(
-            "Body", value=True, key="show_body_gallery",
+            "Body", key="show_body_gallery",
             disabled=(shape_for_loader is None),
             help="Render the solid obstacle.",
         )
+        st.session_state.setdefault("show_box_gallery", True)
         show_box = st.checkbox(
-            "Wind-tunnel chamber outline", value=True,
+            "Wind-tunnel chamber outline",
             key="show_box_gallery",
             disabled=(shape_for_loader is None),
         )
+        st.session_state.setdefault("show_q_gallery", False)
         show_q = st.checkbox(
-            "Q-criterion vortex shell", value=False,
+            "Q-criterion vortex shell",
             key="show_q_gallery",
             disabled=(shape_for_loader is None),
             help=(
@@ -1378,9 +1537,10 @@ if view == "3D gallery (preview)":
                 "flow swirls."
             ),
         )
+        st.session_state.setdefault("q_level_pct_gallery", 10)
         q_level_pct = st.slider(
             "Q threshold (% of max)",
-            min_value=1, max_value=50, value=10,
+            min_value=1, max_value=50,
             key="q_level_pct_gallery",
             disabled=(not show_q) or (shape_for_loader is None),
         )
@@ -1418,7 +1578,23 @@ if view == "3D gallery (preview)":
     # during the Python-side prep instead of a frozen-looking page.
     _gallery_prog = st.progress(0, text="Loading scene...")
     _gallery_prog.progress(10, text="Loading velocity field...")
-    field = load_baked_field(preset_options[chosen_name])
+    # C-7: guard the .npz read so a corrupt/partial bake doesn't dump a
+    # raw zipfile.BadZipFile / KeyError traceback into the UI. Same
+    # friendly message as the missing-directory case above (~line 1037)
+    # for visual consistency. The cache wrapper won't store a failed
+    # call, so a later fixed deploy will succeed on the next try.
+    import zipfile as _zipfile
+    try:
+        field = _load_baked_field_cached(str(preset_options[chosen_name]))
+    except (_zipfile.BadZipFile, KeyError, ValueError, OSError) as _e:
+        _gallery_prog.empty()
+        st.error(
+            ":material/error: Scene file is unreadable. The deploy may "
+            "be mid-update or this bake is corrupt. Try another scene "
+            "from the sidebar, or refresh in a moment."
+        )
+        st.caption(f"Detail: {type(_e).__name__}: {_e}")
+        st.stop()
     u_in_meta = float(field.meta.get("u_in", 0.05))
     Nx, Ny, Nz = field.Nx, field.Ny, field.Nz
 
@@ -1480,109 +1656,41 @@ if view == "3D gallery (preview)":
     # See _trace_streamlines docstring above for the rationale: the
     # alternative go.Streamtube does this integration in JavaScript on
     # the browser's main thread, freezing the UI on scene swap. Doing
-    # it server-side with numba-jitted trilerp_3d gives us real
-    # progress updates AND lets the browser just render lines.
-    def _trace_prog(frac):
-        pct = int(50 + 40 * frac)
-        _gallery_prog.progress(
-            pct,
-            text=f"Tracing streamlines ({int(frac * 100)}%)...",
-        )
-
+    # it server-side with numba-jitted trilerp_3d lets the browser just
+    # render lines. B-2: cached via _trace_streamlines_cached keyed
+    # (scene_name, n_seeds), so subsequent reruns hit the cache and the
+    # spinner flashes briefly. The per-step progress_callback is dropped
+    # because cached runs are sub-second and only the cold first call
+    # needs feedback (the spinner covers it).
+    _gallery_prog.progress(60, text="Tracing streamlines...")
     with st.spinner(":material/refresh: Tracing streamlines through the flow..."):
-        flat_x, flat_y, flat_z, flat_speed = _trace_streamlines(
+        flat_x, flat_y, flat_z, flat_speed = _trace_streamlines_cached(
+            chosen_name, int(n_seeds),
             field.ux, field.uy, field.uz, field.body,
             seeds_x, seeds_y, seeds_z,
-            progress_callback=_trace_prog,
         )
 
     _gallery_prog.progress(88, text="Sampling colour field...")
-    # Pick the scalar field that paints the streamlines. Velocity is
-    # the default (uses the speed we already sampled during tracing);
-    # Vorticity and Pressure require an extra trilerp at each vertex.
-    if viz_mode_3d == "Vorticity":
-        from src.lbm_3d_smoke_particles import trilerp_3d as _trilerp
-        # |omega| = |curl(u)|, computed once on the lattice grid.
-        _dudy = np.gradient(field.ux, axis=1)
-        _dudz = np.gradient(field.ux, axis=2)
-        _dvdx = np.gradient(field.uy, axis=0)
-        _dvdz = np.gradient(field.uy, axis=2)
-        _dwdx = np.gradient(field.uz, axis=0)
-        _dwdy = np.gradient(field.uz, axis=1)
-        _ox = (_dwdy - _dvdz).astype(np.float32)
-        _oy = (_dudz - _dwdx).astype(np.float32)
-        _oz = (_dvdx - _dudy).astype(np.float32)
-        _omag = np.sqrt(_ox * _ox + _oy * _oy + _oz * _oz)
-        # Resample at vertex positions; NaN-separators in flat_x stay
-        # NaN in the colour array, which keeps the line break clean.
-        _vx = np.where(np.isfinite(flat_x), flat_x, 0.0).astype(np.float64)
-        _vy = np.where(np.isfinite(flat_y), flat_y, 0.0).astype(np.float64)
-        _vz = np.where(np.isfinite(flat_z), flat_z, 0.0).astype(np.float64)
-        flat_color = _trilerp(_omag, _vx, _vy, _vz).astype(np.float32)
-        flat_color[~np.isfinite(flat_x)] = np.nan
-        _omag_99 = float(np.percentile(
-            _omag[~field.body] if (~field.body).any() else _omag, 99.5
-        ))
-        cmin_color = 0.0
-        cmax_color = max(_omag_99, 1e-6)
-        _color_title = "|ω|"
-        _colorscale = "Viridis"
-    elif viz_mode_3d == "Pressure":
-        from src.lbm_3d_smoke_particles import trilerp_3d as _trilerp
-        # Gauge pressure: p = c_s^2 * (rho - rho_ref) with c_s^2 = 1/3
-        # for D3Q19. Subtracting the freestream-median rho_ref puts
-        # the colorbar at zero in undisturbed flow, so the diverging
-        # RdBu_r reads as RED = stagnation (front of body), BLUE =
-        # suction (top of cambered wing, sides of cylinder),
-        # near-white = freestream. The raw rho variation is O(1e-3),
-        # which the previous percentile-stretch on rho rendered as
-        # near-flat colour bands; multiplying by c_s^2 = 1/3 gives a
-        # pressure quantity that is physically interpretable (lattice
-        # units) instead of "density offset" which means little to
-        # users who came in for a flow visual.
-        _rho = field.rho.astype(np.float32)
-        _rho_fluid = _rho[~field.body] if (~field.body).any() else _rho
-        _rho_ref = float(np.median(_rho_fluid))
-        _p = ((1.0 / 3.0) * (_rho - _rho_ref)).astype(np.float32)
-        _p_fluid = _p[~field.body] if (~field.body).any() else _p
-        # Symmetric range so zero (freestream) sits at colorbar centre.
-        # Use max of |1st pct| and |99th pct| so a single sharp peak
-        # (stagnation point) does not stretch the colorbar so far
-        # that the suction lobe goes white.
-        _p_abs = max(
-            abs(float(np.percentile(_p_fluid, 1.0))),
-            abs(float(np.percentile(_p_fluid, 99.0))),
-            1e-9,
-        )
-        _vx = np.where(np.isfinite(flat_x), flat_x, 0.0).astype(np.float64)
-        _vy = np.where(np.isfinite(flat_y), flat_y, 0.0).astype(np.float64)
-        _vz = np.where(np.isfinite(flat_z), flat_z, 0.0).astype(np.float64)
-        flat_color = _trilerp(_p, _vx, _vy, _vz).astype(np.float32)
-        flat_color[~np.isfinite(flat_x)] = np.nan
-        cmin_color = -_p_abs
-        cmax_color = _p_abs
-        _color_title = "p"
-        _colorscale = "RdBu_r"
-    else:  # Velocity (default)
-        # Sample |u| at each streamline vertex via the same trilerp
-        # the other modes use, instead of reusing ``flat_speed`` which
-        # is the RK2 midpoint speed for that step (off by half a step
-        # from the vertex). Vertex-aligned colours read more truthful:
-        # the colour at any point on the polyline is the field's |u|
-        # at that exact point. Cost: one extra trilerp pass.
-        from src.lbm_3d_smoke_particles import trilerp_3d as _trilerp
-        _umag = np.sqrt(
-            field.ux ** 2 + field.uy ** 2 + field.uz ** 2
-        ).astype(np.float32)
-        _vx = np.where(np.isfinite(flat_x), flat_x, 0.0).astype(np.float64)
-        _vy = np.where(np.isfinite(flat_y), flat_y, 0.0).astype(np.float64)
-        _vz = np.where(np.isfinite(flat_z), flat_z, 0.0).astype(np.float64)
-        flat_color = _trilerp(_umag, _vx, _vy, _vz).astype(np.float32)
-        flat_color[~np.isfinite(flat_x)] = np.nan
+    # Pick the scalar field that paints the streamlines. The volume +
+    # range is cached per (scene_name, viz_mode); per-vertex trilerp
+    # stays inline because vertex positions depend on this rerun's
+    # seeds (which can change with the density slider).
+    vol, cmin_color, cmax_color, _color_title, _colorscale = (
+        _color_field_volume_cached(chosen_name, viz_mode_3d, field)
+    )
+    if viz_mode_3d == "Velocity":
+        # Velocity range depends on this scene's u_in_meta (computed
+        # above as cmax_speed), not on the volume's own percentile.
         cmin_color = 0.0
         cmax_color = cmax_speed
-        _color_title = "speed"
-        _colorscale = "Plasma"
+    from src.lbm_3d_smoke_particles import trilerp_3d as _trilerp
+    _vx = np.where(np.isfinite(flat_x), flat_x, 0.0).astype(np.float64)
+    _vy = np.where(np.isfinite(flat_y), flat_y, 0.0).astype(np.float64)
+    _vz = np.where(np.isfinite(flat_z), flat_z, 0.0).astype(np.float64)
+    flat_color = _trilerp(vol, _vx, _vy, _vz).astype(np.float32)
+    # NaN separators in flat_x stay NaN in the colour array, which
+    # keeps the line break clean.
+    flat_color[~np.isfinite(flat_x)] = np.nan
 
     _gallery_prog.progress(92, text="Composing scene...")
     scene_traces = [
@@ -1607,26 +1715,24 @@ if view == "3D gallery (preview)":
         )
     ]
 
-    # Q-criterion shell (optional, controlled from sidebar).
+    # Q-criterion shell (optional, controlled from sidebar). Cached per
+    # (scene_name, q_level_pct) via _q_isosurface_cached; first paint
+    # pays compute_q_field + marching_cubes, subsequent reruns hit the
+    # cache.
     if show_q:
-        from src.lbm_3d_qcriterion import compute_q_field, extract_q_isosurface
-        Q = compute_q_field(field.ux, field.uy, field.uz, body=field.body)
-        q_max_f = float(Q.max())
-        if q_max_f > 0.0:
-            level = (q_level_pct / 100.0) * q_max_f
-            iso = extract_q_isosurface(Q, level=level)
-            if iso is not None:
-                verts, faces = iso
-                scene_traces.append(
-                    go.Mesh3d(
-                        x=verts[:, 0], y=verts[:, 1], z=verts[:, 2],
-                        i=faces[:, 0], j=faces[:, 1], k=faces[:, 2],
-                        color="#22d3ee", opacity=0.32,
-                        flatshading=False,
-                        name="Q shell",
-                        hoverinfo="name",
-                    )
+        iso = _q_isosurface_cached(chosen_name, int(q_level_pct), field)
+        if iso is not None:
+            verts, faces = iso
+            scene_traces.append(
+                go.Mesh3d(
+                    x=verts[:, 0], y=verts[:, 1], z=verts[:, 2],
+                    i=faces[:, 0], j=faces[:, 1], k=faces[:, 2],
+                    color="#22d3ee", opacity=0.32,
+                    flatshading=False,
+                    name="Q shell",
+                    hoverinfo="name",
                 )
+            )
 
     # Body overlay (controlled from sidebar). Both sphere and
     # spanwise-cylinder presets render as studio-lit gradient surfaces
@@ -2109,34 +2215,40 @@ if view == "3D gallery (preview)":
     # then triggers a rerun so the chart updates immediately.
     _gallery_cards_3d = [
         # (shape_label, velocity_mps, viz_mode, title, description, btn_label)
+        # D-7: each card's velocity maps to the baked Re shown on its
+        # body so the sidebar's nominal-Re caption reads as the card
+        # claims, instead of "Re ≈ 1500 — transitional/early shedding"
+        # next to "Show me Re ≈ 100". Bluff bodies bake at Re ∈ {20,
+        # 40, 100} -> 0.30 m/s; wings additionally bake at Re=200 ->
+        # 0.60 m/s. The 3D pipeline still snaps to the nearest baked Re.
         (
-            "NACA 4412 wing (cambered)", 4.5, "Pressure",
+            "NACA 4412 wing (cambered)", 0.60, "Pressure",
             "How a wing lifts",
-            "Cambered wing in fast flow, coloured by pressure. The "
+            "Cambered wing at Re ≈ 200, coloured by pressure. The "
             "underside reads red (high), the top reads blue (low) -- "
             "that asymmetry IS the lift force.",
             "Show me",
         ),
         (
-            "NACA 0012 wing (symmetric)", 4.5, "Velocity",
+            "NACA 0012 wing (symmetric)", 0.60, "Velocity",
             "Wing at zero AoA",
-            "Symmetric NACA 0012, flow attached chord-to-tail. "
-            "Clean streamlines, thin wake -- the textbook example "
+            "Symmetric NACA 0012 at Re ≈ 200, flow attached chord-to-"
+            "tail. Clean streamlines, thin wake -- the textbook example "
             "of attached subsonic flow.",
             "Show me",
         ),
         (
-            "Cylinder (round pipe)", 4.5, "Vorticity",
+            "Cylinder (round pipe)", 0.30, "Vorticity",
             "Where the air spins",
-            "Cylinder coloured by |curl(u)|. The bright bands trace "
-            "the rotating shear layers peeling off the body.",
+            "Cylinder at Re ≈ 100, coloured by |curl(u)|. The bright "
+            "bands trace the rotating shear layers peeling off the body.",
             "Show me",
         ),
         (
-            "Cube (block)", 4.5, "Velocity",
+            "Cube (block)", 0.30, "Velocity",
             "Bluff cube",
-            "Sharp-edged separation. The corners force the shear "
-            "layers off cleanly -- the wake fills the chamber.",
+            "Sharp-edged separation at Re ≈ 100. The corners force the "
+            "shear layers off cleanly -- the wake fills the chamber.",
             "Show me",
         ),
         (
@@ -2148,7 +2260,7 @@ if view == "3D gallery (preview)":
             "Show me",
         ),
         (
-            "Sphere (round)", 4.5, "Velocity",
+            "Sphere (round)", 0.30, "Velocity",
             "Sphere wake",
             "Re ≈ 100. The streamlines split, wrap around the "
             "sphere, and converge into a clean axisymmetric wake.",
@@ -2166,6 +2278,13 @@ if view == "3D gallery (preview)":
         st.session_state["gallery_shape_select"] = _shape_lbl
         st.session_state["gallery_velocity"] = float(_vel)
         st.session_state["gallery_viz_mode"] = _vmode
+        # B-3: record the requested label so the next rerun can verify
+        # that the selectbox actually picked it up. Under heavy load /
+        # mid-rerun race conditions a card click can be silently dropped
+        # (audit observed cards 4-6 failing to apply on a long-lived
+        # session) -- without this trip-wire the user sees no change
+        # and no error.
+        st.session_state["_3d_card_pending_verify"] = _shape_lbl
         st.toast(
             f":material/play_arrow: Loading: {_title}",
             icon=":material/play_arrow:",
@@ -2242,6 +2361,13 @@ with st.sidebar:
         "Real CFD (LBM)": "CFD (LBM solver)",
         "Validation": "Validation (benchmarks)",
     }
+    # C-3: explicit key= for the same reason the solver_view radio carries
+    # one (~line 426): Streamlit's auto-keys are derived from the widget's
+    # parameters and can become unstable across reruns when surrounding
+    # markdown/CSS reflows, silently resetting the selection to index=0.
+    # The setdefault path lets share-links / callbacks drive `sim_mode`
+    # before this widget renders.
+    st.session_state.setdefault("sim_mode", "Real CFD (LBM)")
     mode = st.radio(
         "Simulation mode",
         ["Fast (NeuralFoil)", "Real CFD (LBM)", "Validation"],
@@ -2249,7 +2375,7 @@ with st.sidebar:
         # what makes AeroLab visually distinctive, and the curated gallery
         # cards give first-time visitors something compelling to click
         # without needing to know what NeuralFoil is.
-        index=1,
+        key="sim_mode",
         format_func=lambda v: _MODE_LABELS[v],
         label_visibility="collapsed",
         help=(
@@ -2376,8 +2502,7 @@ def _cached_simulate_and_render(
     # we pass a literal None marker so all preset runs share the same key
     # for that slot.
     if custom_polygon is not None:
-        import hashlib as _hl
-        polygon_key = _hl.sha1(
+        polygon_key = hashlib.sha1(
             np.ascontiguousarray(custom_polygon).tobytes()
         ).hexdigest()[:12]
     else:
@@ -2393,6 +2518,9 @@ def _cached_simulate_and_render(
 # `data/validation/results*.json` files and renders them with no solver
 # work -- the math behind the numbers lives in VALIDATION.md.
 if mode == "Validation":
+    # C-5 branch tracking: see comment at top of Real CFD branch.
+    st.session_state["_lbm_branch_id"] = "validation"
+
     import json as _json_validation
     from pathlib import Path as _Path_validation
 
@@ -2469,13 +2597,27 @@ if mode == "Validation":
         st.markdown(f"### {_title}")
 
         # --- Compact table ---
+        # D-16: defensively read each row -- a malformed validation JSON
+        # row (missing "shape" or non-numeric "re") used to raise KeyError
+        # / ValueError and abort the whole tab. Skip-and-warn keeps the
+        # remaining rows visible, matching how the rest of the app
+        # handles edge cases.
         _table_rows = []
+        _skipped = 0
         for r in _rows:
+            _shape = r.get("shape")
+            try:
+                _re_val = int(r["re"])
+            except (KeyError, TypeError, ValueError):
+                _re_val = None
+            if _shape is None or _re_val is None:
+                _skipped += 1
+                continue
             cd_corr = r.get("cd_corrected")
             cd_err = r.get("cd_error_pct")
             _table_rows.append({
-                "Shape": r["shape"],
-                "Re": int(r["re"]),
+                "Shape": _shape,
+                "Re": _re_val,
                 "Cd raw": round(float(r.get("cd_raw", 0.0)), 3),
                 "Cd corrected": (round(float(cd_corr), 3)
                                   if cd_corr is not None else None),
@@ -2489,6 +2631,12 @@ if mode == "Validation":
                               if "strouhal_n_cycles" in r else None),
                 "Cd pass": bool(r.get("cd_pass", False)),
             })
+        if _skipped > 0:
+            st.warning(
+                f":material/warning: Skipped {_skipped} malformed "
+                f"row(s) (missing shape or Re field) in this benchmark "
+                f"section."
+            )
         st.dataframe(_table_rows, width="stretch", hide_index=True)
 
         # --- Per-shape bar chart: AeroLab vs reference ---
@@ -2596,6 +2744,21 @@ if mode == "Validation":
 # time). First user click in a fresh container now pays the full ~20-30 s
 # JIT cost; subsequent clicks are instant (cached by @st.cache_data).
 if mode == "Real CFD (LBM)":
+    # C-5: Returning to Real CFD after a stint in 3D / Fast / Validation:
+    # Streamlit drops the keyed lbm_* widget state during the round-trip,
+    # so the next rerun's _current_config reads as "user changed inputs"
+    # against widget defaults -- the stale-display block then surfaces an
+    # "OUT OF DATE" banner the user didn't earn, and "Run with new
+    # settings" runs the DEFAULTS rather than what was displayed. Drop
+    # the stash on every branch entry so this rerun starts from the
+    # gallery cleanly. Cached solves stay in memory, so re-running the
+    # same config is still instant.
+    _prev_branch = st.session_state.get("_lbm_branch_id")
+    if _prev_branch is not None and _prev_branch != "real_cfd":
+        st.session_state.pop("lbm_last_displayed_inputs", None)
+        st.session_state.pop("lbm_last_displayed_config", None)
+    st.session_state["_lbm_branch_id"] = "real_cfd"
+
     # Lazy imports: keep Fast mode's cold-start untouched by Numba + matplotlib.
     # All the heavy lifting (LBM step, rendering, GIF encoding) lives in
     # src.lbm_render -- this branch is only sidebar UI + result display.
@@ -2666,7 +2829,12 @@ if mode == "Real CFD (LBM)":
             # Trigger auto-run on the rerun the promotion loop below
             # produces, so the shared link lands directly on the result.
             st.session_state["lbm_gallery_pending"] = True
-        st.session_state["lbm_share_applied"] = True
+    # Arm the one-shot flag unconditionally on first reach, even when _qp
+    # was empty. Otherwise a fresh session that LATER clicks Share writes
+    # query params with the flag still unset; on the next rerun the decode
+    # block re-applies its own URL output and silently reverts whatever
+    # the user just changed (the share-trap bug).
+    st.session_state["lbm_share_applied"] = True
 
     # Gallery card pre-fill: copy any "pending" values into their widget
     # session_state keys BEFORE the widgets render below. Done here because
@@ -2800,15 +2968,13 @@ if mode == "Real CFD (LBM)":
                     key="lbm_custom_upload",
                 )
                 if uploaded is not None:
-                    import hashlib as _hl
-
                     from src.custom_shape import extract_silhouette_from_image
                     # Detect new-file events: hash the upload bytes and
                     # compare to the last hash we saw. On a fresh file the
                     # flip toggle should reset so a user uploading a
                     # right-facing shape doesn't get it pre-flipped from a
                     # previous left-facing upload.
-                    _upload_hash = _hl.sha1(uploaded.getvalue()).hexdigest()[:12]
+                    _upload_hash = hashlib.sha1(uploaded.getvalue()).hexdigest()[:12]
                     if _upload_hash != st.session_state.get("lbm_last_upload_hash"):
                         st.session_state["lbm_last_upload_hash"] = _upload_hash
                         st.session_state["lbm_custom_flipped"] = False
@@ -2826,7 +2992,7 @@ if mode == "Real CFD (LBM)":
                             f"{len(custom_polygon)}-corner outline from a "
                             f"{result.image_w}x{result.image_h} px image."
                         )
-                    except ValueError as e:
+                    except (ValueError, OSError) as e:
                         st.error(f":material/error: {e}")
                         st.session_state.pop("lbm_custom_polygon", None)
                         custom_polygon = None
@@ -3278,9 +3444,22 @@ if mode == "Real CFD (LBM)":
         # render directly from their analytic outline.
         _preview_ready = shape_preset != "Custom" or custom_polygon is not None
         if _preview_ready:
-            from src.lbm_render import render_shape_preview
-            preview_png = render_shape_preview(
-                shape_preset, res_cfg, aoa_deg, custom_polygon=custom_polygon,
+            # C-18: cache the preview render by (shape, res, aoa, polygon
+            # hash) so every velocity-slider drag doesn't re-execute the
+            # matplotlib render (velocity doesn't affect the preview at
+            # all). The 3D twin _shape_preview_png_3d is already cached;
+            # the 2D path missed the same treatment.
+            # _polygon_key is computed lower in this branch, but the
+            # preview renders here -- so compute a local hash inline.
+            if custom_polygon is not None:
+                _preview_poly_key = hashlib.sha1(
+                    np.ascontiguousarray(custom_polygon).tobytes()
+                ).hexdigest()[:12]
+            else:
+                _preview_poly_key = None
+            preview_png = _render_shape_preview_cached(
+                shape_preset, res_display, float(aoa_deg),
+                _preview_poly_key, custom_polygon,
             )
             st.markdown("")
             st.caption(":material/preview: Preview on the LBM grid:")
@@ -3327,7 +3506,6 @@ if mode == "Real CFD (LBM)":
         # uploads. Polygon bytes themselves are too long to compare tuple-
         # equal cheaply (and numpy arrays aren't hashable).
         if custom_polygon is not None:
-            import hashlib
             _polygon_key = hashlib.sha1(
                 np.ascontiguousarray(custom_polygon).tobytes()
             ).hexdigest()[:12]
@@ -3357,6 +3535,12 @@ if mode == "Real CFD (LBM)":
                 "shape_preset": shape_preset,
                 "shape_display": shape_display,
                 "reynolds_target": reynolds_target,
+                # C-2: stash velocity_mps so the stale-display restore
+                # block can put it back. Without this the metric strip
+                # shows the LIVE slider m/s next to the STASHED Re, and
+                # the Share URL encodes a mix of live + stashed values
+                # that doesn't reproduce the run on screen.
+                "velocity_mps": velocity_mps,
                 "aoa_deg": aoa_deg,
                 "res_display": res_display,
                 "custom_polygon": custom_polygon,
@@ -3434,10 +3618,16 @@ if mode == "Real CFD (LBM)":
             ),
         ):
             # Pop every lbm_*-prefixed key. Streamlit will rebuild widgets
-            # with their default values on the next rerun.
+            # with their default values on the next rerun. D-3: preserve
+            # the JIT warm-up flag so the next run's progress text reads
+            # "Simulating", not the misleading "first-run JIT compile" --
+            # the JIT cache is process-wide and survives a UI reset.
+            _was_warm = st.session_state.get("lbm_solver_warmed_up", False)
             for _k in list(st.session_state.keys()):
                 if _k.startswith("lbm_"):
                     st.session_state.pop(_k, None)
+            if _was_warm:
+                st.session_state["lbm_solver_warmed_up"] = True
             # Also clear share-link query params so a future "Share link"
             # click writes a fresh set rather than appending to stale ones.
             st.query_params.clear()
@@ -3668,6 +3858,11 @@ if mode == "Real CFD (LBM)":
         shape_preset = _stash["shape_preset"]
         shape_display = _stash["shape_display"]
         reynolds_target = _stash["reynolds_target"]
+        # C-2: restore velocity_mps so the metric strip and Share URL
+        # read the speed that drove the displayed run, not the live
+        # slider. Fallback to the live value for back-compat with
+        # stashes written before velocity_mps was added.
+        velocity_mps = _stash.get("velocity_mps", velocity_mps)
         aoa_deg = _stash["aoa_deg"]
         res_display = _stash["res_display"]
         res_cfg = RESOLUTION_PRESETS[res_display]
@@ -3726,6 +3921,11 @@ if mode == "Real CFD (LBM)":
             shape_preset, int(reynolds_target), float(aoa_deg), res_display,
             custom_polygon=custom_polygon, viz_mode=viz_mode,
         )
+        # D-3: also mark the JIT as warm at the call site so cross-session
+        # cache hits (which skip the wrapper body and its flag write) still
+        # set the flag. Without this, a cache-served run still shows the
+        # misleading "warming up the solver" text on the next non-cached run.
+        st.session_state["lbm_solver_warmed_up"] = True
     except (ZeroDivisionError, FloatingPointError, ArithmeticError) as _sim_err:
         st.error(
             f":material/error: The simulation went numerically unstable "
@@ -3817,10 +4017,28 @@ if mode == "Real CFD (LBM)":
         # 2026-05-24 flagged this; we now match viz modes silently and
         # only warn if the snapshot's other (shape/Re/AoA) params differ
         # in a way the side-by-side is supposed to show off.
-        snap_result = _cached_simulate_and_render(
-            snap_shape, snap_re, snap_aoa, snap_res,
-            custom_polygon=snap_polygon, viz_mode=viz_mode,
-        )
+        #
+        # C-6: prefer the result stashed at pin time when viz_mode hasn't
+        # changed; the solve cache (max_entries=4) can evict after the
+        # user explores 4+ configs, and without this stash the next
+        # rerun silently re-solves the pinned config (~3 min on Cloud).
+        # When viz_mode HAS changed the stash is stale (gif was rendered
+        # in the wrong colormap), so fall back to the cache and surface
+        # a spinner -- a cache miss here can take minutes and silent is
+        # worse than slow.
+        _snap_stash = st.session_state.get("lbm_snapshot_result")
+        _snap_viz_at_pin = st.session_state.get("lbm_snapshot_viz_at_pin")
+        if _snap_stash is not None and _snap_viz_at_pin == viz_mode:
+            snap_result = _snap_stash
+        else:
+            with st.spinner(
+                ":material/refresh: Re-rendering pinned snapshot in "
+                f"{viz_mode}..."
+            ):
+                snap_result = _cached_simulate_and_render(
+                    snap_shape, snap_re, snap_aoa, snap_res,
+                    custom_polygon=snap_polygon, viz_mode=viz_mode,
+                )
         st.markdown("---")
         st.markdown("### Side-by-side comparison")
         st.caption(
@@ -3928,6 +4146,15 @@ if mode == "Real CFD (LBM)":
                 key="pin_for_comparison",
             ):
                 st.session_state["lbm_snapshot"] = _current_config
+                # C-6: stash the FULL sim_result dict + the viz_mode it
+                # was rendered in. Side-by-side prefers this over the
+                # cache when the viz_mode hasn't changed -- otherwise a
+                # user who explored 4+ configs after pinning evicts the
+                # snapshot's solve cache and the next rerun silently
+                # re-solves (~3 min on Cloud) with the misleading
+                # "instant" comment in the source claiming otherwise.
+                st.session_state["lbm_snapshot_result"] = sim_result
+                st.session_state["lbm_snapshot_viz_at_pin"] = viz_mode
                 # For Custom shapes, stash the polygon + label so the
                 # side-by-side comparison can rebuild the snapshot run
                 # (cache key includes the polygon hash; without the array
@@ -3963,6 +4190,8 @@ if mode == "Real CFD (LBM)":
                     del st.session_state["lbm_snapshot"]
                     st.session_state.pop("lbm_snapshot_polygon", None)
                     st.session_state.pop("lbm_snapshot_label", None)
+                    st.session_state.pop("lbm_snapshot_result", None)
+                    st.session_state.pop("lbm_snapshot_viz_at_pin", None)
                     st.rerun()
         with action_cols[3]:
             # Share button: encode the current config in URL query params
@@ -4018,7 +4247,21 @@ if mode == "Real CFD (LBM)":
         # better than the old toast that told them to dig in the address bar.
         if st.session_state.get("_share_url_just_built"):
             _qp_str = "&".join(f"{k}={v}" for k, v in st.query_params.to_dict().items())
-            _share_url = f"https://aerolab-devansh.streamlit.app/?{_qp_str}"
+            # D-1: use the runtime origin so local dev / forks get a
+            # working link instead of the deployed-app URL. Fall back to
+            # the deploy URL when context.url is unavailable (older
+            # Streamlit versions, headless test runs).
+            _origin = "https://aerolab-devansh.streamlit.app"
+            try:
+                _ctx_url = getattr(st.context, "url", None)
+                if _ctx_url:
+                    from urllib.parse import urlsplit
+                    _split = urlsplit(_ctx_url)
+                    if _split.scheme and _split.netloc:
+                        _origin = f"{_split.scheme}://{_split.netloc}"
+            except Exception:
+                pass
+            _share_url = f"{_origin}/?{_qp_str}"
             st.info(
                 ":material/share: **Share link ready.** Copy and send -- "
                 "opening this link reopens this exact run."
@@ -4258,7 +4501,7 @@ if mode == "Real CFD (LBM)":
                         "border:1px solid rgba(16,185,129,0.35);border-radius:9999px;"
                         "font-size:0.74rem;font-weight:600;'>"
                         ":material/check_circle: Validated &mdash; "
-                        "Williamson 1996, &plusmn;5.6 % (max 10.2 %)</span>"
+                        "Williamson 1996, this preset &plusmn;5.6 % (max 10.2 %)</span>"
                     )
                 elif shape_preset == "Square" and reynolds_target <= RE_VALIDATED_MAX:
                     _badge_html = (
@@ -4267,7 +4510,7 @@ if mode == "Real CFD (LBM)":
                         "border:1px solid rgba(16,185,129,0.35);border-radius:9999px;"
                         "font-size:0.74rem;font-weight:600;'>"
                         ":material/check_circle: Validated &mdash; "
-                        "Okajima 1982, &plusmn;4.5 % (max 5.1 %)</span>"
+                        "Okajima 1982, this preset &plusmn;4.5 % (max 5.1 %)</span>"
                     )
                 elif reynolds_target > RE_VALIDATED_MAX:
                     _badge_html = (
@@ -4578,6 +4821,9 @@ if mode == "Real CFD (LBM)":
     st.stop()
 
 # --- Fast (NeuralFoil) mode ---
+# C-5 branch tracking: see comment at top of Real CFD branch.
+st.session_state["_lbm_branch_id"] = "fast"
+
 st.title("Instant Airfoil Analysis")
 st.markdown(
     "##### Pick airfoils, set angle of attack, see lift and drag instantly "
@@ -4592,10 +4838,10 @@ st.caption(
     "neural network trained on XFoil / RANS data, not a live simulation. "
     "Use **CFD (LBM solver)** in the sidebar for time-resolved flow fields."
 )
-st.caption(
-    ":material/bolt: For full fluid simulation with visible streamlines and "
-    "wake structure, switch to **CFD (LBM solver)** in the sidebar."
-)
+# D-7: removed a duplicate caption right below that repeated the same
+# "switch to CFD (LBM solver) in the sidebar" advice in different words.
+# The single caption above already serves both purposes (ML disclaimer
+# + the pointer to the solver mode).
 
 
 # `normalize_naca` and `thickness_camber` moved to src/airfoils.py during
@@ -4824,7 +5070,20 @@ table_rows = []
 sweep_results = {}  # name -> (alphas, cl, cd, ld), reused below for the polar chart
 
 for name in valid_names:
-    p = analyze_airfoil(name, alpha, float(reynolds), model_size=nf_model_size)
+    # C-8: wrap NeuralFoil calls in a per-airfoil try/except so a model
+    # failure (corrupt weight file, surrogate edge case, etc.) surfaces
+    # as a warning and skip rather than dumping a raw traceback on the
+    # user. The LBM branch's three-tier handler at lbm_render call sites
+    # is the precedent; this matches the same shape.
+    try:
+        p = analyze_airfoil(name, alpha, float(reynolds), model_size=nf_model_size)
+        sweep_results[name] = sweep_polar(name, float(reynolds), nf_model_size)
+    except Exception as e:
+        st.warning(
+            f":material/warning: NeuralFoil prediction failed for "
+            f"{name.upper()!r}: {type(e).__name__}: {e}. Skipping."
+        )
+        continue
     table_rows.append(
         {
             "Airfoil": name.upper(),
@@ -4833,7 +5092,6 @@ for name in valid_names:
             "L/D": round(p["LD"].item(), 1),
         }
     )
-    sweep_results[name] = sweep_polar(name, float(reynolds), nf_model_size)
 
 st.subheader(f"Coefficients at &alpha; = {alpha:+.2f}&deg;, Re = {reynolds:.0e}",
              anchor=False)

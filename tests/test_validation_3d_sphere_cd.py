@@ -25,6 +25,15 @@ _RESULTS = Path(__file__).resolve().parent.parent / "data" / "validation_3d_sphe
 CD_PHYSICAL_MIN = 0.4
 CD_PHYSICAL_MAX = 3.0
 
+# C-11: hard-coded reference values for an independent recomputation.
+# The previous test asserted result["Cd_in_band"] -- a verdict the
+# script that produced the JSON already wrote -- which is circular: a
+# bug that mis-computes Cd_in_band passes the test. Pinning the
+# reference + tolerance here lets the test recompute the verdict from
+# Cd_raw alone, mirroring the d40 / mysl_d40 sibling tests.
+CGW_CD_REF = 1.09
+CD_TOLERANCE_BAND = 0.7  # absolute Cd units, matches data file
+
 
 @pytest.fixture(scope="module")
 def result() -> dict:
@@ -38,14 +47,27 @@ def result() -> dict:
 
 
 def test_drag_in_clift_grace_weber_band(result):
-    """Cd is within the tolerance band of CGW 1978 sphere Re=100."""
-    cd = result["Cd_raw"]
-    ref = result["Cd_ref_clift_grace_weber"]
-    band = result["Cd_tolerance_band"]
-    assert result["Cd_in_band"], (
-        f"sphere Re=100 Cd = {cd:.3f} is outside the {band:.2f} band "
-        f"around Clift-Grace-Weber {ref:.3f} (error {result['Cd_error_pct']:+.1f} %). "
-        "Re-bake or re-run validate_3d_sphere_cd.py."
+    """Cd is within the tolerance band of CGW 1978 sphere Re=100. C-11:
+    recompute the verdict from Cd_raw against test-side constants rather
+    than asserting result["Cd_in_band"] (which the script that produced
+    the JSON already wrote -- circular)."""
+    cd = float(result["Cd_raw"])
+    # Cross-check that the JSON's stored reference + band haven't drifted
+    # from what this test pins -- otherwise the gate moves silently.
+    assert abs(result["Cd_ref_clift_grace_weber"] - CGW_CD_REF) < 1e-9, (
+        f"JSON reference {result['Cd_ref_clift_grace_weber']} drifted "
+        f"from pinned CGW {CGW_CD_REF}; update the constant or the JSON."
+    )
+    assert abs(result["Cd_tolerance_band"] - CD_TOLERANCE_BAND) < 1e-9, (
+        f"JSON band {result['Cd_tolerance_band']} drifted from pinned "
+        f"{CD_TOLERANCE_BAND}; update the constant or the JSON."
+    )
+    err_abs = abs(cd - CGW_CD_REF)
+    assert err_abs <= CD_TOLERANCE_BAND, (
+        f"sphere Re=100 Cd = {cd:.3f} is outside the +/-{CD_TOLERANCE_BAND:.2f} "
+        f"band around Clift-Grace-Weber {CGW_CD_REF:.3f} "
+        f"(|Cd - ref| = {err_abs:.3f}). Re-bake or re-run "
+        f"validate_3d_sphere_cd.py."
     )
 
 

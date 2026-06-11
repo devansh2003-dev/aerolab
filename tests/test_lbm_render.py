@@ -292,16 +292,43 @@ def test_simulate_and_render_progress_callback_called():
 
 
 def test_simulate_and_render_default_n_frames_uses_preset():
-    """When n_frames is not passed, the preset's frame count must apply.
-    Catches a refactor that accidentally hardcodes a test override into
-    production. We don't run the full simulation (too slow) -- just inspect
-    the returned dict for a config-equivalent call (n_frames=1)."""
-    # Run with n_frames=1 (fastest) and confirm the result reflects that
-    # explicit override, then confirm we *can* read preset n_frames separately.
-    result = simulate_and_render(
-        "Cylinder", 200, 0.0, STANDARD, n_frames=1,
-    )
-    assert result["n_frames"] == 1
+    """When ``n_frames`` is None the preset's frame count must apply.
+    C-11: the previous version of this test passed ``n_frames=1`` and
+    asserted ``result["n_frames"] == 1`` -- the input echoed back, which
+    is tautological and never exercised the ``None -> preset`` fallback
+    it claimed to defend. This test now actually drives ``n_frames=None``
+    and asserts the result picks up the preset's value, so a refactor
+    that breaks that fallback (e.g. accidentally substituting a hardcoded
+    default) fails this test instead of silently shipping."""
+    # Use a tiny custom preset so the fallback test is fast even though
+    # we no longer override n_frames. Re-use the STANDARD preset but only
+    # if it's small enough; otherwise build a minimal preset on the fly.
+    # The STANDARD preset's n_frames is ~150 -- ~30 s on a laptop. We
+    # bypass that by patching the preset's n_frames for this single call.
+    import src.lbm_render as _lbm_render
+
+    _key = "C11_TINY_PRESET (32 x 8)"
+    _tiny_cfg = {
+        "Nx": 32, "Ny": 8, "body_x": 8, "cy": 4,
+        "cylinder_D": 4, "square_side": 4, "naca_chord": 8,
+        "chord": 8, "ellipse_a": 2, "ellipse_b": 1, "ellipse_aoa": 0,
+        "n_frames": 2,
+    }
+    _lbm_render.RESOLUTION_PRESETS[_key] = _tiny_cfg
+    try:
+        result = simulate_and_render(
+            "Cylinder", 100, 0.0, _key,  # NOTE: no n_frames kwarg
+        )
+        # The fallback must pick up the preset's n_frames.
+        assert result["n_frames"] == _tiny_cfg["n_frames"], (
+            f"None-fallback failed: passed n_frames=<unset>, preset "
+            f"says {_tiny_cfg['n_frames']}, got {result['n_frames']}. "
+            f"A refactor likely hardcoded a default instead of reading "
+            f"the preset."
+        )
+    finally:
+        _lbm_render.RESOLUTION_PRESETS.pop(_key, None)
+
     # Preset's default frame count is still what production uses. The
     # exact number is tuned for Cloud wall-time; this test just guards
     # against the preset accidentally going below the kick window.

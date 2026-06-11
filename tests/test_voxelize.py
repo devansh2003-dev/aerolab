@@ -158,19 +158,22 @@ class TestReadStl:
             read_stl(path)
 
     def test_size_mismatch_falls_through_to_ascii_parser(self, tmp_path):
-        """A file that fails the binary size check should be retried as
-        ASCII; if that also fails, the error should be a clean ValueError."""
+        """A file that fails the binary size check is retried as ASCII;
+        if THAT also yields no vertex lines, the parser now raises a
+        ValueError instead of silently returning an empty (0, 3, 3)
+        array. The silent-empty behaviour the prior version of this
+        test enshrined was the bug audit C-13 called out: a truncated
+        binary STL would 'succeed' here, then fail at the next layer
+        with a misleading 'mesh fell outside the grid' message that
+        sent the caller chasing the wrong root cause."""
+        import pytest
         path = tmp_path / "noise.stl"
         # 100 bytes is not a valid binary STL size (would need 80 + 4 + 50N
         # for some N; 16 != 50N for any non-negative integer N). Also not
         # valid ASCII STL text (no 'vertex' lines).
         path.write_bytes(b"\x00" * 100)
-        # Random bytes happen to be ASCII-decodable but contain no vertex
-        # lines, so the parser returns a zero-triangle array. That's an
-        # acceptable outcome -- the next layer (voxel_mask_for_lbm)
-        # rejects zero-triangle meshes.
-        loaded = read_stl(path)
-        assert loaded.shape == (0, 3, 3)
+        with pytest.raises(ValueError, match="truncated|no `vertex` lines|empty"):
+            read_stl(path)
 
 
 # ---------------------------------------------------------------------------
