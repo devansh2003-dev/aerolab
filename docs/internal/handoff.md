@@ -1,51 +1,43 @@
 # AeroLab handoff
 
-> **Read this file first** at the start of every work session. **Update it at the end** of every substantive turn. Last updated: 2026-06-11, external-audit-#3 follow-up committed + pushed.
+> **Read this file first** at the start of every work session. **Update it at the end** of every substantive turn. Last updated: 2026-06-11, external-audit-#3 cycle closed (v1.7.5 tagged + GitHub Release published).
 
-Current tip of `main` and `origin/main`: **`2ac6fb2`** "fix: respond to external audit #3 — close 25 audit items across critical/important/polish tiers".
+Current tip of `main` and `origin/main`: **`4a015e0`** "docs: promote CHANGELOG [Unreleased] -> [1.7.5]; log bundled-bug + follow-up sub-items".
 
-App version chip / `pyproject.toml`: **v1.7.4**. CHANGELOG has the audit-3 work staged under `[Unreleased]` — bump to v1.7.5 (or v1.8.0 if that label is still reserved for upload-your-own-shape) and tag when verified on Cloud.
+App version chip / `pyproject.toml`: **v1.7.5**. GitHub Release "AeroLab v1.7.5 — audit #3 follow-up" published as Latest (tag `v1.7.5`, 2026-06-11). v1.8.0 label remains reserved for upload-your-own-shape.
 
 ---
 
-## 1. Landed in last edit (commit `2ac6fb2`, pushed 2026-06-11)
+## 1. Landed in audit-3 cycle (v1.7.5, pushed + released 2026-06-11)
 
-External audit #3 follow-up. 25 audit items closed across critical /
-important / polish tiers. No solver or accuracy changes; this batch is
-about reliability under Cloud load, input-validation hygiene, test
-coverage of an untested kernel branch, and consumer-facing UX
-consistency.
+External audit #3 cycle closed. **35 audit items** shipped across four
+commits, tagged `v1.7.5`, GitHub Release published as Latest. No
+solver or accuracy changes; reliability under Cloud load, input
+validation, untested-branch test coverage, consumer UX.
 
-### What's in the commit
+### Commit chain
 
-- **Critical (4/4):** B-1 share-trap, B-2 3D pipeline caching, B-3 card-
-  drop verification toast, B-4 truncated image crash.
-- **Important (18/20):** C-1 pyproject bump, C-2 velocity_mps stash,
-  C-3 mode-radio key, C-4 9 widget patterns, C-5 stale OUT-OF-DATE
-  banner, C-6 pin-snapshot cache stash, C-7 npz guard, C-8 NeuralFoil
-  wrap, C-9 README test counts, C-10 2D Bouzidi tests, C-11 3 rubber-
-  stamp tests, C-12 alpha + 16-bit upload, C-13 voxelize geometry-fit +
-  STL, C-14 self-intersect polygons, C-16 solve_lbm validation, C-18
-  2D preview cache, C-19 README 3D Re/scene-count, C-20 subsumed by B-2.
-- **Polish (6/16):** D-1 share host, D-3 JIT warm-up flag, D-5 hashlib
-  dedupe, D-7 3D card velocity + UI copy, D-15 root docs cleanup,
-  D-16 Validation tab schema trust.
+1. **`2ac6fb2`** — main batch: 25 items (B-1/2/3/4, C-1/2/3/4/5/6/7/8/
+   9/10/11/12/13/14/16/18/19/20, D-1/3/5/7/15/16).
+2. **`5811b86`** — CHANGELOG + handoff log of the main batch.
+3. **`ff8f0f3`** — bundled-bug recoveries (D-8 `n_frames<=0` guard, D-9
+   `default=float` for np.float64 in `canonical_param_hash`, D-10a/b/c
+   smoke / Q-criterion defensive asserts, D-12 canvas Clear/Undo
+   polygon clear).
+4. **`9afe45b`** — follow-up sub-items (D-2 slider/3D card min 0.10
+   m/s, D-11a display % cap, D-11b `target_extent_cells < 2.0`
+   ValueError, D-11c skimage threshold divide-warning suppression).
+5. **`4a015e0`** — CHANGELOG `[Unreleased]` → `[1.7.5]` promotion +
+   bundled-bug + follow-up sub-item sections.
 
-Full per-item rationale in `CHANGELOG.md` `[Unreleased]` section.
+Full per-item rationale in `CHANGELOG.md` `[1.7.5]` section.
 
-### Deferred (queued, not done)
+### Genuinely skipped (decided not to do)
 
 - **C-15** GIF palette quantisation (needs perf measurement).
-- **C-17** float16 snapshots (invasive; precedent doesn't transfer).
-- **D-8** `n_frames=0` cryptic IndexError in `solve_lbm` — small real
-  bug bundled with comment drift; should be added next to C-16's
-  validation block.
-- **D-9** `canonical_param_hash` TypeErrors on `np.float64` baked-field
-  params — small real bug, add `default=float` in JSON dump.
-- **D-10** 3D smoke/Q one-line defensive asserts (n_substeps=0, NaN Q).
-- **D-12** Canvas Clear button doesn't clear committed polygon preview.
-- **D-2/4/6/11/13/14** genuine polish — dead code / comment drift /
-  test-suite hygiene with no UX impact.
+- **C-17** float16 snapshots (invasive; 2D precedent doesn't transfer).
+- **D-4 / D-6 / D-13 / D-14** pure comment drift / dead code / test
+  hygiene with no UX impact.
 
 ---
 
@@ -143,22 +135,25 @@ cd "C:\Users\USER\Desktop\Study & Work\Personal Projects\AeroLab"; git tag -a v1
 
 ### Immediate
 
-- [ ] Wait for CI to confirm green on `2ac6fb2`.
-- [ ] Cloud-verify the load-bearing audit-3 fixes once the deploy lands:
+- [x] ~~CI green on `2ac6fb2` / `5811b86` / `ff8f0f3`.~~ (`9afe45b` and
+      `4a015e0` runs were still in-flight at handoff write — re-check
+      next session via `gh run list --branch main --limit 5`.)
+- [x] ~~Version bump decision.~~ v1.7.5 chosen; v1.8.0 stays reserved
+      for upload-your-own-shape.
+- [x] ~~Tag + cut a GitHub Release.~~ `v1.7.5` published as Latest.
+- [x] ~~Re-examine the bundled-bug skips (D-8 / D-9 / D-10 / D-12).~~
+      Shipped in `ff8f0f3` + `9afe45b`.
+- [x] ~~Delete `LINKEDIN_BRIEF.md` (root draft, untracked).~~ Removed
+      via `Remove-Item`.
+- [ ] **Cloud-verify the load-bearing audit-3 fixes** once the deploy
+      lands (this is the only un-ticked item from the cycle):
       B-1 (Share-then-click stickiness), B-2 (sidebar checkbox in 3D
-      should be sub-second after first scene load; second session must
-      stay responsive during heavy 3D use), B-3 (warning toast appears
-      when a card click is dropped — hard to force manually but watch
-      for it under load), C-5 (no spurious OUT-OF-DATE banner after
-      2D→3D→2D), C-6 (pin a config, explore 4+ others, return — must
-      not silently re-solve).
-- [ ] Decide version bump: v1.7.5 (incremental polish) vs v1.8.0
-      (audit-3 is genuinely user-visible; the upload-your-own-shape
-      stash is the v1.8.0 reservation though — choose which gets the
-      label).
-- [ ] Tag + cut a GitHub Release once verified.
-- [ ] Re-examine the bundled-bug skips (D-8 / D-9 / D-10 / D-12) as a
-      small follow-up commit — ~20 min total.
+      sub-second after first scene load; second session stays
+      responsive under heavy 3D use), B-3 (warning toast on dropped
+      card click — hard to force manually, watch under load), C-5 (no
+      spurious OUT-OF-DATE banner after 2D→3D→2D), C-6 (pin a config,
+      explore 4+ others, return — must not silently re-solve).
+- [ ] Walk through `docs/internal/LAUNCH_CHECKLIST.md` post-deploy.
 
 ### Stashed (resume after launch)
 
