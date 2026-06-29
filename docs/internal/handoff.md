@@ -1,10 +1,90 @@
 # AeroLab handoff
 
-> **Read this file first** at the start of every work session. **Update it at the end** of every substantive turn. Last updated: 2026-06-11, external-audit-#3 cycle closed (v1.7.5 tagged + GitHub Release published).
+> **Read this file first** at the start of every work session. **Update it at the end** of every substantive turn. Last updated: 2026-06-11, diagnosed the Re=20 sphere +47% drag discrepancy (adversarial workflow) — see §0a.
 
 Current tip of `main` and `origin/main`: **`4a015e0`** "docs: promote CHANGELOG [Unreleased] -> [1.7.5]; log bundled-bug + follow-up sub-items".
 
 App version chip / `pyproject.toml`: **v1.7.5**. GitHub Release "AeroLab v1.7.5 — audit #3 follow-up" published as Latest (tag `v1.7.5`, 2026-06-11). v1.8.0 label remains reserved for upload-your-own-shape.
+
+---
+
+## 0. Latest turns (uncommitted)
+
+### 0a. 2026-06-11 — Re=20 sphere drag diagnosis (this turn)
+
+Diagnosed the open Re=20 sphere +47% drag discrepancy flagged in §0b as the
+blocker for a sphere Cd-vs-Re chart. Ran a 9-agent adversarial diagnostic
+workflow (`wf_c264991f-910`, ~364k tokens). **Full writeup:
+[`docs/internal/sphere_re20_drag_diagnosis.md`](sphere_re20_drag_diagnosis.md)
+(NEW this turn).**
+
+- **Verdict (low confidence on the split):** NOT one clean cause and NOT a bug.
+  Two roughly co-equal contributors at Re=20 — (1) finite-Re **wall confinement**
+  (sphere fat vs duct, a/R=0.25; Stokes reservoir ~1.98) and (2) a **low-Re
+  limitation of the simplified momentum-exchange force** (MYSL q-lever ~3-4×
+  weaker at low Re via TRT s_minus; 70%-viscous regime). Which is larger is
+  genuinely undetermined from existing data.
+- **Confidently ruled out:** reference value (CGW correct, 2.715/1.087), temporal
+  convergence (Cd grid- and step-invariant), grid/BL resolution (Re=20 BL ~9
+  cells vs Re=100 ~4 — the "broken" point is *better* resolved), Mach (~0.6%,
+  Re-symmetric).
+- **Corrects a documented repo claim:** the "blockage does not dominate"
+  conclusion (`src/forces_3d.py` docstring ~14-25, `VALIDATION.md` §8.3.x) was
+  **Re=100-only AND confounded** (the low-blockage sweep also changed Nx 96→160,
+  mixing lateral confinement with streamwise wake-truncation). It does NOT
+  transfer to Re=20, where confinement is ~5-8× stronger. The Re=100 "+6.4%
+  validated" point is itself ~6% residual confinement, not a clean anchor.
+- **The one experiment that resolves it (~2h CPU, Option A):** a Re=20 lateral-
+  blockage sweep at D=20 (B=25% vs B=12.5%, only the lateral width changes —
+  avoids the Nx confound). Falsifiable: Cd drops toward CGW ⇒ confinement-
+  dominated; barely moves ⇒ force-method-dominated. Exact recipe in the diagnosis
+  doc §4.
+- **Do NOT** back-solve a K_wall=1.474 "correction" — it's the cylinder-square-Cd
+  tautology trap again, it's above any defensible estimate, and it breaks the
+  Re=100 point (+11%).
+- **Sphere-chart implication / strategic fork (your call):** (i) build a thin
+  honest 2-point chart now [Re=100 validated + Re=20 "reported, not validated",
+  like the cylinder Re=500 tail]; (ii) run Option A first (~2h) then label Re=20
+  correctly; or (iii) invest ~10h in a real multi-Re sphere curve. Recommended
+  (ii). Honest claim until then: "3D sphere validated at Re=100; characterised
+  but not validated at Re=20."
+- **Side finding (minor):** three near-duplicate "CGW Re=20" values float around
+  (hardcoded 2.728 / documented Clift-Gauvin formula ~2.70 / piecewise 2.715),
+  all <1% apart. Consolidate to one canonical formula when a sphere correlation
+  is added to `references.py` — deferred, needs your call on the canonical
+  variant. Doesn't move any conclusion.
+- **No code or solver changes this turn.** Only the new internal diagnosis doc +
+  this handoff entry. Nothing pushed.
+
+### 0b. 2026-06-11 — Cd-vs-Re validation chart
+
+Prompted by a comparison with another solo project (**Turblyze**: steady-state
+SIMPLE / k-ω SST C++ solver, validated with a clean sphere-Cd-vs-Re curve over
+Morrison 2013). Takeaway borrowed: an over-the-curve Cd(Re) chart is a stronger
+validation asset than a table. Built the honest cylinder version.
+
+- **NEW `scripts/plot_cd_vs_re.py`** — reads the committed validation JSONs only
+  (no solver runs), writes **`data/validation/cylinder_cd_vs_re.png`**.
+  Williamson 1996 free-stream Cd(Re) line + AeroLab Resolved (D=40) corrected
+  headline points (Re 100/200/500, annotated with signed error) + Validation
+  (D=20) corrected cross-check points, with the Re≤200 validated band shaded and
+  the 2D-limit region labelled "reported, not claimed". Reference values pull
+  from `src.references.CYLINDER_FREESTREAM_CD` so the line can't drift.
+- **Data reality check (important):** the *true* Turblyze analog is a **3D sphere**
+  Cd-vs-Re over Clift-Grace-Weber. AeroLab has only **2 sphere Re** on the
+  apples-to-apples method (D=40 MYSL): Re=100 **+6.4%** ✓, Re=20 **+47.4%** ✗.
+  A sphere curve needs (a) diagnosing the Re=20 +47% point first, (b) a
+  CGW/Schiller-Naumann continuous correlation added to `references.py` (none
+  today — tables are cylinder/square only), (c) a ~10 h offline multi-Re sweep
+  (~2 h/run, no GPU). Parked behind that decision.
+- **Doc embeds landed (2026-06-11):** PNG embedded at the top of README §Validation
+  (between the badges and the wall of validation prose) and in VALIDATION.md §3.2
+  (immediately under the Resolved-sweep heading, above the headline table).
+  `tests/test_doc_validation_consistency.py` still green — the gate parses pipe-
+  table rows, not image markdown or italic captions.
+- **Not yet done:** diagnose the Re=20 sphere +47% point (open accuracy bug
+  gating any sphere curve build); decide on the ~10 h sphere sweep; optional
+  Turblyze post comment.
 
 ---
 
