@@ -1,6 +1,6 @@
 # AeroLab handoff
 
-> **Read this file first** at the start of every work session. **Update it at the end** of every substantive turn. Last updated: 2026-06-11, diagnosed the Re=20 sphere +47% drag discrepancy (adversarial workflow) — see §0a.
+> **Read this file first** at the start of every work session. **Update it at the end** of every substantive turn. Last updated: 2026-06-11, started the 3D gallery "make it perfect" pass — Batch 1 quick wins landed; see §0a.
 
 Current tip of `main` and `origin/main`: **`4a015e0`** "docs: promote CHANGELOG [Unreleased] -> [1.7.5]; log bundled-bug + follow-up sub-items".
 
@@ -10,7 +10,33 @@ App version chip / `pyproject.toml`: **v1.7.5**. GitHub Release "AeroLab v1.7.5 
 
 ## 0. Latest turns (uncommitted)
 
-### 0a. 2026-06-11 — Re=20 sphere drag diagnosis (this turn)
+### 0a. 2026-06-11 — 3D gallery "make it perfect" pass (this turn)
+
+Ran a 15-agent audit-to-action workflow (`wf_7ed7aeb3-98a`, ~688k tokens; 5
+expert lenses → synthesis → adversarial verification → ranked plan). **Full
+roadmap: [`docs/internal/perfect_3d_plan.md`](perfect_3d_plan.md) (NEW).**
+
+- **Batch 1 quick wins LANDED in `app.py` (uncommitted, parse+ruff clean):**
+  (1) hero sphere 33×17 → 64×33 (smooth silhouette); (2) `try/except` guard
+  around `_q_isosurface_cached` (defense-in-depth, quiet caption on failure);
+  (3) `config=dict(displaylogo=False, displayModeBar="hover")` on the 3D
+  `st.plotly_chart` (cleaner frame). All three are additive/local, verified
+  zero interaction with the animation/camera/cache contracts.
+- **Camera-reset verdict: DEFER (P3).** Don't ship the "cheap mitigation" — it
+  was already tried/reverted AND would regress the tuned sphere/cylinder
+  pulled-back framing. Only real fix is render-figure-in-component (L effort,
+  risk 4), scheduled after the visual wins. Details in the roadmap.
+- **Batch 2 (NEXT, needs in-browser eyeball — can't verify headlessly):**
+  body-aware-seeding (biggest lever) → glow underlay → lit-Q-shell → comet head
+  → cache-animation-frames → arclength-stagnation-cap. Sequenced because they
+  touch the index-0 / cache-determinism / frame-list contracts. Exact approach +
+  guardrails per item in the roadmap.
+- **Guardrails that must hold:** scene_traces[0] stays the crisp streamline (new
+  traces APPEND); new color traces set showscale=False; seed/frame caches stay
+  pure deterministic fns of (scene_name, n_seeds); don't touch the camera block;
+  clip seeds to [3, N-4].
+
+### 0b. 2026-06-11 — Re=20 sphere drag diagnosis
 
 Diagnosed the open Re=20 sphere +47% drag discrepancy flagged in §0b as the
 blocker for a sphere Cd-vs-Re chart. Ran a 9-agent adversarial diagnostic
@@ -56,7 +82,7 @@ workflow (`wf_c264991f-910`, ~364k tokens). **Full writeup:
 - **No code or solver changes this turn.** Only the new internal diagnosis doc +
   this handoff entry. Nothing pushed.
 
-### 0b. 2026-06-11 — Cd-vs-Re validation chart
+### 0c. 2026-06-11 — Cd-vs-Re validation chart
 
 Prompted by a comparison with another solo project (**Turblyze**: steady-state
 SIMPLE / k-ω SST C++ solver, validated with a clean sphere-Cd-vs-Re curve over

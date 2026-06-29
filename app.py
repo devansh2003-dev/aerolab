@@ -1722,7 +1722,20 @@ if view == "3D gallery (preview)":
     # pays compute_q_field + marching_cubes, subsequent reruns hit the
     # cache.
     if show_q:
-        iso = _q_isosurface_cached(chosen_name, int(q_level_pct), field)
+        # Defense-in-depth (mirrors the C-7 field-load guard above): the
+        # heavy compute in extract_q_isosurface already returns None on
+        # NaN / out-of-range level, but a transient MemoryError or a
+        # skimage edge case on the 1-vCPU free tier could still surface a
+        # full-page red traceback in place of the whole scene. Catch it,
+        # drop the optional shell, and tell the user quietly.
+        try:
+            iso = _q_isosurface_cached(chosen_name, int(q_level_pct), field)
+        except Exception as _q_err:  # noqa: BLE001 - optional overlay, never fatal
+            iso = None
+            st.caption(
+                f":material/info: Q-criterion shell unavailable for this "
+                f"scene ({type(_q_err).__name__})."
+            )
         if iso is not None:
             verts, faces = iso
             scene_traces.append(
@@ -1760,8 +1773,14 @@ if view == "3D gallery (preview)":
             sphere_cy = float(bp["cy"])
             sphere_cz = float(bp["cz"])
             sphere_R = float(bp["R"])
-            _theta = np.linspace(0.0, 2.0 * np.pi, 33)
-            _phi = np.linspace(0.0, np.pi, 17)
+            # 64x33 lat/long (was 33x17): ~2.1k verts vs ~560, still
+            # trivial for WebGL and the 1-vCPU server (pure meshgrid, no
+            # solve), but the hero sphere's silhouette and specular
+            # highlight read as a smooth round solid instead of showing
+            # polygonal facets. Static trace -- serialized once, not per
+            # animation frame.
+            _theta = np.linspace(0.0, 2.0 * np.pi, 64)
+            _phi = np.linspace(0.0, np.pi, 33)
             _T, _P = np.meshgrid(_theta, _phi)
             sph_x = sphere_cx + sphere_R * np.sin(_P) * np.cos(_T)
             sph_y = sphere_cy + sphere_R * np.sin(_P) * np.sin(_T)
@@ -2199,6 +2218,13 @@ if view == "3D gallery (preview)":
     st.plotly_chart(
         fig,
         width="stretch",
+        # Trim the Plotly chrome for a beauty-first "see the air" frame:
+        # drop the Plotly logo and collapse the modebar to hover-only so
+        # the download / tool clutter doesn't compete with the scene.
+        # displayModeBar="hover" (not False) keeps reset-camera + snapshot
+        # reachable. scrollZoom is already default-true for gl3d scenes,
+        # so it is intentionally NOT set here.
+        config=dict(displaylogo=False, displayModeBar="hover"),
         # Stable key + uirevision preserve the camera through Plotly's
         # animation loop (Animate / Pause). Control-change reruns
         # (viz mode, AoA, speed) still rebuild the figure with an
