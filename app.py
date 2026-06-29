@@ -42,6 +42,7 @@ The browser opens automatically at http://localhost:8501.
 import hashlib
 import os
 import sys
+import warnings
 
 _IS_STREAMLIT_CLOUD = sys.platform == "linux" and os.path.isdir("/mount/src")
 _NUMBA_THREADS_VALUE = "16" if _IS_STREAMLIT_CLOUD else str(os.cpu_count() or 1)
@@ -372,7 +373,7 @@ st.markdown(
     # imply consumer-readiness it doesn't have yet).
     "<div style='display:flex;flex-direction:column;align-items:flex-end;"
     "gap:0.35rem;'>"
-    "<a href='https://github.com/devansh2003-dev/AeroLab/blob/main/VALIDATION.md' "
+    "<a href='https://github.com/devansh2003-dev/aerolab/blob/main/VALIDATION.md' "
     "target='_blank' style='display:inline-flex;align-items:center;gap:0.35rem;"
     "padding:0.32rem 0.7rem;background:rgba(16,185,129,0.10);"
     "border:1px solid rgba(16,185,129,0.45);border-radius:999px;"
@@ -473,7 +474,7 @@ if view != "3D gallery (preview)":
 # tessellation in JavaScript on the browser's main thread, which blocks
 # the UI thread for ~3-8 s per scene swap on Cloud-tier CPUs and prevents
 # Streamlit's progress bar from updating in real time. Tracing in Python
-# with numba-jitted trilerp_3d takes ~50-100 ms total, lets the progress
+# with vectorised-NumPy trilerp_3d takes ~50-100 ms total, lets the progress
 # bar tick visibly, and ships only ~12 k line vertices to the browser
 # (instead of ~60 k triangles) so the WebGL render is essentially free.
 # ---------------------------------------------------------------------------
@@ -1721,11 +1722,27 @@ if view == "3D gallery (preview)":
         )
         st.stop()
 
+    # AoA sign convention fix (wings). The wing bakes were generated with
+    # positive ``aoa_deg`` = nose-DOWN (leading edge down) -- empirically
+    # confirmed (aoa+30 has LE at low z, TE at high z). The slider's
+    # positive direction should read as nose-UP, the aerodynamic
+    # convention. Because both signs are baked with symmetric Re coverage,
+    # we serve the OPPOSITE-sign bake for wings: slider +30 loads the
+    # nose-up ``aoa-30`` snapshot, and the mesh is rendered at that same
+    # sign (see ``_aoa_render`` below) so the body and the flow stay
+    # consistent. Captions keep showing the slider value (``aoa_actual``),
+    # which is what the user dialled in. Cube is left untouched -- the
+    # report was specific to wings, and a rotated cube reads the same
+    # either way.
+    _aoa_for_scene = (
+        -aoa_actual if str(chosen_shape).startswith("naca") else aoa_actual
+    )
+
     # Compose the preset file stem. Wings tagged with non-zero AoA get
     # the explicit ``_aoa<deg>_`` segment; AoA=0 keeps the legacy
     # ``shape_re<N>`` form so the existing bake files still match.
-    if aoa_actual and aoa_actual != 0:
-        chosen_name = f"{chosen_shape}_aoa{aoa_actual}_re{re_actual}"
+    if _aoa_for_scene and _aoa_for_scene != 0:
+        chosen_name = f"{chosen_shape}_aoa{_aoa_for_scene}_re{re_actual}"
     else:
         chosen_name = f"{chosen_shape}_re{re_actual}"
     st.session_state["gallery_preset_choice"] = chosen_name
@@ -1788,13 +1805,21 @@ if view == "3D gallery (preview)":
         "Vorticity": "|curl(u)| (Viridis: dark calm, yellow swirling)",
         "Pressure": "gauge pressure (RdBu: blue suction, red stagnation, white freestream)",
     }.get(viz_mode_3d, "speed")
-    st.caption(
+    _caption_3d = (
         f"Streamlines trace how the air wraps around the body. "
         f"Colour shows {_caption_color}. "
-        f"Drag to rotate, scroll to zoom. "
-        f"Click **▶ Animate** at the lower-left of the chart for "
-        f"flowing motion."
+        f"Drag to rotate, scroll to zoom."
     )
+    # Only mention the Animate button when it actually exists -- the Plotly
+    # updatemenus (the ▶ Animate control) are only added when the sidebar
+    # "Animate flow" checkbox is on; otherwise the caption sent users hunting
+    # for a button that isn't there.
+    if animate_flow:
+        _caption_3d += (
+            " Click **▶ Animate** at the lower-left of the chart for "
+            "flowing motion."
+        )
+    st.caption(_caption_3d)
 
     # --- Seed positions on the inflow plane ---------------------------
     # Body-aware seeding (see _inflow_seeds_3d): concentrate seeds on the
@@ -2075,8 +2100,11 @@ if view == "3D gallery (preview)":
             # flow field exactly. Letting the mesh follow the
             # continuous slider value while the flow snapped to the
             # nearest baked snapshot caused visible clipping of
-            # streamlines through the rotated wing.
-            _aoa_render = float(aoa_actual)
+            # streamlines through the rotated wing. Use _aoa_for_scene
+            # (the sign-corrected value the .npz was loaded from), NOT
+            # the raw slider value, so the mesh tilts the same way as the
+            # nose-up-convention flow field it sits in.
+            _aoa_render = float(_aoa_for_scene)
             _span_axis = str(bp.get("span_axis", "z"))
             # Build the un-rotated airfoil profile (chord-normalised),
             # then rotate inline -- defensive against deployed older
@@ -2250,7 +2278,13 @@ if view == "3D gallery (preview)":
     _bp = field.meta.get("body_params", {})
     _bcx = float(_bp.get("cx", Nx / 2))
     _bcy = float(_bp.get("cy", Ny / 2))
-    _bcz = float(_bp.get("cz", Nz / 2))  # cylinders have no cz -> midplane
+    # Look-at z follows the BODY's actual vertical centre, not the grid
+    # midplane. Wings store it as ``chord_offset`` (some Re=200 wing bakes
+    # sit at chord_offset=32 in an Nz=40 box -- near the top -- which made
+    # the wing read as "stuck to the ceiling"); pointing the camera at the
+    # wing's own z re-centres it in the viewport. Sphere/cube carry ``cz``;
+    # the cylinder has neither and spans z, so it falls through to midplane.
+    _bcz = float(_bp.get("cz", _bp.get("chord_offset", Nz / 2)))
     _xmid = Nx / 2
     _ymid = Ny / 2
     _zmid = Nz / 2
@@ -3055,6 +3089,12 @@ if mode == "Real CFD (LBM)":
     }
 
     def regime_label(re):
+        # Plain-English regime names chosen to MATCH the validity framing
+        # elsewhere in the app. We deliberately avoid the word "turbulent":
+        # a strictly 2D solver cannot represent real (3D) turbulence, and the
+        # validity banners explicitly tell the user that high-Re error here is
+        # the MISSING 3D instability, not turbulence. The old "early/fully
+        # turbulent" labels contradicted that and overstated the physics.
         if re <= 100:
             return "slow viscous flow", "honey-like"
         if re <= 175:
@@ -3062,10 +3102,12 @@ if mode == "Real CFD (LBM)":
         if re <= 400:
             return "transitional flow", "water-like"
         if re <= 800:
-            return "early turbulent flow", "stirred-coffee"
-        return "fully turbulent flow", "wind-tunnel"
+            return "vortex-shedding flow", "stirred-coffee"
+        return "a chaotic 2D wake", "fast and choppy"
 
     def tilt_label(deg):
+        if deg <= -10:
+            return f"tilted {abs(deg):.1f} deg nose-down -- approaching stall"
         if deg <= -2:
             return f"tilted {abs(deg):.1f} deg nose-down"
         if deg < 2:
@@ -3441,7 +3483,8 @@ if mode == "Real CFD (LBM)":
                 f"Bluff, sharp-cornered shapes hit the wall sooner than "
                 f"smooth ones.\n\n"
                 f":gray[*Technical: we assume a 5 mm reference size in "
-                f"standard air, so Reynolds Re &asymp; velocity x 333.*]"
+                f"standard air, so Reynolds Re &asymp; velocity x 333, "
+                f"clamped to the solver's tested 50-{_re_cap} range.*]"
             ),
             key="lbm_velocity_slider",
         )
@@ -4018,7 +4061,8 @@ if mode == "Real CFD (LBM)":
                 f"and press **Run simulation**.\n\n"
                 f"A {res_cfg['Nx']} x {res_cfg['Ny']} Lattice Boltzmann "
                 f"simulation runs {_preview_n_steps:,} steps, then plays the "
-                f"result back as a smooth 15 fps animation. On the *first* "
+                f"result back as a smooth {round(1000 / GIF_FRAME_MS)} fps "
+                f"animation. On the *first* "
                 f"click in a fresh session the solver compiles itself "
                 f"(one-time, ~25 s local / ~40 s Cloud). Every click after "
                 f"that is just the simulation time."
@@ -4129,10 +4173,20 @@ if mode == "Real CFD (LBM)":
             st.session_state["lbm_gallery_pending"] = True
             st.rerun()
     try:
-        sim_result = _cached_simulate_and_render(
-            shape_preset, int(reynolds_target), float(aoa_deg), res_display,
-            custom_polygon=custom_polygon, viz_mode=viz_mode,
-        )
+        with warnings.catch_warnings(record=True) as _solve_warnings:
+            warnings.simplefilter("always")
+            sim_result = _cached_simulate_and_render(
+                shape_preset, int(reynolds_target), float(aoa_deg), res_display,
+                custom_polygon=custom_polygon, viz_mode=viz_mode,
+            )
+        # Surface rasterization warnings (e.g. a drawn polygon that rasterised
+        # to disconnected components, of which only the largest is kept) so the
+        # user is told the simulated shape differs from what they drew, instead
+        # of that warning going only to the server log. Fires on a cache MISS
+        # (first solve of a given shape), which is exactly when it matters.
+        for _solve_w in _solve_warnings:
+            if issubclass(_solve_w.category, UserWarning):
+                st.warning(f":material/info: {_solve_w.message}")
         # D-3: also mark the JIT as warm at the call site so cross-session
         # cache hits (which skip the wrapper body and its flag write) still
         # set the flag. Without this, a cache-served run still shows the
@@ -4149,17 +4203,27 @@ if mode == "Real CFD (LBM)":
         )
         st.stop()
     except ValueError as _shape_err:
-        # Pre-flight mask validation in solve_lbm raises ValueError with
-        # an actionable message ("touches the inflow wall", "occupies too
-        # much of the channel", etc.) -- surface it verbatim so the user
-        # knows exactly what to fix rather than seeing a generic stack
-        # trace. Distinct from the ZeroDivision path above: this one
-        # caught the problem BEFORE the simulation, so we phrase it as
-        # geometry feedback, not numerical instability.
-        st.error(
-            f":material/error: This shape can't be simulated: "
-            f"{_shape_err}"
-        )
+        # Two different conditions raise ValueError here:
+        #   1. A mid-run divergence detected in lbm_render (message starts
+        #      with "Simulation diverged") -- the shape was geometrically
+        #      fine and the solve started; it just went unstable at this
+        #      wind speed. Phrase it as instability + "lower the speed".
+        #   2. Pre-flight mask validation in solve_lbm ("touches the inflow
+        #      wall", "occupies too much of the channel", etc.) -- caught
+        #      BEFORE the simulation, so phrase it as geometry feedback.
+        # Conflating the two (the old handler did) told users a valid shape
+        # "can't be simulated" and quoted an irrelevant per-shape Re ceiling.
+        if "diverged" in str(_shape_err).lower():
+            st.error(
+                f":material/error: The simulation became unstable at this "
+                f"wind speed. Try a lower speed (which lowers the Reynolds "
+                f"number) and run again.\n\n_Detail: {_shape_err}_"
+            )
+        else:
+            st.error(
+                f":material/error: This shape can't be simulated: "
+                f"{_shape_err}"
+            )
         st.stop()
     except Exception as _sim_err:
         # Any other unexpected error: still surface a polite message and
@@ -4329,7 +4393,11 @@ if mode == "Real CFD (LBM)":
         else:
             _shape_slug = shape_preset.lower().replace(" ", "_")
         _aoa_part = f"_aoa{aoa_deg:+.0f}" if abs(aoa_deg) > 0.25 else ""
-        _gif_name = f"aerolab_{_shape_slug}_re{reynolds_target}{_aoa_part}.gif"
+        # Include the viz mode so Vorticity / Velocity / Pressure downloads of
+        # the SAME run get distinct filenames instead of silently overwriting
+        # each other in the browser's downloads folder.
+        _viz_part = f"_{viz_mode.lower()}"
+        _gif_name = f"aerolab_{_shape_slug}_re{reynolds_target}{_aoa_part}{_viz_part}.gif"
         action_cols = st.columns([1, 1, 1, 1, 2])
         with action_cols[0]:
             st.download_button(
@@ -4479,9 +4547,12 @@ if mode == "Real CFD (LBM)":
                 "opening this link reopens this exact run."
             )
             st.code(_share_url, language=None)
-            # One-shot: clear the flag so the next rerun (e.g. slider drag)
-            # doesn't re-render the link block.
-            del st.session_state["_share_url_just_built"]
+            # Persist across reruns: do NOT clear the flag here. The old
+            # one-shot behaviour deleted the link on the very next rerun (a
+            # tooltip hover or a one-pixel slider move), so the copyable URL
+            # vanished before the user could copy it -- it felt broken. The
+            # block rebuilds _qp_str from the live query params each render,
+            # and clicking Share again simply refreshes it.
 
         # Persistent pinned-state caption -- gives the user feedback that
         # something IS pinned, since pinning before changing params has no
@@ -4712,8 +4783,8 @@ if mode == "Real CFD (LBM)":
                         "background:rgba(16,185,129,0.15);color:#6ee7b7;"
                         "border:1px solid rgba(16,185,129,0.35);border-radius:9999px;"
                         "font-size:0.74rem;font-weight:600;'>"
-                        ":material/check_circle: Validated &mdash; "
-                        "Williamson 1996, this preset &plusmn;5.6 % (max 10.2 %)</span>"
+                        ":material/check_circle: Validated shape &mdash; "
+                        "Williamson 1996 (&plusmn;5.6 % in low-blockage runs)</span>"
                     )
                 elif shape_preset == "Square" and reynolds_target <= RE_VALIDATED_MAX:
                     _badge_html = (
@@ -4721,8 +4792,8 @@ if mode == "Real CFD (LBM)":
                         "background:rgba(16,185,129,0.15);color:#6ee7b7;"
                         "border:1px solid rgba(16,185,129,0.35);border-radius:9999px;"
                         "font-size:0.74rem;font-weight:600;'>"
-                        ":material/check_circle: Validated &mdash; "
-                        "Okajima 1982, this preset &plusmn;4.5 % (max 5.1 %)</span>"
+                        ":material/check_circle: Validated shape &mdash; "
+                        "Okajima 1982 (&plusmn;4.5 % in low-blockage runs)</span>"
                     )
                 elif reynolds_target > RE_VALIDATED_MAX:
                     _badge_html = (
@@ -5086,7 +5157,7 @@ with st.sidebar:
     st.markdown("")
     st.markdown(":material/rotate_right: **Angle of attack** &nbsp; :gray[(deg)]")
     alpha = st.slider(
-        "alpha",
+        "Angle of attack (deg)",
         -5.0, 15.0, 5.0, 0.25,
         label_visibility="collapsed",
         help="How much the wing is tilted into the wind. Positive = nose-up.",
@@ -5280,6 +5351,7 @@ st.plotly_chart(geom_fig, width="stretch")
 # === Section 2: Coefficient table at current alpha ===
 table_rows = []
 sweep_results = {}  # name -> (alphas, cl, cd, ld), reused below for the polar chart
+_low_confidence = {}  # name -> min NeuralFoil analysis_confidence over the sweep
 
 for name in valid_names:
     # C-8: wrap NeuralFoil calls in a per-airfoil try/except so a model
@@ -5296,19 +5368,45 @@ for name in valid_names:
             f"{name.upper()!r}: {type(e).__name__}: {e}. Skipping."
         )
         continue
+    _ld_val = float(p["LD"].item())
     table_rows.append(
         {
             "Airfoil": name.upper(),
             "CL": round(p["CL"].item(), 4),
             "CD": round(p["CD"].item(), 4),
-            "L/D": round(p["LD"].item(), 1),
+            # L/D is NaN when CD <= 0 / non-finite (guarded in analyze_airfoil);
+            # show blank rather than a literal "nan" in the table.
+            "L/D": round(_ld_val, 1) if np.isfinite(_ld_val) else None,
         }
     )
+    # NeuralFoil reports its own out-of-distribution confidence (0-1).
+    # Low values flag (airfoil, alpha, Re) points off the NACA-4/5,
+    # Re 1e5-1e7 training manifold the README warns about -- collect the
+    # worst so we can caveat the numbers instead of presenting OOD
+    # predictions as if they were trustworthy.
+    _conf = p.get("analysis_confidence")
+    if _conf is not None:
+        try:
+            _low_confidence[name.upper()] = float(np.min(np.asarray(_conf)))
+        except (TypeError, ValueError):
+            pass
 
-st.subheader(f"Coefficients at &alpha; = {alpha:+.2f}&deg;, Re = {reynolds:.0e}",
+st.subheader(f"Coefficients at α = {alpha:+.2f}°, Re = {reynolds:.0e}",
              anchor=False)
 st.caption(f"NeuralFoil model: **{nf_model_display}**")
 st.dataframe(table_rows, width="stretch", hide_index=True)
+
+# Caveat any airfoil whose NeuralFoil confidence dropped off-distribution at
+# the current alpha. Threshold 0.90 keeps clean NACA-4/5 mid-range cases quiet.
+_flagged_conf = {k: v for k, v in _low_confidence.items() if v < 0.90}
+if _flagged_conf:
+    _conf_list = ", ".join(f"{k} ({v:.0%})" for k, v in _flagged_conf.items())
+    st.warning(
+        f":material/warning: NeuralFoil reports low prediction confidence for "
+        f"{_conf_list}. These points sit off its NACA-4/5, Re 10⁵–10⁷ "
+        f"training range (deep stall, unusual geometry, or extreme Re) — "
+        f"treat the lift/drag numbers as rough, not validated."
+    )
 
 # === Section 3: Polar plots ===
 polar_fig = make_subplots(
@@ -5336,12 +5434,12 @@ for i, name in enumerate(valid_names):
         row=1, col=3,
     )
 
-polar_fig.add_vline(x=alpha, line=dict(color="black", dash="dash", width=1), opacity=0.4, row=1, col=1)
-polar_fig.add_vline(x=alpha, line=dict(color="black", dash="dash", width=1), opacity=0.4, row=1, col=2)
+polar_fig.add_vline(x=alpha, line=dict(color="#94a3b8", dash="dash", width=1), opacity=0.6, row=1, col=1)
+polar_fig.add_vline(x=alpha, line=dict(color="#94a3b8", dash="dash", width=1), opacity=0.6, row=1, col=2)
 
-polar_fig.update_xaxes(title_text="alpha (deg)", row=1, col=1)
+polar_fig.update_xaxes(title_text="angle of attack α (deg)", row=1, col=1)
 polar_fig.update_yaxes(title_text="CL", row=1, col=1)
-polar_fig.update_xaxes(title_text="alpha (deg)", row=1, col=2)
+polar_fig.update_xaxes(title_text="angle of attack α (deg)", row=1, col=2)
 polar_fig.update_yaxes(title_text="CD", row=1, col=2)
 polar_fig.update_xaxes(title_text="CD", row=1, col=3)
 polar_fig.update_yaxes(title_text="CL", row=1, col=3)

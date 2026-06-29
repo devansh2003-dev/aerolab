@@ -10,7 +10,35 @@ App version chip / `pyproject.toml`: **v1.7.5**. GitHub Release "AeroLab v1.7.5 
 
 ## 0. Latest turns (uncommitted)
 
-### 0a. 2026-06-11 — 3D gallery "make it perfect" pass (this turn)
+### 0a-wings. 2026-06-11 — wing AoA bug fixes (uncommitted, app.py only)
+
+User reported 3 wing bugs in the live gallery + "make the sim better". Diagnosed
+each (empirically, from the baked .npz):
+- **(1) AoA sign** — bakes have positive `aoa_deg` = nose-DOWN (confirmed: aoa+30
+  has LE at z=10, TE at z=21), opposite the slider's expected nose-up. **FIXED,
+  no re-bake:** wings now serve the opposite-sign bake (`_aoa_for_scene =
+  -aoa_actual` for naca) for both the loaded scene and the rendered mesh; caption
+  still shows the slider value. Safe because +/- AoA are baked with symmetric Re
+  coverage. (Cube intentionally left as-is.)
+- **(3) Wing not centered** — root cause: Re=200 wing bakes at Nz=40 have
+  `chord_offset=32` (z≈80% → near top) while ±45 use Nz=48/offset=24 (centered)
+  and all Re=100 are centered. **FIXED visually, no re-bake:** camera look-at z
+  now follows the body's actual z (`chord_offset` for wings) instead of Nz/2, so
+  the wing re-centres in the viewport. (Flow is still baked off-center; camera
+  hides it. Proper physics fix = re-bake centered.)
+- Both FIXED changes are in `app.py`, parse + ruff clean. NOT yet pushed.
+- **(2) Snap too broad** + **(4) make sim better** — NOT done; both need a
+  **re-bake** (issue 2: add intermediate AoA bands, esp. Re=200 only has
+  {0,±30,±45}; issue 4: higher grid res / more steps). Wing bakes are
+  8000–12000 steps each → a full wing re-bake is likely HOURS. **Scope decision
+  pending from user** (resolution, AoA granularity, which Re). Bake config lives
+  in `scripts/bake_3d_field.py` PRESETS; the off-center bug = `chord_offset`
+  should be `Nz/2` (re-bake the Re=200 Nz=40 wings with chord_offset=20). The
+  sign bug is also in `make_naca_mask`/`naca_outline` (docstrings say nose-up but
+  the rotation is nose-down) — if re-baking, fix the convention there + drop the
+  `_aoa_for_scene` negation in app.py.
+
+### 0a. 2026-06-11 — 3D gallery "make it perfect" pass (committed: 14028ed, 557dcbe)
 
 Ran a 15-agent audit-to-action workflow (`wf_7ed7aeb3-98a`, ~688k tokens; 5
 expert lenses → synthesis → adversarial verification → ranked plan). **Full
