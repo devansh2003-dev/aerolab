@@ -702,6 +702,81 @@ def _trace_streamlines(
     )
 
 
+def _inflow_seeds_3d(body, n_seeds, scene_name, Ny, Nz):
+    """Body-aware inflow seeding on the x=2 plane.
+
+    The old uniform (y, z) grid spent most of its streamlines as dead-
+    straight freestream lines in the corners that never interact with the
+    body. Instead, concentrate seeds where the interesting flow is:
+
+      * ~60 % on a band hugging the body's projected silhouette (so the
+        lines actually wrap the body and trace the shear layer),
+      * ~25 % on an outer halo band (the wake / separation region),
+      * ~15 % sparse uniform background for context.
+
+    The silhouette comes from ``body.any(axis=0)`` -- the body projected
+    onto the inflow plane -- and the bands are morphological dilations of
+    it, so this is shape-agnostic: a compact disk (sphere/cube) gets a
+    ring band, a spanwise stripe (cylinder/wing) gets parallel bands above
+    and below. Falls back to a uniform fill if the plane has no body.
+
+    DETERMINISM CONTRACT: the jitter RNG is seeded from a STABLE hash of
+    ``scene_name`` (hashlib, not the salted builtin ``hash()``), so the
+    returned seeds are a pure function of ``(scene_name, n_seeds)``. That
+    is exactly the cache key of ``_trace_streamlines_cached`` -- if the
+    seeds were non-deterministic the cache would silently return another
+    rerun's streamlines. Returns ``(seeds_x, seeds_y, seeds_z)`` float64.
+    """
+    from scipy import ndimage
+
+    rng = np.random.default_rng(
+        int.from_bytes(hashlib.md5(scene_name.encode()).digest()[:8], "little")
+    )
+    ylo, yhi = 3.0, float(Ny) - 4.0
+    zlo, zhi = 3.0, float(Nz) - 4.0
+
+    def _uniform(n):
+        if n <= 0:
+            return np.empty(0), np.empty(0)
+        return rng.uniform(ylo, yhi, n), rng.uniform(zlo, zhi, n)
+
+    sil = np.asarray(body).any(axis=0)  # (Ny, Nz) projection onto inflow
+    if not sil.any():
+        sy, sz = _uniform(n_seeds)
+    else:
+        n_body = int(round(0.60 * n_seeds))
+        n_halo = int(round(0.25 * n_seeds))
+        n_bg = max(0, n_seeds - n_body - n_halo)
+        near = ndimage.binary_dilation(sil, iterations=4) & ~sil
+        wide = ndimage.binary_dilation(sil, iterations=10)
+        halo = wide & ~ndimage.binary_dilation(sil, iterations=4)
+        near_src = near if near.any() else sil
+        halo_src = halo if halo.any() else near_src
+
+        def _sample_mask(mask, n):
+            if n <= 0:
+                return np.empty(0), np.empty(0)
+            yy, zz = np.where(mask)
+            if len(yy) == 0:
+                return _uniform(n)
+            idx = rng.integers(0, len(yy), n)
+            return (
+                yy[idx] + rng.uniform(-0.5, 0.5, n),
+                zz[idx] + rng.uniform(-0.5, 0.5, n),
+            )
+
+        by, bz = _sample_mask(near_src, n_body)
+        hy, hz = _sample_mask(halo_src, n_halo)
+        gy, gz = _uniform(n_bg)
+        sy = np.concatenate([by, hy, gy])
+        sz = np.concatenate([bz, hz, gz])
+
+    sy = np.clip(sy, ylo, yhi).astype(np.float64)
+    sz = np.clip(sz, zlo, zhi).astype(np.float64)
+    seeds_x = np.full(sy.size, 2.0, dtype=np.float64)
+    return seeds_x, sy, sz
+
+
 # ---- 3D pipeline caches (B-2) --------------------------------------------
 # Every sidebar toggle / scene click reruns the whole script. Without these
 # wrappers .npz dequant + np.gradient volumes + RK2 streamline integration
@@ -783,6 +858,89 @@ def _q_isosurface_cached(scene_name: str, q_level_pct: int, _field):
         return None
     level = (q_level_pct / 100.0) * q_max_f
     return extract_q_isosurface(Q, level=level)
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def _build_anim_frames_cached(scene_name, n_seeds, _flat_x, _flat_y, _flat_z):
+    """Build the 3D flow animation's per-frame data once and memoise it.
+
+    Returns ``(frames_xyz, heads_xyz)`` -- two lists of length
+    ``_ANIM_FRAMES``. ``frames_xyz[i]`` is ``(fx, fy, fz)`` float32 arrays:
+    the full streamline arrays with vertices outside frame *i*'s
+    [tail, head] window NaN-ed out (a moving reveal window per streamline).
+    ``heads_xyz[i]`` is ``(hx, hy, hz)``: the leading "comet head" position
+    of every streamline at frame *i*.
+
+    This is the heavy part of the animation: 60 frames x a full-array copy
+    plus per-stream masking. It used to rebuild on EVERY rerun while Animate
+    was on -- 60 array copies on the shared 1-vCPU container per sidebar
+    fidget. Memoised on ``(scene_name, n_seeds)`` because the flat
+    streamline arrays are themselves uniquely determined by that key (same
+    contract as ``_trace_streamlines_cached``); the arrays are passed as
+    leading-underscore params so st.cache_data skips hashing them.
+    ``max_entries=4`` bounds the retained RAM on the free tier.
+    """
+    _ANIM_FRAMES = 60
+    _DRAIN_FRAC = 0.40  # frame 0 = full line, then drain, then grow back
+
+    nan_mask = np.isnan(_flat_x)
+    _split_idx = np.where(nan_mask)[0]
+    _stream_spans = []
+    _prev = 0
+    for _s in _split_idx:
+        if _s > _prev + 4:
+            _stream_spans.append((_prev, _s))
+        _prev = _s + 1
+
+    # Phase stagger so streamlines don't all pulse in lockstep.
+    _n_streams = max(1, len(_stream_spans))
+    _phase_offsets = (
+        np.arange(_n_streams) * (0.35 / _n_streams)
+    ).astype(np.float64)
+
+    fxa = np.asarray(_flat_x, dtype=np.float32)
+    fya = np.asarray(_flat_y, dtype=np.float32)
+    fza = np.asarray(_flat_z, dtype=np.float32)
+
+    frames_xyz = []
+    heads_xyz = []
+    for _f in range(_ANIM_FRAMES):
+        _t = _f / _ANIM_FRAMES
+        _fx = fxa.copy()
+        _fy = fya.copy()
+        _fz = fza.copy()
+        _hx, _hy, _hz = [], [], []
+        for _s_idx, (_a, _b) in enumerate(_stream_spans):
+            _n = _b - _a
+            if _n < 4:
+                continue
+            _tt = (_t + _phase_offsets[_s_idx]) % 1.0
+            if _tt < _DRAIN_FRAC:
+                _head_frac = 1.0
+                _tail_frac = _tt / _DRAIN_FRAC
+            else:
+                _head_frac = (_tt - _DRAIN_FRAC) / (1.0 - _DRAIN_FRAC)
+                _tail_frac = 0.0
+            _head_idx = _a + int(_head_frac * (_n - 1))
+            _tail_idx = _a + int(_tail_frac * (_n - 1))
+            if _tail_idx > _a:
+                _fx[_a:_tail_idx] = np.nan
+                _fy[_a:_tail_idx] = np.nan
+                _fz[_a:_tail_idx] = np.nan
+            if _head_idx < _b - 1:
+                _fx[_head_idx + 1:_b] = np.nan
+                _fy[_head_idx + 1:_b] = np.nan
+                _fz[_head_idx + 1:_b] = np.nan
+            _hx.append(fxa[_head_idx])
+            _hy.append(fya[_head_idx])
+            _hz.append(fza[_head_idx])
+        frames_xyz.append((_fx, _fy, _fz))
+        heads_xyz.append((
+            np.asarray(_hx, dtype=np.float32),
+            np.asarray(_hy, dtype=np.float32),
+            np.asarray(_hz, dtype=np.float32),
+        ))
+    return frames_xyz, heads_xyz
 
 
 def _closed_cylinder_mesh(cx, cy, R, z0, z1, n_theta=48):
@@ -1639,20 +1797,16 @@ if view == "3D gallery (preview)":
     )
 
     # --- Seed positions on the inflow plane ---------------------------
-    # Regular (y, z) grid at x = 2 cells from the inlet. The density
-    # slider sets the total seed count; we split it across y and z
-    # proportional to the cross-section aspect so the grid isn't
-    # squashed on non-square sections.
+    # Body-aware seeding (see _inflow_seeds_3d): concentrate seeds on the
+    # body silhouette + halo so the streamlines wrap the body and trace
+    # the wake, instead of a uniform grid that wastes most lines on dead-
+    # straight freestream in the corners. Deterministic in
+    # (chosen_name, n_seeds) so the _trace_streamlines_cached key stays
+    # valid. Seed count is preserved exactly.
     _gallery_prog.progress(40, text="Building seed positions...")
-    aspect = max(Nz / max(Ny, 1), 1e-3)
-    n_y_seeds = max(2, int(round((n_seeds / aspect) ** 0.5)))
-    n_z_seeds = max(2, int(round(n_seeds / n_y_seeds)))
-    sy = np.linspace(3.0, float(Ny) - 4.0, n_y_seeds)
-    sz = np.linspace(3.0, float(Nz) - 4.0, n_z_seeds)
-    _SY, _SZ = np.meshgrid(sy, sz)
-    seeds_x = np.full(_SY.size, 2.0, dtype=np.float64)
-    seeds_y = _SY.flatten().astype(np.float64)
-    seeds_z = _SZ.flatten().astype(np.float64)
+    seeds_x, seeds_y, seeds_z = _inflow_seeds_3d(
+        field.body, int(n_seeds), chosen_name, Ny, Nz,
+    )
 
     # --- Server-side streamline tracing -------------------------------
     # See _trace_streamlines docstring above for the rationale: the
@@ -1717,6 +1871,33 @@ if view == "3D gallery (preview)":
         )
     ]
 
+    # Soft glow underlay: a wider, dimmer copy of the same streamlines.
+    # WebGL lines don't blur, but a fat low-opacity line at the same
+    # coordinates reads as a bloom/halo around the crisp line, so the flow
+    # looks like luminous ribbons of moving air rather than thin technical
+    # wires. APPENDED (never prepended) so the crisp line stays
+    # scene_traces[0] -- the animation loop patches only index 0. Static
+    # (not mirrored per frame, so zero animation-payload cost) and
+    # showscale=False so it doesn't add a second colorbar. Width capped at
+    # 16 px for the WebGL line backend.
+    scene_traces.append(
+        go.Scatter3d(
+            x=flat_x, y=flat_y, z=flat_z,
+            mode="lines",
+            line=dict(
+                color=flat_color,
+                colorscale=_colorscale,
+                cmin=cmin_color, cmax=cmax_color,
+                width=min(float(line_width) * 2.6, 16.0),
+                showscale=False,
+            ),
+            opacity=0.16,
+            name="streamline glow",
+            hoverinfo="skip",
+            showlegend=False,
+        )
+    )
+
     # Q-criterion shell (optional, controlled from sidebar). Cached per
     # (scene_name, q_level_pct) via _q_isosurface_cached; first paint
     # pays compute_q_field + marching_cubes, subsequent reruns hit the
@@ -1742,8 +1923,19 @@ if view == "3D gallery (preview)":
                 go.Mesh3d(
                     x=verts[:, 0], y=verts[:, 1], z=verts[:, 2],
                     i=faces[:, 0], j=faces[:, 1], k=faces[:, 2],
-                    color="#22d3ee", opacity=0.32,
+                    color="#22d3ee", opacity=0.36,
                     flatshading=False,
+                    # Light the shell with the same studio key light the
+                    # body uses (defined below) so it reads as a
+                    # translucent, form-revealing membrane where the tube
+                    # curvature is legible -- not a flat cyan cutout. A
+                    # softer material than the opaque body (low specular,
+                    # gentle fresnel rim) keeps it glassy.
+                    lighting=dict(
+                        ambient=0.50, diffuse=0.80,
+                        specular=0.20, roughness=0.40, fresnel=0.30,
+                    ),
+                    lightposition=dict(x=2000, y=2500, z=1500),
                     name="Q shell",
                     hoverinfo="name",
                 )
@@ -1993,94 +2185,62 @@ if view == "3D gallery (preview)":
     _frames = []
     _stream_trace_index = 0  # the streamlines are the FIRST trace
     if animate_flow:
-        # 60 frames at 80 ms per frame = ~12.5 fps, ~4.8 s per cycle.
-        # The previous 30 frames @ 220 ms (4.5 fps) felt like a
-        # stuttering GIF -- each frame the streamline head jumped
-        # ~7 vertices, a visibly discontinuous step. At 60 frames
-        # the head advances ~3 vertices per frame; combined with the
-        # 120 ms linear transition between frames, the eye reads
-        # continuous flow instead of frame-by-frame snapshots.
-        _ANIM_FRAMES = 60
-        # Phase pattern: DRAIN first (tail sweeps 0->1 while head holds
-        # at 1) then GROW (head sweeps 0->1 while tail stays 0). With
-        # this ordering frame 0 = full streamline, so when the user
-        # clicks "▶ Animate" the lines don't suddenly shrink to a
-        # single point before starting -- they begin from the static
-        # state already on screen and gracefully drain, then grow back.
-        _DRAIN_FRAC = 0.40
+        # Per-frame streamline reveal windows + comet-head positions.
+        # 60 frames @ 80 ms = ~12.5 fps, ~4.8 s/cycle; frame 0 = the full
+        # line (DRAIN-then-GROW phase pattern) so clicking Animate begins
+        # from the static state on screen rather than snapping to a point.
+        # Heavy build (60 array copies + masking) is memoised on
+        # (scene_name, n_seeds) -- see _build_anim_frames_cached -- so
+        # toggling other controls while Animate is on stays snappy.
+        _anim_frames_data, _anim_head_data = _build_anim_frames_cached(
+            chosen_name, int(n_seeds), flat_x, flat_y, flat_z,
+        )
 
-        nan_mask = np.isnan(flat_x)
-        _split_idx = np.where(nan_mask)[0]
-        # Build (start, end) indices for each streamline within the
-        # flat arrays. We keep the flat arrays themselves (so colours
-        # already computed for the static view stay aligned) and just
-        # build per-frame NaN masks that hide vertices outside the
-        # current animation window.
-        _stream_spans = []
-        _prev = 0
-        for _s in _split_idx:
-            if _s > _prev + 4:
-                _stream_spans.append((_prev, _s))
-            _prev = _s + 1
-
-        # Phase stagger so the streamlines don't all start at the same
-        # arc-fraction simultaneously -- looks like real wind, not a
-        # synchronised laser show.
-        _n_streams = max(1, len(_stream_spans))
-        _phase_offsets = (
-            np.arange(_n_streams) * (0.35 / _n_streams)
-        ).astype(np.float64)
-
-        flat_x_anim = np.asarray(flat_x, dtype=np.float32)
-        flat_y_anim = np.asarray(flat_y, dtype=np.float32)
-        flat_z_anim = np.asarray(flat_z, dtype=np.float32)
-        _anim_frames_data = []
-        for _f in range(_ANIM_FRAMES):
-            # Window indices for this frame, per streamline.
-            _t = _f / _ANIM_FRAMES
-            _fx = flat_x_anim.copy()
-            _fy = flat_y_anim.copy()
-            _fz = flat_z_anim.copy()
-            for _s_idx, (_a, _b) in enumerate(_stream_spans):
-                _n = _b - _a
-                if _n < 4:
-                    continue
-                _tt = (_t + _phase_offsets[_s_idx]) % 1.0
-                if _tt < _DRAIN_FRAC:
-                    # Drain phase: head holds at 1, tail sweeps 0 -> 1.
-                    _head_frac = 1.0
-                    _tail_frac = _tt / _DRAIN_FRAC
-                else:
-                    # Grow phase: head sweeps 0 -> 1, tail stays at 0.
-                    _head_frac = (_tt - _DRAIN_FRAC) / (1.0 - _DRAIN_FRAC)
-                    _tail_frac = 0.0
-                _head_idx = _a + int(_head_frac * (_n - 1))
-                _tail_idx = _a + int(_tail_frac * (_n - 1))
-                # NaN out vertices outside [tail, head] for this stream.
-                if _tail_idx > _a:
-                    _fx[_a:_tail_idx] = np.nan
-                    _fy[_a:_tail_idx] = np.nan
-                    _fz[_a:_tail_idx] = np.nan
-                if _head_idx < _b - 1:
-                    _fx[_head_idx + 1:_b] = np.nan
-                    _fy[_head_idx + 1:_b] = np.nan
-                    _fz[_head_idx + 1:_b] = np.nan
-            _anim_frames_data.append((_fx, _fy, _fz))
-
-        # Initial frame applied to the streamline trace immediately so
+        # Apply the initial frame to the streamline trace immediately so
         # the first paint isn't a static full-length scene before the
         # animation kicks in.
         _fx0, _fy0, _fz0 = _anim_frames_data[0]
         scene_traces[_stream_trace_index].x = _fx0
         scene_traces[_stream_trace_index].y = _fy0
         scene_traces[_stream_trace_index].z = _fz0
+
+        # Comet head: a bright warm marker leading each streamline as it
+        # grows, so the eye reads air physically sweeping past rather than
+        # lines blinking on. APPENDED after every other trace so its index
+        # is stable and scene_traces[0] stays the crisp streamline the
+        # frame loop patches. Markers carry no colour data -> no second
+        # colorbar.
+        _h0x, _h0y, _h0z = _anim_head_data[0]
+        _head_trace_index = len(scene_traces)
+        scene_traces.append(
+            go.Scatter3d(
+                x=_h0x, y=_h0y, z=_h0z,
+                mode="markers",
+                marker=dict(
+                    size=4.5, color="#fde68a", opacity=0.95,
+                    line=dict(width=0),
+                ),
+                name="flow heads",
+                hoverinfo="skip", showlegend=False,
+            )
+        )
+
+        # Each frame patches BOTH the crisp streamline (index 0) and the
+        # comet head (its index). redraw=True (set on the Animate button
+        # below) is required for Scatter3d geometry to actually repaint.
         _frames = [
             go.Frame(
-                data=[go.Scatter3d(x=_fx_i, y=_fy_i, z=_fz_i)],
-                traces=[_stream_trace_index],
+                data=[
+                    go.Scatter3d(x=_fx_i, y=_fy_i, z=_fz_i),
+                    go.Scatter3d(x=_hx_i, y=_hy_i, z=_hz_i),
+                ],
+                traces=[_stream_trace_index, _head_trace_index],
                 name=str(_i),
             )
-            for _i, (_fx_i, _fy_i, _fz_i) in enumerate(_anim_frames_data)
+            for _i, ((_fx_i, _fy_i, _fz_i), (_hx_i, _hy_i, _hz_i))
+            in enumerate(zip(
+                _anim_frames_data, _anim_head_data, strict=True,
+            ))
         ]
 
     # Camera + look-at: shift toward the body so it fills the viewport

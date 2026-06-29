@@ -26,11 +26,20 @@ roadmap: [`docs/internal/perfect_3d_plan.md`](perfect_3d_plan.md) (NEW).**
   was already tried/reverted AND would regress the tuned sphere/cylinder
   pulled-back framing. Only real fix is render-figure-in-component (L effort,
   risk 4), scheduled after the visual wins. Details in the roadmap.
-- **Batch 2 (NEXT, needs in-browser eyeball — can't verify headlessly):**
-  body-aware-seeding (biggest lever) → glow underlay → lit-Q-shell → comet head
-  → cache-animation-frames → arclength-stagnation-cap. Sequenced because they
-  touch the index-0 / cache-determinism / frame-list contracts. Exact approach +
-  guardrails per item in the roadmap.
+- **Batch 2 items 1-5 LANDED in `app.py` (uncommitted, parse+ruff clean,
+  headless-tested):** body-aware seeding (`_inflow_seeds_3d`, deterministic via
+  hashlib, dilation bands; test: 67-92% seeds near body) → glow underlay
+  (appended, showscale=False) → lit Q-shell → comet-head markers → cached frame
+  builder (`_build_anim_frames_cached`, max_entries=4). The seeding + frame
+  builder were AST-extracted and unit-tested headlessly (count/bounds/
+  determinism/reveal). **Aesthetics still need the owner's in-browser eyeball** —
+  code is correct, the *look* is unverified headlessly. **Item 6
+  (arclength-stagnation-cap) HELD** — not in the user's listed scope; touches the
+  shared tracer across all 4 shapes, needs the live loop.
+- **REVIEW-AFTER-PUSH checklist (owner):** load default sphere + a wing-AoA scene;
+  toggle Q (lit translucent shell?), toggle Animate (comet heads lead the flow?
+  glow corridor reads?), check streamlines now wrap the body (seeding). If any
+  look off, say which — forward-fix or revert that one change.
 - **Guardrails that must hold:** scene_traces[0] stays the crisp streamline (new
   traces APPEND); new color traces set showscale=False; seed/frame caches stay
   pure deterministic fns of (scene_name, n_seeds); don't touch the camera block;

@@ -88,11 +88,31 @@ interaction with the animation/camera/cache/baked-field contracts.
 
 ---
 
-## Batch 2 — high-impact visual + truthfulness (NEXT; needs visual eyeball)
+## Batch 2 — high-impact visual + truthfulness (items 1-5 DONE 2026-06-11, uncommitted)
 
-These reshape the rendered output and touch the index-0 / cache / frame-list
-contracts, so they must be **sequenced** and ideally verified in-browser by the
-owner (can't be checked headlessly). Recommended order:
+Implemented per the user's "implement, I'll review pushed" choice. Parse + ruff
+clean; the two contract-sensitive pieces (seeding, frame builder) were
+extracted via AST and **headless-tested** (count/bounds/determinism/body-
+concentration for seeding; frame-count/shape/head-count/determinism/full-reveal
+for the animation builder). **Still needs the owner's in-browser eyeball for
+aesthetics** — the code is correct, the *look* is unverified headlessly.
+
+- [x] **body-aware-seeding** — new `_inflow_seeds_3d` helper (deterministic via
+  `hashlib` digest, NOT the salted builtin `hash()`); dilation bands (shape-
+  agnostic, works for spanwise cylinder/wing, not just compact sphere); test
+  shows 67-92% of seeds now land near the body.
+- [x] **streamline-depth-glow-layer** — appended after the crisp trace
+  (`showscale=False`, opacity 0.16, width cap 16px).
+- [x] **lit-q-shell-material** — inline lighting + lightpos on the Q `Mesh3d`
+  (no hoist needed; reuses the body light position), opacity 0.32 → 0.36.
+- [x] **particle-head-on-animation** — warm comet-head markers trace, appended
+  last, added to every `go.Frame` alongside the crisp streamline.
+- [x] **cache-animation-frames** — new `_build_anim_frames_cached`
+  (`max_entries=4`); the 60-frame build is memoised on `(scene_name, n_seeds)`.
+- [ ] **arclength-stagnation-cap** — HELD (not in the user's listed Batch 2 scope;
+  touches the shared tracer across all 4 shapes → needs the live-loop eyeball).
+
+Original approach notes (kept for reference):
 
 1. **body-aware-seeding** (`app.py` seed block, replaces uniform meshgrid).
    *Biggest truthfulness+beauty lever.* Replace the full-cross-section grid with:
