@@ -301,6 +301,10 @@ blockage low enough (10 %) that the Allen-Vincenti correction is a
 modest 0.79 × factor rather than the 2.6 × rescale carried by the
 Standard preset.
 
+![Cylinder Cd vs Re: AeroLab Resolved (D=40) and Validation (D=20) corrected points overlaid on Williamson 1996 free-stream curve, with the validated band shaded at Re ≤ 200 and the 2D mode-A 3D-transition ceiling annotated. The headline Re=200 point sits +1.0 % from the published line; the D=20 cross-check drifts upward, isolating the grid-resolution contribution from the 2D-physics ceiling.](data/validation/cylinder_cd_vs_re.png)
+
+*Both series in this chart are produced by `python scripts/plot_cd_vs_re.py`, which reads the same `results_resolved.json` and `results_lowblockage.json` listed below. No solver runs are needed to regenerate the plot.*
+
 Source: `python scripts/validate_solver.py --resolved` (≈ 90 min).
 Full data in
 [`data/validation/results_resolved.md`](data/validation/results_resolved.md).

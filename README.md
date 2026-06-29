@@ -25,6 +25,10 @@ CPU-only, free to use, mobile-friendly.
 [![benchmarks](https://img.shields.io/badge/benchmarks-Williamson%201996%20%2B%20Okajima%201982-success)](VALIDATION.md)
 [![cross-check](https://img.shields.io/badge/cross--check-OpenFOAM%2011%20%C2%B11.6%25-success)](VALIDATION.md#84-openfoam-cylinder-re100-cross-check--v2-refined-run-2026-05-31)
 
+![Cylinder Cd vs Re — AeroLab Resolved (D=40) and Validation (D=20) corrected points overlaid on Williamson 1996 free-stream curve. Headline point at Re=200 sits +1.0 % from the published line; validated band shaded at Re ≤ 200, with the 2D mode-A 3D-transition limit annotated.](data/validation/cylinder_cd_vs_re.png)
+
+*Cylinder Cd vs Re — AeroLab over Williamson 1996. Reproduce with `python scripts/plot_cd_vs_re.py`; reads the committed `data/validation/results_{resolved,lowblockage}.json` (no solver runs).*
+
 The 2D D2Q9 MRT-LES solver has been benchmarked against Williamson 1996 (cylinder) and Okajima 1982 (square), and as of 2026-05-31 it has an independent **OpenFOAM 11** cross-check on the same cylinder Re=100 case. Three rounds of senior CFD review (2026-05-26, 2026-05-27, 2026-05-29) scoped "validated" to the regime where the comparison is honest. The current headline comes from the **Resolved preset** (D = 40, B = 10 %), the configuration that simultaneously meets the Mei-Luo-Shyy 1999 D ≥ 40 literature guideline for 2D-LBM Cd and keeps blockage low enough that the Allen-Vincenti correction is small:
 
 | Quantity                       | Re band   | Median error | Max error | Independent reference            |
